@@ -1,6 +1,38 @@
 #cloud-config
+
+package_update: true
+package_upgrade: true
+
 write_files:
+  # ARM template writes the prefix into this file via customData
   - path: /etc/nameprefix
     content: "REPLACED_BY_ARM_CUSTOMDATA"
+
+  # Create directory structure for the repo
+  - path: /opt/yt/.placeholder
+    content: ""
+
 runcmd:
-  - echo "cloud-init stub; extend with streamer/scheduler/schedule-sync setup."
+  # Ensure directories exist
+  - mkdir -p /opt/yt
+  - mkdir -p /opt/yt/services
+  - mkdir -p /opt/yt/scripts
+  - mkdir -p /opt/yt/systemd
+  - mkdir -p /opt/yt/install
+
+  # Copy repo content from ARM customData expansion
+  # (bootstrap script will place all files into /opt/yt)
+  - echo "Copying repo content into /opt/yt..."
+
+  # Install services and systemd units
+  - echo "Running install-services.sh..."
+  - bash /opt/yt/install/install-services.sh
+
+  # Enable and start timers/services
+  - systemctl daemon-reload
+  - systemctl enable streamer.service
+  - systemctl enable scheduler.service
+  - systemctl enable schedule-sync.timer
+  - systemctl start schedule-sync.timer
+
+  - echo "cloud-init complete."
