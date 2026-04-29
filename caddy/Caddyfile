@@ -1,0 +1,14 @@
+:80 {
+
+  # Serve frontend static files
+  root * /opt/yt/web/frontend
+  file_server
+
+  # Reverse proxy API calls to backend
+  handle_path /api/* {
+    reverse_proxy localhost:8080
+  }
+
+  # Optional: health check
+  respond /health "OK" 200
+}
