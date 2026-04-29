@@ -139,7 +139,16 @@ ok "python3 found: $(python3 --version 2>/dev/null)"
 
 if ! az account show &>/dev/null; then
   warn "Not logged in to Azure. Opening login..."
-  az login || fatal "Azure login failed."
+  # Use device code flow when there's no usable display (WSL, SSH, headless, containers)
+  if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]] \
+     || grep -qi microsoft /proc/version 2>/dev/null \
+     || [[ -f /.dockerenv ]] \
+     || ! command -v xdg-open &>/dev/null; then
+    info "No GUI detected — using device code flow."
+    az login --use-device-code || fatal "Azure login failed."
+  else
+    az login || fatal "Azure login failed."
+  fi
 fi
 
 ACCOUNT_NAME=$(az account show --query name -o tsv)
