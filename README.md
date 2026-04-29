@@ -3,7 +3,7 @@
 A parameterized, prefix-driven Azure deployment that provisions a YouTube streaming VM with a single ARM template command. The VM streams a video file from Azure Blob Storage to YouTube Live via ffmpeg, starting and stopping automatically on a configurable weekly schedule to minimise cost.
 
 **What gets deployed:**
-- Ubuntu 24.04 VM (Standard_B2s) — auto-deallocates when not streaming
+- Ubuntu 24.04 VM (Standard_F2s_v2) — auto-deallocates when not streaming
 - Azure Blob Storage (`recordings` container) — source video lives here via blobfuse2
 - Azure Key Vault — holds the YouTube stream key (read via managed identity; no key on disk)
 - Azure Automation Account — triggers VM start/stop 2 minutes before/after each stream
@@ -196,20 +196,20 @@ sudo /usr/local/bin/schedule-sync.sh
 
 ## Cost Model
 
-All costs approximate (West US 2, 2025 pricing):
+All costs approximate (West US 2, pay-as-you-go, 2026 pricing):
 
-| Resource | SKU | Approx. monthly cost |
+| Resource | SKU | Approx. cost |
 |---|---|---|
-| VM (Standard_B2s) | Pay-per-use; auto-deallocated when idle | ~$0.04/hr while running |
-| OS disk (StandardSSD_LRS) | 30 GB | ~$2.40 |
+| VM (Standard_F2s_v2) | Compute-optimised, 2 vCPU, 4 GB; auto-deallocated when idle | ~$0.085/hr while running |
+| OS disk (StandardSSD_LRS) | 30 GB | ~$2.40/month |
 | Storage account (Standard_LRS) | Per-use | ~$0.02/GB stored + egress |
 | Automation Account (Basic) | ≤500 job min/month free | $0 |
 | Key Vault (Standard) | ~$0.03/10k operations | ~$0 |
-| Public IP (Static Standard) | Always allocated | ~$3.65 |
+| Public IP (Static Standard) | Always allocated | ~$3.65/month |
 
-**Example:** streaming 6 h/week → VM runs ~26 h/month → **~$1/month compute**, ~$6 total.
+**Example:** streaming 6 h/week → VM runs ~26 h/month → **~$2.20/month compute**, ~$8 total.
 
-To further reduce costs, choose a smaller VM (e.g. `Standard_B1ms` at ~$0.02/hr) if your stream resolution/bitrate allows it, or use a dynamic public IP (requires DNS update on each boot).
+> **Why F2s_v2?** The streamer uses ffmpeg with libx264 for real-time transcoding when downscaling. Burstable VMs (B-series) exhaust CPU credits under sustained encoding and throttle to ~40% baseline. The F2s_v2 provides dedicated compute cores at a modest price premium. If all your source videos are already at or below `max_resolution` (passthrough only), you could use `Standard_B2s` (~$0.042/hr) to save costs — change the `vmSize` variable in `azuredeploy.json`.
 
 ---
 
