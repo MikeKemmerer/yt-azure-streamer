@@ -1,0 +1,12 @@
+[Unit]
+Description=Blobfuse2 Mount
+After=network-online.target
+
+[Mount]
+What=/usr/local/bin/blobfuse2
+Where=/mnt/blobfuse2
+Type=fuse
+Options=allow_other
+
+[Install]
+WantedBy=multi-user.target

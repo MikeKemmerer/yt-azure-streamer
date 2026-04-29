@@ -1,0 +1,27 @@
+# Blobfuse2 configuration template
+# This file is parameterized — the VM will replace STORAGE_ACCOUNT dynamically
+# based on /etc/nameprefix (written by ARM customData)
+
+logging:
+  type: syslog
+  level: LOG_INFO
+
+components:
+  - libfuse
+  - attr_cache
+  - file_cache
+  - azstorage
+
+azstorage:
+  type: block
+  account-name: STORAGE_ACCOUNT
+  container: recordings
+  endpoint: https://STORAGE_ACCOUNT.blob.core.windows.net
+
+file_cache:
+  path: /mnt/blobfuse2_cache
+  timeout-sec: 120
+  max-size-mb: 4096
+
+attr_cache:
+  timeout-sec: 120
