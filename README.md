@@ -53,7 +53,8 @@ az deployment group create \
   --template-file arm/azuredeploy.json \
   --parameters namePrefix=stdemo \
                adminPublicKey="$(cat ~/.ssh/id_ed25519.pub)" \
-               repoUrl="https://github.com/MikeKemmerer/yt-azure-streamer"
+               repoUrl="https://github.com/MikeKemmerer/yt-azure-streamer" \
+               customDomain="stream.example.com"
 ```
 
 | Parameter | Default | Description |
@@ -62,6 +63,7 @@ az deployment group create \
 | `adminUsername` | `azureuser` | SSH login username |
 | `adminPublicKey` | *(required)* | SSH public key string |
 | `repoUrl` | *(required)* | Git URL the VM clones at first boot |
+| `customDomain` | *(empty)* | Domain name for automatic TLS via Let's Encrypt. Leave empty for plain HTTP on port 80 |
 | `location` | resource group location | Azure region |
 
 The deployment creates and wires together: VNet, NSG (SSH/HTTP/HTTPS), public IP, NIC, Storage Account + `recordings` container, Automation Account, Key Vault, VM, and three role assignments.
@@ -91,20 +93,29 @@ az keyvault secret set \
 
 Get your stream key from [YouTube Studio → Go Live → Stream](https://studio.youtube.com/).
 
-### 5. Upload your source video
+### 5. Upload your source videos
 
-The streamer loops `/mnt/blobfuse2/stream.mp4` on the VM, which maps to the `recordings` container in your storage account.
+Upload one or more video files to the `recordings` container in your storage account. They are mounted at `/mnt/blobfuse2/` on the VM and streamed in **alphabetical order** as a playlist.
 
 ```bash
 az storage blob upload \
   --account-name stdemo \
   --container-name recordings \
-  --name stream.mp4 \
-  --file /path/to/your/video.mp4 \
+  --name "01-sunday-liturgy.mp4" \
+  --file /path/to/video1.mp4 \
+  --auth-mode login
+
+az storage blob upload \
+  --account-name stdemo \
+  --container-name recordings \
+  --name "02-wednesday-vespers.mp4" \
+  --file /path/to/video2.mp4 \
   --auth-mode login
 ```
 
-> The file must be named `stream.mp4`. It is looped indefinitely during the stream window.
+Supported formats: `.mp4`, `.mkv`, `.mov`, `.avi`, `.ts`, `.flv`. The playlist is regenerated each time the streamer starts, so new/deleted files are picked up automatically.
+
+> **Playlist resume:** The streamer bookmarks its position after each video. On restart (e.g. after scheduled downtime), it resumes from the *next* video — so the playlist makes forward progress across stop/start cycles rather than always restarting from the beginning.
 
 ### 6. (Optional) Configure the stream schedule
 
@@ -139,7 +150,10 @@ Edit `/opt/yt/schedule.json` on the VM to define when streams happen:
       "stop": "20:00",
       "days": ["Mon", "Wed", "Fri"]
     }
-  ]
+  ],
+  "stream": {
+    "max_resolution": "720p"
+  }
 }
 ```
 
@@ -148,6 +162,9 @@ Edit `/opt/yt/schedule.json` on the VM to define when streams happen:
 | `timezone` | Any [IANA timezone name](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) (e.g. `"America/New_York"`, `"Europe/London"`) |
 | `start` / `stop` | 24-hour `HH:MM` in the specified timezone |
 | `days` | Any subset of `Mon`, `Tue`, `Wed`, `Thu`, `Fri`, `Sat`, `Sun` |
+| `stream.max_resolution` | Maximum output resolution: `144p`, `240p`, `360p`, `480p`, `720p` (default), `1080p`, `1440p`, `2160p` |
+
+**Resolution behavior:** Videos at or below `max_resolution` are passed through without re-encoding. Videos above it are downscaled. Videos are never upsampled.
 
 **How the schedule works end-to-end:**
 
@@ -234,12 +251,23 @@ cd /opt/yt && sudo git pull && sudo bash install/install-services.sh
 ## Web UI
 
 ```
-http://<vm-public-ip>/
+http://<vm-public-ip>/          # without customDomain
+https://stream.example.com/     # with customDomain
 ```
 
-The UI displays the deployment's prefix, storage account name, and automation account name. It is served by Caddy on port 80 (HTTP).
+The UI displays the deployment's prefix, storage account name, and automation account name. Caddy serves the frontend and reverse-proxies `/api/*` to the Node.js backend on port 8080.
 
-> **HTTPS / TLS:** Caddy's automatic Let's Encrypt requires a real domain name pointed at the VM's public IP. Add a DNS A record for your domain and replace `:80` with your domain in `caddy/Caddyfile`, then restart the caddy service.
+### TLS with Let's Encrypt
+
+When you pass the `customDomain` parameter during deployment, Caddy automatically provisions a Let's Encrypt certificate — no manual steps required.
+
+**Prerequisites:**
+1. Point a DNS A record for your domain at the VM's public IP **before** deploying (or within the first few minutes while cloud-init runs).
+2. Ports 80 and 443 must be open (the NSG allows both by default).
+
+The Azure DNS label (`{prefix}.{region}.cloudapp.azure.com`) is also created automatically, but cannot be used for Let's Encrypt since Azure owns the parent domain.
+
+**Without `customDomain`:** Caddy serves plain HTTP on port 80 (the default).
 
 ---
 
@@ -260,13 +288,14 @@ yt-azure-streamer/
   runbooks/
     Start-StreamerVM.ps1      # Azure Automation runbook: start VM (MSI auth)
     Stop-StreamerVM.ps1       # Azure Automation runbook: deallocate VM (MSI auth)
-  schedule.json               # Stream schedule — edit to customise times/days
+  schedule.json               # Stream schedule + resolution config — edit to customise
   scripts/
+    generate-playlist.sh      # Scans blobfuse2 mount, writes ffmpeg concat playlist
     role-assign.sh            # (legacy) manual role assignment — superseded by ARM
     schedule-sync.sh          # Syncs schedule.json → Azure Automation weekly schedules
   services/
     streamer/
-      streamer.sh             # Fetches stream key from KV, runs ffmpeg → YouTube RTMP
+      streamer.sh             # Playlist streamer: bookmark resume, resolution cap, ffmpeg → YouTube RTMP
     scheduler/
       scheduler.sh            # Daemon: checks schedule every 30 s, starts/stops streamer
   systemd/

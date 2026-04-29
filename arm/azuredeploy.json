@@ -29,6 +29,13 @@
         "description": "Git clone URL for the yt-azure-streamer repository"
       }
     },
+    "customDomain": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional domain name for TLS (e.g. stream.example.com). When set, Caddy auto-provisions a Let's Encrypt certificate. Leave empty for plain HTTP."
+      }
+    },
     "location": {
       "type": "string",
       "defaultValue": "[resourceGroup().location]"
@@ -252,7 +259,7 @@
               ]
             }
           },
-          "customData": "[base64(concat('#cloud-config\n', 'package_update: true\n', 'package_upgrade: true\n', 'packages:\n', '  - git\n', 'write_files:\n', '  - path: /etc/nameprefix\n', '    content: \"', parameters('namePrefix'), '\"\n', '  - path: /etc/resourcegroup\n', '    content: \"', resourceGroup().name, '\"\n', 'runcmd:\n', '  - git clone ', parameters('repoUrl'), ' /opt/yt\n', '  - bash /opt/yt/install/install-services.sh\n'))]"
+          "customData": "[base64(concat('#cloud-config\n', 'package_update: true\n', 'package_upgrade: true\n', 'packages:\n', '  - git\n', 'write_files:\n', '  - path: /etc/nameprefix\n', '    content: \"', parameters('namePrefix'), '\"\n', '  - path: /etc/resourcegroup\n', '    content: \"', resourceGroup().name, '\"\n', '  - path: /etc/customdomain\n', '    content: \"', parameters('customDomain'), '\"\n', 'runcmd:\n', '  - git clone ', parameters('repoUrl'), ' /opt/yt\n', '  - bash /opt/yt/install/install-services.sh\n'))]"
         },
         "storageProfile": {
           "imageReference": {

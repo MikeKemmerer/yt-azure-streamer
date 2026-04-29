@@ -1,6 +1,6 @@
 #cloud-config
 # Reference: this is what the ARM template customData produces.
-# The ARM template injects namePrefix and resourceGroup via concat().
+# The ARM template injects namePrefix, resourceGroup, and customDomain via concat().
 
 package_update: true
 package_upgrade: true
@@ -13,6 +13,8 @@ write_files:
     content: "REPLACED_BY_ARM_TEMPLATE"
   - path: /etc/resourcegroup
     content: "REPLACED_BY_ARM_TEMPLATE"
+  - path: /etc/customdomain
+    content: "REPLACED_BY_ARM_TEMPLATE_OR_EMPTY"
 
 runcmd:
   - git clone REPO_URL_FROM_ARM_PARAMETER /opt/yt

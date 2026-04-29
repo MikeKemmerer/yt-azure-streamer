@@ -51,12 +51,24 @@ sed -i "s/STORAGE_ACCOUNT/${STORAGE_NAME}/g" /opt/yt/blobfuse2/blobfuse2.yaml
 mkdir -p /mnt/blobfuse2
 mkdir -p /mnt/blobfuse2_cache
 
+# --- Caddy / TLS Configuration ---
+
+CUSTOM_DOMAIN=$(cat /etc/customdomain 2>/dev/null | tr -d '[:space:]')
+if [[ -n "$CUSTOM_DOMAIN" ]]; then
+  echo "Custom domain: $CUSTOM_DOMAIN — Caddy will auto-provision Let's Encrypt TLS"
+  sed -i "s/CADDY_SITE_ADDRESS/${CUSTOM_DOMAIN}/g" /opt/yt/caddy/Caddyfile
+else
+  echo "No custom domain — serving plain HTTP on :80"
+  sed -i "s/CADDY_SITE_ADDRESS/:80/g" /opt/yt/caddy/Caddyfile
+fi
+
 # --- Install Scripts ---
 
 echo "Installing service scripts into /usr/local/bin..."
 install -m 755 /opt/yt/services/streamer/streamer.sh  /usr/local/bin/streamer.sh
 install -m 755 /opt/yt/services/scheduler/scheduler.sh /usr/local/bin/scheduler.sh
 install -m 755 /opt/yt/scripts/schedule-sync.sh        /usr/local/bin/schedule-sync.sh
+install -m 755 /opt/yt/scripts/generate-playlist.sh    /usr/local/bin/generate-playlist.sh
 
 # schedule.json ships with the repo at /opt/yt/schedule.json — edit to customise stream times
 echo "Schedule template at /opt/yt/schedule.json — edit to customise."
