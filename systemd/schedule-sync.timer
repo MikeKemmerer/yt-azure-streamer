@@ -1,0 +1,10 @@
+[Unit]
+Description=Run schedule-sync every 10 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Unit=schedule-sync.service
+
+[Install]
+WantedBy=timers.target

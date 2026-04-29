@@ -1,0 +1,10 @@
+[Unit]
+Description=Sync Azure Automation schedules
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/schedule-sync.sh
+
+[Install]
+WantedBy=multi-user.target
