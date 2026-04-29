@@ -68,6 +68,7 @@ echo "Installing service scripts into /usr/local/bin..."
 install -m 755 /opt/yt/services/streamer/streamer.sh  /usr/local/bin/streamer.sh
 install -m 755 /opt/yt/services/scheduler/scheduler.sh /usr/local/bin/scheduler.sh
 install -m 755 /opt/yt/scripts/schedule-sync.sh        /usr/local/bin/schedule-sync.sh
+install -m 755 /opt/yt/scripts/generate-playlist.sh    /usr/local/bin/generate-playlist.sh
 
 # schedule.json ships with the repo at /opt/yt/schedule.json — edit to customise stream times
 echo "Schedule template at /opt/yt/schedule.json — edit to customise."
