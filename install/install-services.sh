@@ -14,7 +14,7 @@ echo "Prefix: $PREFIX"
 # --- Package Repositories ---
 
 echo "Installing prerequisites..."
-apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl gpg lsb-release
+DEBIAN_FRONTEND=noninteractive apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl gpg lsb-release
 
 echo "Adding Caddy apt repository..."
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
@@ -35,7 +35,7 @@ echo "Updating package lists..."
 apt-get update
 
 echo "Installing packages..."
-apt-get install -y nodejs npm ffmpeg fuse3 caddy blobfuse2 azure-cli
+DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs npm ffmpeg fuse3 caddy blobfuse2 azure-cli
 
 # Disable the default apt-installed caddy service; we use our own unit
 systemctl stop caddy.service 2>/dev/null || true

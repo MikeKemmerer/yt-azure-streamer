@@ -103,6 +103,19 @@
               "sourceAddressPrefix": "*",
               "destinationAddressPrefix": "*"
             }
+          },
+          {
+            "name": "Allow-HTTPS",
+            "properties": {
+              "priority": 1020,
+              "access": "Allow",
+              "direction": "Inbound",
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "443",
+              "sourceAddressPrefix": "*",
+              "destinationAddressPrefix": "*"
+            }
           }
         ]
       }
@@ -166,6 +179,17 @@
       }
     },
     {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-01-01",
+      "name": "[format('{0}/default/recordings', variables('storageAccountName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ],
+      "properties": {
+        "publicAccess": "None"
+      }
+    },
+    {
       "type": "Microsoft.Automation/automationAccounts",
       "apiVersion": "2023-11-01",
       "name": "[variables('automationAccountName')]",
@@ -217,7 +241,7 @@
           "osDisk": {
             "createOption": "FromImage",
             "managedDisk": {
-              "storageAccountType": "Premium_LRS"
+              "storageAccountType": "StandardSSD_LRS"
             }
           }
         },

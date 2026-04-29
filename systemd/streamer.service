@@ -1,6 +1,7 @@
 [Unit]
 Description=YouTube Streamer Service
-After=network-online.target
+After=network-online.target mnt-blobfuse2.mount
+Requires=mnt-blobfuse2.mount
 
 [Service]
 Type=simple
