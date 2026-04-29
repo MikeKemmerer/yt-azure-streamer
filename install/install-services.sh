@@ -75,6 +75,41 @@ else
   fi
 fi
 
+# --- Caddy / Basic Auth ---
+
+echo "Configuring web UI authentication..."
+KV_NAME="${PREFIX,,}-kv"
+
+# Fetch web UI credentials from Key Vault (written by deploy script)
+WEB_USER=""
+WEB_PASS=""
+for attempt in $(seq 1 10); do
+  WEB_USER=$(az keyvault secret show --vault-name "$KV_NAME" --name "web-ui-user" --query value -o tsv 2>/dev/null || true)
+  WEB_PASS=$(az keyvault secret show --vault-name "$KV_NAME" --name "web-ui-password" --query value -o tsv 2>/dev/null || true)
+  if [[ -n "$WEB_USER" && -n "$WEB_PASS" ]]; then
+    break
+  fi
+  echo "  Waiting for Key Vault RBAC propagation (attempt $attempt/10)..."
+  sleep 30
+done
+
+mkdir -p /etc/caddy
+if [[ -n "$WEB_USER" && -n "$WEB_PASS" ]]; then
+  # Generate bcrypt hash for Caddy basic_auth
+  HASH=$(caddy hash-password --plaintext "$WEB_PASS")
+  cat > /etc/caddy/auth.conf <<EOF
+basic_auth {
+  ${WEB_USER} ${HASH}
+}
+EOF
+  chmod 600 /etc/caddy/auth.conf
+  echo "Web UI authentication configured for user: $WEB_USER"
+else
+  echo "WARNING: No web UI credentials found in Key Vault. Web UI will be unprotected."
+  # Write an empty snippet so the Caddy import doesn't fail
+  echo "# No auth configured" > /etc/caddy/auth.conf
+fi
+
 # --- Install Scripts ---
 
 echo "Installing service scripts into /usr/local/bin..."

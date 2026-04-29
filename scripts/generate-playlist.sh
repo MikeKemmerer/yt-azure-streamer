@@ -19,8 +19,41 @@ fi
 
 VIDEO_DIR="${1:-/mnt/blobfuse2}"
 PLAYLIST_FILE="${2:-/opt/yt/playlist.txt}"
+PLAYLIST_CONFIG="/opt/yt/playlist-config.json"
 
 echo "Scanning $VIDEO_DIR for video files..."
+
+# ─── Check for playlist-config.json (managed by web UI) ────────────
+# If the config exists and has entries, use it for ordering and filtering.
+# This takes priority over date-sorting and shuffle.
+
+if [[ -f "$PLAYLIST_CONFIG" ]] && command -v python3 &>/dev/null; then
+  mapfile -t config_files < <(python3 -c "
+import json, sys, os
+try:
+  cfg = json.load(open('$PLAYLIST_CONFIG'))
+  for v in cfg.get('videos', []):
+    if v.get('enabled', True):
+      fp = os.path.join('$VIDEO_DIR', v['file'])
+      if os.path.isfile(fp):
+        print(fp)
+except Exception as e:
+  print(f'ERROR: {e}', file=sys.stderr)
+  sys.exit(1)
+" 2>/dev/null)
+
+  if [[ ${#config_files[@]} -gt 0 ]]; then
+    echo "Using playlist-config.json (${#config_files[@]} enabled videos)"
+    : > "$PLAYLIST_FILE"
+    for f in "${config_files[@]}"; do
+      escaped="${f//\'/\'\\\'\'}"
+      echo "file '${escaped}'" >> "$PLAYLIST_FILE"
+    done
+    echo "Playlist written to $PLAYLIST_FILE (${#config_files[@]} files)"
+    exit 0
+  fi
+  echo "playlist-config.json found but no enabled videos matched — falling back to directory scan."
+fi
 
 # Sort helper: extracts a date from filenames like "January 2, 2025 - Sermon.mp4"
 # and outputs "YYYY-MM-DD<TAB>filepath" for date-based sorting.

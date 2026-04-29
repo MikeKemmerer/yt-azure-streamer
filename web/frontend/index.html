@@ -2,13 +2,150 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>YT Azure Streamer</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <h1>YouTube Azure Streamer</h1>
 
-  <div id="info-box">
+  <!-- ── Streamer ───────────────────────────────────────────────── -->
+  <div class="card" id="streamer-card">
+    <h2>Streamer</h2>
+    <div class="streamer-status">
+      <span id="streamer-indicator" class="indicator off"></span>
+      <span id="streamer-label">Checking...</span>
+      <span id="streamer-uptime" class="uptime"></span>
+    </div>
+    <div id="now-playing" class="now-playing" style="display:none">
+      <strong>Now Playing:</strong> <span id="now-playing-title"></span>
+    </div>
+    <div id="up-next" class="up-next" style="display:none">
+      <strong id="up-next-label">Up Next:</strong>
+      <ol id="up-next-list"></ol>
+    </div>
+    <p class="hint">Manual start/stop. The scheduler will still start or stop the streamer at the next scheduled time.</p>
+    <div class="streamer-controls">
+      <button id="streamer-start" disabled>Start</button>
+      <button id="streamer-stop" disabled>Stop</button>
+    </div>
+    <div id="streamer-action-status" class="status"></div>
+  </div>
+
+  <!-- ── Service Health ─────────────────────────────────────────── -->
+  <div class="card" id="health-card">
+    <h2>Service Health</h2>
+    <div id="health-grid" class="health-grid">Loading...</div>
+  </div>
+
+  <!-- ── Schedule ───────────────────────────────────────────────── -->
+  <div class="card" id="schedule-card">
+    <h2>Schedule</h2>
+    <div class="schedule-next">
+      <span><strong>Next start:</strong> <span id="next-start">—</span></span>
+      <span><strong>Next stop:</strong> <span id="next-stop">—</span></span>
+    </div>
+    <div id="schedule-events"></div>
+    <details>
+      <summary>Edit Schedule</summary>
+      <div class="schedule-editor">
+        <label>Timezone <input type="text" id="schedule-tz" placeholder="America/New_York" size="24"></label>
+        <div id="schedule-event-list"></div>
+        <button id="add-event" class="secondary">+ Add Event</button>
+        <button id="save-schedule">Save Schedule</button>
+      </div>
+    </details>
+    <div id="schedule-status" class="status"></div>
+  </div>
+
+  <!-- ── System / Storage ───────────────────────────────────────── -->
+  <div class="card-row">
+    <div class="card" id="system-card">
+      <h2>System</h2>
+      <div id="system-stats">Loading...</div>
+    </div>
+    <div class="card" id="storage-card">
+      <h2>Storage</h2>
+      <div id="storage-stats">Loading...</div>
+    </div>
+  </div>
+
+  <!-- ── Stream Key ─────────────────────────────────────────────── -->
+  <div class="card">
+    <h2>Stream Key</h2>
+    <p class="hint">Update the YouTube stream key stored in Key Vault. Takes effect on next stream start.</p>
+    <form id="stream-key-form">
+      <input type="password" id="stream-key-input" placeholder="Enter new stream key" autocomplete="off" minlength="4" maxlength="256" required>
+      <button type="submit">Update Key</button>
+    </form>
+    <div id="stream-key-status" class="status"></div>
+  </div>
+
+  <!-- ── Stream Settings ────────────────────────────────────────── -->
+  <div class="card">
+    <h2>Stream Settings</h2>
+    <form id="settings-form">
+      <label>
+        Max Resolution
+        <select id="max-resolution">
+          <option value="144p">144p</option>
+          <option value="240p">240p</option>
+          <option value="360p">360p</option>
+          <option value="480p">480p</option>
+          <option value="720p">720p</option>
+          <option value="1080p">1080p</option>
+          <option value="1440p">1440p</option>
+          <option value="2160p">2160p</option>
+        </select>
+      </label>
+      <label class="checkbox-label">
+        <input type="checkbox" id="shuffle-toggle">
+        Shuffle playlist order
+      </label>
+      <button type="submit">Save Settings</button>
+    </form>
+    <div id="settings-status" class="status"></div>
+  </div>
+
+  <!-- ── Playlist ───────────────────────────────────────────────── -->
+  <div class="card">
+    <h2>Playlist</h2>
+    <p class="hint">Drag to reorder. Uncheck to exclude from playlist. Changes are saved and the playlist is regenerated immediately.</p>
+    <div id="video-list-loading">Loading videos...</div>
+    <ul id="video-list"></ul>
+    <div class="playlist-actions">
+      <button id="save-playlist" disabled>Save Playlist</button>
+      <button id="select-all" class="secondary">Select All</button>
+      <button id="deselect-all" class="secondary">Deselect All</button>
+    </div>
+    <div id="playlist-status" class="status"></div>
+  </div>
+
+  <!-- ── Logs ───────────────────────────────────────────────────── -->
+  <div class="card" id="logs-card">
+    <h2>Logs</h2>
+    <div class="log-controls">
+      <select id="log-service">
+        <option value="streamer.service">streamer</option>
+        <option value="scheduler.service">scheduler</option>
+        <option value="schedule-sync.service">schedule-sync</option>
+        <option value="caddy.service">caddy</option>
+        <option value="web-backend.service">web-backend</option>
+        <option value="mnt-blobfuse2.mount">blobfuse2</option>
+      </select>
+      <select id="log-lines">
+        <option value="50">50 lines</option>
+        <option value="100" selected>100 lines</option>
+        <option value="200">200 lines</option>
+        <option value="500">500 lines</option>
+      </select>
+      <button id="refresh-logs">Refresh</button>
+    </div>
+    <pre id="log-output" class="log-output">Select a service and click Refresh.</pre>
+  </div>
+
+  <!-- ── Deployment Info ────────────────────────────────────────── -->
+  <div class="card" id="info-card">
     <h2>Deployment Info</h2>
     <pre id="info">Loading...</pre>
   </div>
