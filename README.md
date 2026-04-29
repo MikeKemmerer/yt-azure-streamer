@@ -95,7 +95,7 @@ Get your stream key from [YouTube Studio → Go Live → Stream](https://studio.
 
 ### 5. Upload your source videos
 
-Upload one or more video files to the `recordings` container in your storage account. They are mounted at `/mnt/blobfuse2/` on the VM and streamed in **alphabetical order** as a playlist.
+Upload one or more video files to the `recordings` container in your storage account. They are mounted at `/mnt/blobfuse2/` on the VM and streamed as a playlist. Files with date-prefixed names (e.g. `January 2, 2025 - Sermon.mp4`) are sorted **chronologically**; other files sort alphabetically after all dated files.
 
 ```bash
 az storage blob upload \
