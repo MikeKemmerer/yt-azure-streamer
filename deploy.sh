@@ -80,13 +80,60 @@ prompt() {
 info "Checking prerequisites..."
 
 if ! command -v az &>/dev/null; then
-  fatal "Azure CLI (az) is not installed. Install it from https://aka.ms/install-azure-cli"
+  warn "Azure CLI (az) is not installed."
+  echo ""
+  echo "  [1] Install automatically (recommended — uses the official Microsoft install script)"
+  echo "  [2] I'll install it myself (opens docs link)"
+  echo ""
+  read -rp "$(echo -e "${CYAN}?${NC} Choose [1/2]: ")" AZ_INSTALL_CHOICE
+  case "${AZ_INSTALL_CHOICE}" in
+    1)
+      info "Installing Azure CLI via https://aka.ms/InstallAzureCLIDeb ..."
+      if ! command -v curl &>/dev/null; then
+        info "Installing curl first..."
+        sudo apt-get update -y && sudo apt-get install -y curl || fatal "Failed to install curl."
+      fi
+      curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash || fatal "Azure CLI installation failed."
+      # Verify it's now available
+      if ! command -v az &>/dev/null; then
+        fatal "Azure CLI still not found after installation. Try restarting your shell."
+      fi
+      ok "Azure CLI installed successfully."
+      ;;
+    *)
+      echo ""
+      echo "  Install instructions: https://learn.microsoft.com/en-us/cli/azure/install-azure-cli-linux"
+      echo "  Re-run this script after installing."
+      exit 0
+      ;;
+  esac
 fi
-ok "Azure CLI found: $(az version --query '\"azure-cli\"' -o tsv 2>/dev/null)"
+ok "Azure CLI found: $(az version --query '"azure-cli"' -o tsv 2>/dev/null)"
 
 if ! command -v python3 &>/dev/null; then
-  fatal "python3 is required but not found."
+  warn "python3 is not installed."
+  echo ""
+  echo "  [1] Install automatically (via apt)"
+  echo "  [2] I'll install it myself"
+  echo ""
+  read -rp "$(echo -e "${CYAN}?${NC} Choose [1/2]: ")" PY_INSTALL_CHOICE
+  case "${PY_INSTALL_CHOICE}" in
+    1)
+      info "Installing python3..."
+      sudo apt-get update -y && sudo apt-get install -y python3 || fatal "Failed to install python3."
+      if ! command -v python3 &>/dev/null; then
+        fatal "python3 still not found after installation."
+      fi
+      ok "python3 installed successfully."
+      ;;
+    *)
+      echo ""
+      echo "  Install python3 with your package manager, then re-run this script."
+      exit 0
+      ;;
+  esac
 fi
+ok "python3 found: $(python3 --version 2>/dev/null)"
 
 # ─── Pre-flight: Azure login ────────────────────────────────────────
 

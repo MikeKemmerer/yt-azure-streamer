@@ -80,7 +80,37 @@ Write-Info 'Checking prerequisites...'
 
 $azPath = Get-Command az -ErrorAction SilentlyContinue
 if (-not $azPath) {
-    Write-Fatal 'Azure CLI (az) is not installed. Install it from https://aka.ms/install-azure-cli'
+    Write-Warn 'Azure CLI (az) is not installed.'
+    Write-Host ''
+    Write-Host '  [1] Install automatically via winget (recommended)'
+    Write-Host '  [2] I''ll install it myself (opens docs link)'
+    Write-Host ''
+    $azChoice = Read-Prompt 'Choose' -Default '1'
+    switch ($azChoice) {
+        '1' {
+            $wingetPath = Get-Command winget -ErrorAction SilentlyContinue
+            if (-not $wingetPath) {
+                Write-Fatal 'winget is not available. Install Azure CLI manually: https://learn.microsoft.com/en-us/cli/azure/install-azure-cli-windows'
+            }
+            Write-Info 'Installing Azure CLI via winget...'
+            winget install --exact --id Microsoft.AzureCLI --accept-source-agreements --accept-package-agreements
+            if ($LASTEXITCODE -ne 0) { Write-Fatal 'Azure CLI installation failed.' }
+            # Refresh PATH so az is available in this session
+            $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
+            $azPath = Get-Command az -ErrorAction SilentlyContinue
+            if (-not $azPath) {
+                Write-Warn 'Azure CLI installed, but not yet visible in this session.'
+                Write-Fatal 'Close and reopen your terminal, then re-run this script.'
+            }
+            Write-Ok 'Azure CLI installed successfully.'
+        }
+        default {
+            Write-Host ''
+            Write-Host '  Install instructions: https://learn.microsoft.com/en-us/cli/azure/install-azure-cli-windows'
+            Write-Host '  Re-run this script after installing.'
+            exit 0
+        }
+    }
 }
 $azVer = (az version 2>$null | ConvertFrom-Json).'azure-cli'
 Write-Ok "Azure CLI found: $azVer"
