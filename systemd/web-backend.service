@@ -1,0 +1,12 @@
+[Unit]
+Description=Web UI Backend Service
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /opt/yt/web/backend/server.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
