@@ -19,7 +19,7 @@ A parameterized, prefix-driven Azure deployment that provisions a YouTube stream
 - **Git** (to clone this repo)
 
 ```bash
-# Generate an SSH key if you don't have one
+# Generate an SSH key if you don't have one (default path: ~/.ssh/id_ed25519)
 ssh-keygen -t ed25519 -C "yt-streamer"
 ```
 
