@@ -1,38 +1,19 @@
 #cloud-config
+# Reference: this is what the ARM template customData produces.
+# The ARM template injects namePrefix and resourceGroup via concat().
 
 package_update: true
 package_upgrade: true
 
-write_files:
-  # ARM template writes the prefix into this file via customData
-  - path: /etc/nameprefix
-    content: "REPLACED_BY_ARM_CUSTOMDATA"
+packages:
+  - git
 
-  # Create directory structure for the repo
-  - path: /opt/yt/.placeholder
-    content: ""
+write_files:
+  - path: /etc/nameprefix
+    content: "REPLACED_BY_ARM_TEMPLATE"
+  - path: /etc/resourcegroup
+    content: "REPLACED_BY_ARM_TEMPLATE"
 
 runcmd:
-  # Ensure directories exist
-  - mkdir -p /opt/yt
-  - mkdir -p /opt/yt/services
-  - mkdir -p /opt/yt/scripts
-  - mkdir -p /opt/yt/systemd
-  - mkdir -p /opt/yt/install
-
-  # Copy repo content from ARM customData expansion
-  # (bootstrap script will place all files into /opt/yt)
-  - echo "Copying repo content into /opt/yt..."
-
-  # Install services and systemd units
-  - echo "Running install-services.sh..."
+  - git clone REPO_URL_FROM_ARM_PARAMETER /opt/yt
   - bash /opt/yt/install/install-services.sh
-
-  # Enable and start timers/services
-  - systemctl daemon-reload
-  - systemctl enable streamer.service
-  - systemctl enable scheduler.service
-  - systemctl enable schedule-sync.timer
-  - systemctl start schedule-sync.timer
-
-  - echo "cloud-init complete."

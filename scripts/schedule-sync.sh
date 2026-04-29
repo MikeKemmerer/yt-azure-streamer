@@ -2,18 +2,22 @@
 set -euo pipefail
 
 # Usage:
-#   ./schedule-sync.sh <resource-group> <namePrefix>
+#   ./schedule-sync.sh                          (reads from /etc config files)
+#   ./schedule-sync.sh <resource-group> <namePrefix>   (CLI override)
 #
-# This script runs inside the VM OR from your workstation.
-# It updates Azure Automation schedules based on local config.
+# When run via systemd timer, uses 0-arg mode.
+# When run manually from a workstation, pass both arguments.
 
-if [[ $# -ne 2 ]]; then
-  echo "Usage: $0 <resource-group> <namePrefix>"
+if [[ $# -eq 0 ]]; then
+  PREFIX=$(cat /etc/nameprefix)
+  RG=$(cat /etc/resourcegroup)
+elif [[ $# -eq 2 ]]; then
+  RG="$1"
+  PREFIX="$2"
+else
+  echo "Usage: $0 [<resource-group> <namePrefix>]"
   exit 1
 fi
-
-RG="$1"
-PREFIX="$2"
 AA="${PREFIX}-automation"
 
 echo "Logging in with managed identity (if inside VM)..."
