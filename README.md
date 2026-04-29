@@ -113,7 +113,7 @@ az storage blob upload \
   --auth-mode login
 ```
 
-Supported formats: `.mp4`, `.mkv`, `.mov`, `.avi`, `.ts`, `.flv`. The playlist is regenerated each time the streamer starts, so new/deleted files are picked up automatically.
+Supported formats: `.mp4`, `.mkv`, `.mov`, `.avi`, `.ts`, `.flv`. The playlist is regenerated each time the streamer starts, so new/deleted files are picked up automatically. Set `stream.shuffle` to `true` in `schedule.json` to randomize playback order instead of chronological/alphabetical.
 
 > **Playlist resume:** The streamer bookmarks its position after each video. On restart (e.g. after scheduled downtime), it resumes from the *next* video — so the playlist makes forward progress across stop/start cycles rather than always restarting from the beginning.
 
@@ -163,8 +163,11 @@ Edit `/opt/yt/schedule.json` on the VM to define when streams happen:
 | `start` / `stop` | 24-hour `HH:MM` in the specified timezone |
 | `days` | Any subset of `Mon`, `Tue`, `Wed`, `Thu`, `Fri`, `Sat`, `Sun` |
 | `stream.max_resolution` | Maximum output resolution: `144p`, `240p`, `360p`, `480p`, `720p` (default), `1080p`, `1440p`, `2160p` |
+| `stream.shuffle` | `true` to randomize playlist order, `false` (default) for date/alphabetical sort |
 
 **Resolution behavior:** Videos at or below `max_resolution` are passed through without re-encoding. Videos above it are downscaled. Videos are never upsampled.
+
+**Shuffle behavior:** When `shuffle` is `true`, the playlist is randomized instead of sorted. The random order is written to disk and preserved across streamer restarts — it only changes when the playlist is regenerated (i.e. when the streamer is started fresh after new files are added or removed).
 
 **How the schedule works end-to-end:**
 
