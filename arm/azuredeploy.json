@@ -12,7 +12,7 @@
     },
     "adminUsername": {
       "type": "string",
-      "defaultValue": "kemmie",
+      "defaultValue": "azureuser",
       "metadata": {
         "description": "Admin username for the VM"
       }

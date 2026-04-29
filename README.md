@@ -59,7 +59,7 @@ az deployment group create \
 | Parameter | Default | Description |
 |---|---|---|
 | `namePrefix` | *(required)* | Alphanumeric prefix for all resource names |
-| `adminUsername` | `kemmie` | SSH login username |
+| `adminUsername` | `azureuser` | SSH login username |
 | `adminPublicKey` | *(required)* | SSH public key string |
 | `repoUrl` | *(required)* | Git URL the VM clones at first boot |
 | `location` | resource group location | Azure region |
@@ -114,8 +114,8 @@ The default schedule is Mon/Wed/Fri 18:00–20:00 UTC. SSH into the VM and edit 
 # Get the VM's public IP
 VM_IP=$(az vm show -d --resource-group streamer-rg --name stdemo-vm --query publicIps -o tsv)
 
-# SSH in (use your adminUsername, default: kemmie)
-ssh kemmie@$VM_IP
+# SSH in (use your adminUsername, default: azureuser)
+ssh azureuser@$VM_IP
 
 # Edit the schedule on the VM
 sudo nano /opt/yt/schedule.json
