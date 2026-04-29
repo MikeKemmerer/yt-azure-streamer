@@ -1,0 +1,6 @@
+#cloud-config
+write_files:
+  - path: /etc/nameprefix
+    content: "REPLACED_BY_ARM_CUSTOMDATA"
+runcmd:
+  - echo "cloud-init stub; extend with streamer/scheduler/schedule-sync setup."
