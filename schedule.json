@@ -9,6 +9,7 @@
     }
   ],
   "stream": {
-    "max_resolution": "720p"
+    "max_resolution": "720p",
+    "shuffle": false
   }
 }

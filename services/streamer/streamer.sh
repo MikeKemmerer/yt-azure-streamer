@@ -77,8 +77,23 @@ fi
 
 RTMP_URL="rtmp://a.rtmp.youtube.com/live2/${STREAM_KEY}"
 
+# --- Read shuffle config ---
+SHUFFLE_FLAG=""
+if [[ -f "$CONFIG_FILE" ]]; then
+  SHUFFLE=$(python3 -c "
+import json, sys
+try:
+  cfg = json.load(open('$CONFIG_FILE'))
+  print(cfg.get('stream', {}).get('shuffle', False))
+except: pass
+" 2>/dev/null || true)
+  if [[ "$SHUFFLE" == "True" ]]; then
+    SHUFFLE_FLAG="--shuffle"
+  fi
+fi
+
 # --- Generate playlist ---
-bash /usr/local/bin/generate-playlist.sh "$VIDEO_DIR" "$PLAYLIST"
+bash /usr/local/bin/generate-playlist.sh $SHUFFLE_FLAG "$VIDEO_DIR" "$PLAYLIST"
 
 # Parse playlist into an array of file paths
 mapfile -t VIDEOS < <(grep "^file " "$PLAYLIST" | sed "s/^file '//;s/'$//")
