@@ -9,7 +9,8 @@ set -euo pipefail
 echo "=== yt-azure-streamer installer ==="
 
 PREFIX=$(cat /etc/nameprefix)
-echo "Prefix: $PREFIX"
+RG=$(cat /etc/resourcegroup)
+echo "Prefix: $PREFIX  Resource Group: $RG"
 
 # --- Package Repositories ---
 
@@ -57,6 +58,9 @@ install -m 755 /opt/yt/services/streamer/streamer.sh  /usr/local/bin/streamer.sh
 install -m 755 /opt/yt/services/scheduler/scheduler.sh /usr/local/bin/scheduler.sh
 install -m 755 /opt/yt/scripts/schedule-sync.sh        /usr/local/bin/schedule-sync.sh
 
+# schedule.json ships with the repo at /opt/yt/schedule.json — edit to customise stream times
+echo "Schedule template at /opt/yt/schedule.json — edit to customise."
+
 # --- Install Systemd Units ---
 
 echo "Installing systemd units..."
@@ -87,5 +91,54 @@ systemctl start mnt-blobfuse2.mount
 systemctl start web-backend.service
 systemctl start caddy.service
 systemctl start schedule-sync.timer
+
+# --- Deploy Automation Runbooks ---
+
+echo "Deploying Automation runbooks..."
+AA="${PREFIX}-automation"
+
+az login --identity >/dev/null 2>&1
+
+for RUNBOOK in Start-StreamerVM Stop-StreamerVM; do
+  RUNBOOK_FILE="/opt/yt/runbooks/${RUNBOOK}.ps1"
+  DEPLOYED=false
+
+  for attempt in $(seq 1 10); do
+    # Create runbook if it doesn't already exist
+    if az automation runbook show \
+        --resource-group "$RG" \
+        --automation-account-name "$AA" \
+        --name "$RUNBOOK" >/dev/null 2>&1 \
+      || az automation runbook create \
+        --resource-group "$RG" \
+        --automation-account-name "$AA" \
+        --name "$RUNBOOK" \
+        --type "PowerShell" \
+        --description "Manages the streamer VM lifecycle" >/dev/null 2>&1; then
+
+      az automation runbook replace-content \
+        --resource-group "$RG" \
+        --automation-account-name "$AA" \
+        --name "$RUNBOOK" \
+        --content "@${RUNBOOK_FILE}" >/dev/null
+
+      az automation runbook publish \
+        --resource-group "$RG" \
+        --automation-account-name "$AA" \
+        --name "$RUNBOOK" >/dev/null
+
+      echo "  Runbook $RUNBOOK deployed."
+      DEPLOYED=true
+      break
+    fi
+
+    echo "  Waiting for RBAC propagation (attempt $attempt/10)..."
+    sleep 30
+  done
+
+  if [[ "$DEPLOYED" != "true" ]]; then
+    echo "  WARNING: Could not deploy runbook $RUNBOOK. Re-run install-services.sh after role propagation."
+  fi
+done
 
 echo "=== Installation complete ==="
