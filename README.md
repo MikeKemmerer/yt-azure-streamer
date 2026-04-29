@@ -53,8 +53,7 @@ az deployment group create \
   --template-file arm/azuredeploy.json \
   --parameters namePrefix=stdemo \
                adminPublicKey="$(cat ~/.ssh/id_ed25519.pub)" \
-               repoUrl="https://github.com/MikeKemmerer/yt-azure-streamer" \
-               customDomain="stream.example.com"
+               repoUrl="https://github.com/MikeKemmerer/yt-azure-streamer"
 ```
 
 | Parameter | Default | Description |
@@ -63,12 +62,14 @@ az deployment group create \
 | `adminUsername` | `azureuser` | SSH login username |
 | `adminPublicKey` | *(required)* | SSH public key string |
 | `repoUrl` | *(required)* | Git URL the VM clones at first boot |
-| `customDomain` | *(empty)* | Domain name for automatic TLS via Let's Encrypt. Leave empty for plain HTTP on port 80 |
+| `customDomain` | *(empty)* | Your own domain for automatic TLS via Let's Encrypt (see [TLS with Let's Encrypt](#tls-with-lets-encrypt)). Leave empty for plain HTTP |
 | `location` | resource group location | Azure region |
 
 The deployment creates and wires together: VNet, NSG (SSH/HTTP/HTTPS), public IP, NIC, Storage Account + `recordings` container, Automation Account, Key Vault, VM, and three role assignments.
 
 Cloud-init then clones the repo and runs `install/install-services.sh` automatically — all services are running within ~10 minutes of the ARM deployment completing.
+
+**Accessing the web UI:** Your VM is automatically assigned the DNS name `{namePrefix}.{region}.cloudapp.azure.com` — for example, `stdemo.westus2.cloudapp.azure.com`. The installer detects this automatically and configures Caddy to serve on it over HTTP.
 
 ### 4. Store your YouTube stream key
 
@@ -97,19 +98,29 @@ Get your stream key from [YouTube Studio → Go Live → Stream](https://studio.
 
 Upload one or more video files to the `recordings` container in your storage account. They are mounted at `/mnt/blobfuse2/` on the VM and streamed as a playlist. Files with date-prefixed names (e.g. `January 2, 2025 - Sermon.mp4`) are sorted **chronologically**; other files sort alphabetically after all dated files.
 
+**Recommended upload methods:**
+
+| Method | Best for |
+|---|---|
+| [Azure Storage Explorer](https://azure.microsoft.com/products/storage/storage-explorer/) (desktop app) | Drag-and-drop bulk uploads with progress tracking |
+| [VS Code Azure Storage extension](https://marketplace.visualstudio.com/items?itemName=ms-azuretools.vscode-azurestorage) | Upload directly from your editor |
+| `az storage blob upload-batch` (below) | Scripted / CLI bulk uploads |
+| `az storage blob upload` (below) | Single file uploads |
+
 ```bash
-az storage blob upload \
+# Upload an entire directory of videos at once
+az storage blob upload-batch \
   --account-name stdemo \
-  --container-name recordings \
-  --name "01-sunday-liturgy.mp4" \
-  --file /path/to/video1.mp4 \
+  --destination recordings \
+  --source /path/to/videos/ \
   --auth-mode login
 
+# Or upload a single file
 az storage blob upload \
   --account-name stdemo \
   --container-name recordings \
-  --name "02-wednesday-vespers.mp4" \
-  --file /path/to/video2.mp4 \
+  --name "January 2, 2025 - Sermon.mp4" \
+  --file /path/to/video.mp4 \
   --auth-mode login
 ```
 
@@ -262,15 +273,27 @@ The UI displays the deployment's prefix, storage account name, and automation ac
 
 ### TLS with Let's Encrypt
 
-When you pass the `customDomain` parameter during deployment, Caddy automatically provisions a Let's Encrypt certificate — no manual steps required.
+By default the VM serves plain HTTP on its auto-assigned Azure DNS name (`{namePrefix}.{region}.cloudapp.azure.com`). If you have your own domain, you can enable automatic HTTPS by passing the `customDomain` parameter during deployment:
+
+```bash
+az deployment group create \
+  --resource-group streamer-rg \
+  --template-file arm/azuredeploy.json \
+  --parameters namePrefix=stdemo \
+               adminPublicKey="$(cat ~/.ssh/id_ed25519.pub)" \
+               repoUrl="https://github.com/MikeKemmerer/yt-azure-streamer" \
+               customDomain="stream.example.com"
+```
+
+Caddy automatically provisions a Let's Encrypt certificate — no manual steps required.
 
 **Prerequisites:**
-1. Point a DNS A record for your domain at the VM's public IP **before** deploying (or within the first few minutes while cloud-init runs).
+1. Point a DNS A record (or CNAME to the Azure DNS name) for your domain at the VM's public IP **before** deploying (or within the first few minutes while cloud-init runs).
 2. Ports 80 and 443 must be open (the NSG allows both by default).
 
-The Azure DNS label (`{prefix}.{region}.cloudapp.azure.com`) is also created automatically, but cannot be used for Let's Encrypt since Azure owns the parent domain.
+> **Note:** The Azure DNS name (`{prefix}.{region}.cloudapp.azure.com`) cannot be used for Let's Encrypt since Azure owns the parent domain. TLS requires your own domain.
 
-**Without `customDomain`:** Caddy serves plain HTTP on port 80 (the default).
+**Without `customDomain`:** Caddy serves plain HTTP on the auto-detected Azure DNS name (the default).
 
 ---
 

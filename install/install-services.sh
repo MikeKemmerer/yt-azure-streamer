@@ -58,8 +58,21 @@ if [[ -n "$CUSTOM_DOMAIN" ]]; then
   echo "Custom domain: $CUSTOM_DOMAIN — Caddy will auto-provision Let's Encrypt TLS"
   sed -i "s/CADDY_SITE_ADDRESS/${CUSTOM_DOMAIN}/g" /opt/yt/caddy/Caddyfile
 else
-  echo "No custom domain — serving plain HTTP on :80"
-  sed -i "s/CADDY_SITE_ADDRESS/:80/g" /opt/yt/caddy/Caddyfile
+  # Auto-detect Azure DNS FQDN from instance metadata
+  AZURE_FQDN=$(curl -s -H Metadata:true --noproxy "*" \
+    "http://169.254.169.254/metadata/instance/network/interface/0/ipv4/ipAddress/0/publicIpAddress?api-version=2021-02-01&format=text" 2>/dev/null || true)
+  # The FQDN is more reliably constructed from the namePrefix + region
+  NAME_PREFIX=$(cat /etc/nameprefix 2>/dev/null | tr -d '[:space:]')
+  REGION=$(curl -s -H Metadata:true --noproxy "*" \
+    "http://169.254.169.254/metadata/instance/compute/location?api-version=2021-02-01&format=text" 2>/dev/null || true)
+  if [[ -n "$NAME_PREFIX" && -n "$REGION" ]]; then
+    AZURE_DNS="${NAME_PREFIX}.${REGION}.cloudapp.azure.com"
+    echo "No custom domain — serving HTTP on Azure DNS: $AZURE_DNS"
+    sed -i "s/CADDY_SITE_ADDRESS/http:\/\/${AZURE_DNS}/g" /opt/yt/caddy/Caddyfile
+  else
+    echo "No custom domain — serving plain HTTP on :80"
+    sed -i "s/CADDY_SITE_ADDRESS/:80/g" /opt/yt/caddy/Caddyfile
+  fi
 fi
 
 # --- Install Scripts ---
