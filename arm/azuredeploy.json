@@ -7,12 +7,12 @@
       "minLength": 3,
       "maxLength": 20,
       "metadata": {
-        "description": "Prefix for all Azure resource names (storage, VM, automation, etc.)"
+        "description": "Alphanumeric prefix for all Azure resource names (no hyphens or underscores). Used as-is for the storage account and Key Vault (which must be globally unique), and as '{prefix}-*' for all other resources."
       }
     },
     "adminUsername": {
       "type": "string",
-      "defaultValue": "kemmie",
+      "defaultValue": "azureuser",
       "metadata": {
         "description": "Admin username for the VM"
       }
@@ -21,6 +21,12 @@
       "type": "string",
       "metadata": {
         "description": "SSH public key for the admin user"
+      }
+    },
+    "repoUrl": {
+      "type": "string",
+      "metadata": {
+        "description": "Git clone URL for the yt-azure-streamer repository"
       }
     },
     "location": {
@@ -36,12 +42,16 @@
     "pipName": "[format('{0}-pip', parameters('namePrefix'))]",
     "nsgName": "[format('{0}-nsg', parameters('namePrefix'))]",
     "automationAccountName": "[format('{0}-automation', parameters('namePrefix'))]",
-    "storageAccountName": "[toLower(parameters('namePrefix'))]",
+    "keyVaultName": "[format('{0}-kv', toLower(parameters('namePrefix')))]",
+    "storageAccountName": "[toLower(replace(parameters('namePrefix'), '-', ''))]",
     "vmSize": "Standard_B2s",
     "ubuntuPublisher": "Canonical",
     "ubuntuOffer": "0001-com-ubuntu-server-noble",
     "ubuntuSku": "24_04-lts",
-    "ubuntuVersion": "latest"
+    "ubuntuVersion": "latest",
+    "roleAutomationContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'f353d9bd-d4a6-484e-a77a-8050b599b867')]",
+    "roleVmContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '9980e02c-c2be-4d73-94e8-173b1dc7cf3c')]",
+    "roleKvSecretsUser": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')]"
   },
   "resources": [
     {
@@ -94,6 +104,19 @@
               "protocol": "Tcp",
               "sourcePortRange": "*",
               "destinationPortRange": "80",
+              "sourceAddressPrefix": "*",
+              "destinationAddressPrefix": "*"
+            }
+          },
+          {
+            "name": "Allow-HTTPS",
+            "properties": {
+              "priority": 1020,
+              "access": "Allow",
+              "direction": "Inbound",
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "443",
               "sourceAddressPrefix": "*",
               "destinationAddressPrefix": "*"
             }
@@ -160,14 +183,44 @@
       }
     },
     {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-01-01",
+      "name": "[format('{0}/default/recordings', variables('storageAccountName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ],
+      "properties": {
+        "publicAccess": "None"
+      }
+    },
+    {
       "type": "Microsoft.Automation/automationAccounts",
       "apiVersion": "2023-11-01",
       "name": "[variables('automationAccountName')]",
       "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
       "properties": {
         "sku": {
           "name": "Basic"
         }
+      }
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults",
+      "apiVersion": "2023-07-01",
+      "name": "[variables('keyVaultName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "sku": {
+          "family": "A",
+          "name": "standard"
+        },
+        "tenantId": "[subscription().tenantId]",
+        "enableRbacAuthorization": true,
+        "enableSoftDelete": true,
+        "softDeleteRetentionInDays": 7
       }
     },
     {
@@ -199,7 +252,7 @@
               ]
             }
           },
-          "customData": "[base64(concat('#cloud-config\n','write_files:\n','  - path: /etc/nameprefix\n','    content: \"', parameters('namePrefix'), '\"'))]"
+          "customData": "[base64(concat('#cloud-config\n', 'package_update: true\n', 'package_upgrade: true\n', 'packages:\n', '  - git\n', 'write_files:\n', '  - path: /etc/nameprefix\n', '    content: \"', parameters('namePrefix'), '\"\n', '  - path: /etc/resourcegroup\n', '    content: \"', resourceGroup().name, '\"\n', 'runcmd:\n', '  - git clone ', parameters('repoUrl'), ' /opt/yt\n', '  - bash /opt/yt/install/install-services.sh\n'))]"
         },
         "storageProfile": {
           "imageReference": {
@@ -211,7 +264,7 @@
           "osDisk": {
             "createOption": "FromImage",
             "managedDisk": {
-              "storageAccountType": "Premium_LRS"
+              "storageAccountType": "StandardSSD_LRS"
             }
           }
         },
@@ -222,6 +275,51 @@
             }
           ]
         }
+      }
+    },
+    {
+      "comments": "VM managed identity → Automation Contributor on the Automation Account (allows schedule-sync.sh to update schedules)",
+      "type": "Microsoft.Automation/automationAccounts/providers/Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[concat(variables('automationAccountName'), '/Microsoft.Authorization/', guid(resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName')), 'vm-automation-contributor'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]",
+        "[resourceId('Microsoft.Compute/virtualMachines', variables('vmName'))]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[variables('roleAutomationContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.Compute/virtualMachines', variables('vmName')), '2023-09-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "comments": "Automation Account managed identity → Virtual Machine Contributor on the streamer VM (allows Start/Stop runbooks)",
+      "type": "Microsoft.Compute/virtualMachines/providers/Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[concat(variables('vmName'), '/Microsoft.Authorization/', guid(resourceId('Microsoft.Compute/virtualMachines', variables('vmName')), 'aa-vm-contributor'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Compute/virtualMachines', variables('vmName'))]",
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[variables('roleVmContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName')), '2023-11-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "comments": "VM managed identity → Key Vault Secrets User on the Key Vault (allows reading the YouTube stream key)",
+      "type": "Microsoft.KeyVault/vaults/providers/Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[concat(variables('keyVaultName'), '/Microsoft.Authorization/', guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), 'vm-kv-secrets-user'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
+        "[resourceId('Microsoft.Compute/virtualMachines', variables('vmName'))]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[variables('roleKvSecretsUser')]",
+        "principalId": "[reference(resourceId('Microsoft.Compute/virtualMachines', variables('vmName')), '2023-09-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
       }
     }
   ],
@@ -241,6 +339,15 @@
     "automationAccountName": {
       "type": "string",
       "value": "[variables('automationAccountName')]"
+    },
+    "keyVaultName": {
+      "type": "string",
+      "value": "[variables('keyVaultName')]"
+    },
+    "setStreamKeyCmd": {
+      "type": "string",
+      "value": "[format('az keyvault secret set --vault-name {0} --name youtube-stream-key --value <YOUR_YOUTUBE_STREAM_KEY>', variables('keyVaultName'))]"
     }
   }
 }
+

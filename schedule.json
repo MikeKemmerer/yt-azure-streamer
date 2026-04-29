@@ -1,0 +1,11 @@
+{
+  "timezone": "UTC",
+  "events": [
+    {
+      "name": "Stream Session",
+      "start": "18:00",
+      "stop": "20:00",
+      "days": ["Mon", "Wed", "Fri"]
+    }
+  ]
+}

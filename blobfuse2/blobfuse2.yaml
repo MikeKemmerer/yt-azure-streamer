@@ -17,6 +17,7 @@ azstorage:
   account-name: STORAGE_ACCOUNT
   container: recordings
   endpoint: https://STORAGE_ACCOUNT.blob.core.windows.net
+  auth-type: msi
 
 file_cache:
   path: /mnt/blobfuse2_cache
