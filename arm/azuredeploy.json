@@ -51,7 +51,7 @@
     "automationAccountName": "[format('{0}-automation', parameters('namePrefix'))]",
     "keyVaultName": "[format('{0}-kv', toLower(parameters('namePrefix')))]",
     "storageAccountName": "[toLower(replace(parameters('namePrefix'), '-', ''))]",
-    "vmSize": "Standard_B2s",
+    "vmSize": "Standard_F2s_v2",
     "ubuntuPublisher": "Canonical",
     "ubuntuOffer": "0001-com-ubuntu-server-noble",
     "ubuntuSku": "24_04-lts",
