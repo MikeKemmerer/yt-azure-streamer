@@ -5,8 +5,9 @@ A parameterized, prefix-driven Azure deployment that provisions a YouTube stream
 **What gets deployed:**
 - Ubuntu 24.04 VM (Standard_F2s_v2) — auto-deallocates when not streaming
 - Azure Blob Storage (`recordings` container) — source video lives here via blobfuse2
-- Azure Key Vault — holds the YouTube stream key (read via managed identity; no key on disk)
+- Azure Key Vault — holds the YouTube stream key and web UI credentials (managed identity; no secrets on disk)
 - Azure Automation Account — triggers VM start/stop 2 minutes before/after each stream
+- **Web management UI** — password-protected dashboard for streamer control, playlist editing, schedule management, logs, and system monitoring
 - All role assignments wired into ARM — zero manual steps after `az deployment group create`
 
 ---
@@ -166,7 +167,7 @@ Supported formats: `.mp4`, `.mkv`, `.mov`, `.avi`, `.ts`, `.flv`. The playlist i
 
 ### 6. (Optional) Configure the stream schedule
 
-The default schedule is Mon/Wed/Fri 18:00–20:00 UTC. SSH into the VM and edit the schedule:
+The default schedule is Mon/Wed/Fri 18:00–20:00 UTC. You can edit it from the **web UI** (Schedule card → Edit Schedule) or via SSH:
 
 ```bash
 # Get the VM's public IP
@@ -305,7 +306,46 @@ http://<vm-public-ip>/          # without customDomain
 https://stream.example.com/     # with customDomain
 ```
 
-The UI displays the deployment's prefix, storage account name, and automation account name. Caddy serves the frontend and reverse-proxies `/api/*` to the Node.js backend on port 8080.
+The web UI is protected by HTTP basic auth. Credentials are set during deployment (the deploy script prompts for a username and password, which are stored in Key Vault and fetched at install time). Caddy serves the frontend and reverse-proxies `/api/*` to the Node.js backend on port 8080.
+
+![Web UI Screenshot](docs/web-ui-screenshot.png)
+
+### Features
+
+| Card | Description |
+|---|---|
+| **Streamer** | Live status indicator (green/grey dot), stream uptime, now-playing title, up-next queue, manual Start / Stop buttons |
+| **Service Health** | At-a-glance status of all 6 systemd units (streamer, scheduler, schedule-sync, caddy, web-backend, blobfuse2) |
+| **Schedule** | Next start/stop times, event table, inline editor to add/remove/edit events with day-of-week checkboxes and timezone |
+| **System** | VM uptime, memory usage, disk usage |
+| **Storage** | Video file count and total size on the blobfuse2 mount |
+| **Stream Key** | Update the YouTube stream key stored in Key Vault (takes effect on next stream start) |
+| **Stream Settings** | Max resolution selector (144p–2160p), shuffle toggle |
+| **Playlist** | Drag-and-drop reorder, per-video enable/disable checkboxes, Select All / Deselect All, instant playlist regeneration on save |
+| **Logs** | Service log viewer with service selector (streamer, scheduler, schedule-sync, caddy, web-backend, blobfuse2), configurable line count (50–500), dark terminal-style output |
+| **Deployment Info** | JSON dump of prefix, storage account, automation account, key vault, and hostname |
+
+### API Endpoints
+
+All endpoints are served under `/api/` and require authentication.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/info` | Deployment metadata |
+| `GET` | `/api/streamer` | Streamer status, uptime, now-playing, up-next |
+| `POST` | `/api/streamer/start` | Start the streamer service |
+| `POST` | `/api/streamer/stop` | Stop the streamer service |
+| `POST` | `/api/stream-key` | Update YouTube stream key in Key Vault |
+| `GET` | `/api/settings` | Read max_resolution and shuffle from schedule.json |
+| `PUT` | `/api/settings` | Update max_resolution and shuffle |
+| `GET` | `/api/videos` | List videos with enabled/order from playlist config |
+| `PUT` | `/api/videos` | Save playlist config and regenerate ffmpeg playlist |
+| `GET` | `/api/health` | Systemd unit states for all services |
+| `GET` | `/api/logs` | Journalctl output for a given service (query: `service`, `lines`) |
+| `GET` | `/api/schedule` | Read schedule with next start/stop times |
+| `PUT` | `/api/schedule` | Update schedule.json and trigger sync |
+| `GET` | `/api/storage` | Video file count and total size |
+| `GET` | `/api/system` | VM uptime, memory, and disk stats |
 
 ### TLS with Let's Encrypt
 
@@ -375,12 +415,15 @@ yt-azure-streamer/
     package.sh                # Package repo for deployment
   web/
     backend/
-      server.js               # Express-less Node.js API (/api/info)
+      server.js               # Express-less Node.js API (16 endpoints)
       config.json             # Port and template strings
     frontend/
       index.html
       app.js
       style.css
+  docs/
+    mockup.html               # Self-contained HTML mockup of the web UI
+    web-ui-screenshot.png     # Screenshot embedded in this README
 ```
 
 ---
@@ -411,5 +454,5 @@ No manual steps are required. ARM creates three role assignments at deploy time 
 |---|---|---|---|
 | VM managed identity | Automation Contributor | Automation Account | `schedule-sync.sh` can upsert schedules |
 | Automation Account managed identity | Virtual Machine Contributor | VM | Start/Stop runbooks can manage the VM |
-| VM managed identity | Key Vault Secrets User | Key Vault | `streamer.sh` can read the stream key |
+| VM managed identity | Key Vault Secrets Officer | Key Vault | `streamer.sh` reads the stream key; web backend writes stream key updates |
 | Deployer (optional) | Key Vault Secrets Officer | Key Vault | You can write the stream key after deployment (only if `deployerObjectId` is provided) |

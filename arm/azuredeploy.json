@@ -323,16 +323,16 @@
       }
     },
     {
-      "comments": "VM managed identity → Key Vault Secrets User on the Key Vault (allows reading the YouTube stream key)",
+      "comments": "VM managed identity → Key Vault Secrets Officer on the Key Vault (allows reading and writing secrets — stream key, web UI credentials)",
       "type": "Microsoft.KeyVault/vaults/providers/Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "name": "[concat(variables('keyVaultName'), '/Microsoft.Authorization/', guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), 'vm-kv-secrets-user'))]",
+      "name": "[concat(variables('keyVaultName'), '/Microsoft.Authorization/', guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), 'vm-kv-secrets-officer'))]",
       "dependsOn": [
         "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
         "[resourceId('Microsoft.Compute/virtualMachines', variables('vmName'))]"
       ],
       "properties": {
-        "roleDefinitionId": "[variables('roleKvSecretsUser')]",
+        "roleDefinitionId": "[variables('roleKvSecretsOfficer')]",
         "principalId": "[reference(resourceId('Microsoft.Compute/virtualMachines', variables('vmName')), '2023-09-01', 'full').identity.principalId]",
         "principalType": "ServicePrincipal"
       }

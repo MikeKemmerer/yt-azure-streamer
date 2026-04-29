@@ -297,6 +297,37 @@ else
   echo "    az keyvault secret set --vault-name ${KV_NAME} --name youtube-stream-key --value <KEY>"
 fi
 
+# ─── Prompt: Web UI credentials ─────────────────────────────────────
+
+echo ""
+info "The web management UI uses HTTP basic auth."
+info "Set a username and password now, or skip and configure later."
+echo ""
+read -rp "$(echo -e "${CYAN}?${NC} Web UI username (press Enter to skip): ")" WEB_UI_USER
+if [[ -n "$WEB_UI_USER" ]]; then
+  while true; do
+    read -rsp "$(echo -e "${CYAN}?${NC} Web UI password (hidden): ")" WEB_UI_PASS
+    echo ""
+    if [[ -z "$WEB_UI_PASS" ]]; then
+      warn "Password cannot be empty."
+      continue
+    fi
+    read -rsp "$(echo -e "${CYAN}?${NC} Confirm password: ")" WEB_UI_PASS2
+    echo ""
+    if [[ "$WEB_UI_PASS" != "$WEB_UI_PASS2" ]]; then
+      warn "Passwords do not match. Try again."
+      continue
+    fi
+    break
+  done
+  ok "Web UI credentials set (will be stored in Key Vault after deployment)."
+else
+  WEB_UI_PASS=""
+  warn "No web UI credentials set. You can add them later in Key Vault:"
+  echo "    az keyvault secret set --vault-name ${KV_NAME} --name web-ui-user --value <USER>"
+  echo "    az keyvault secret set --vault-name ${KV_NAME} --name web-ui-password --value <PASS>"
+fi
+
 # ─── Prompt: Custom domain ──────────────────────────────────────────
 
 DEFAULT_DOMAIN=$(cfg_get customDomain)
@@ -341,6 +372,7 @@ echo "  SSH key:         ${SSH_KEY_PATH}"
 echo "  Repo URL:        ${REPO_URL}"
 echo "  Custom domain:   ${CUSTOM_DOMAIN:-none}"
 echo "  Stream key:      ${STREAM_KEY:+provided}${STREAM_KEY:-not set (set later)}"
+echo "  Web UI creds:    ${WEB_UI_USER:+${WEB_UI_USER} / ********}${WEB_UI_USER:-not set (set later)}"
 echo "  Deployer OID:    ${DEPLOYER_OID:-not available}"
 echo ""
 echo "  Resources:"
@@ -412,6 +444,36 @@ if [[ -n "$STREAM_KEY" ]]; then
   done
 fi
 
+# ─── Post-deploy: Set web UI credentials in Key Vault ────────────────
+
+if [[ -n "$WEB_UI_USER" && -n "$WEB_UI_PASS" ]]; then
+  info "Setting web UI credentials in Key Vault '${KV_NAME}'..."
+  for attempt in $(seq 1 10); do
+    if az keyvault secret set \
+        --vault-name "$KV_NAME" \
+        --name "web-ui-user" \
+        --value "$WEB_UI_USER" \
+        -o none 2>/dev/null && \
+       az keyvault secret set \
+        --vault-name "$KV_NAME" \
+        --name "web-ui-password" \
+        --value "$WEB_UI_PASS" \
+        -o none 2>/dev/null; then
+      ok "Web UI credentials stored in Key Vault."
+      break
+    fi
+    if [[ $attempt -eq 10 ]]; then
+      warn "Could not write web UI credentials after 10 attempts."
+      warn "Set them manually:"
+      echo "    az keyvault secret set --vault-name ${KV_NAME} --name web-ui-user --value <USER>"
+      echo "    az keyvault secret set --vault-name ${KV_NAME} --name web-ui-password --value <PASS>"
+      break
+    fi
+    warn "Waiting for Key Vault RBAC propagation (attempt ${attempt}/10)..."
+    sleep 30
+  done
+fi
+
 # ─── Post-deploy: Summary ───────────────────────────────────────────
 
 VM_IP=$(az vm show -d --resource-group "$RG_NAME" --name "${NAME_PREFIX}-vm" --query publicIps -o tsv 2>/dev/null || true)
@@ -435,6 +497,12 @@ echo ""
 if [[ -z "$STREAM_KEY" ]]; then
   echo "  Set your YouTube stream key:"
   echo "    az keyvault secret set --vault-name ${KV_NAME} --name youtube-stream-key --value <KEY>"
+  echo ""
+fi
+if [[ -z "$WEB_UI_USER" ]]; then
+  echo "  Set web UI credentials:"
+  echo "    az keyvault secret set --vault-name ${KV_NAME} --name web-ui-user --value <USER>"
+  echo "    az keyvault secret set --vault-name ${KV_NAME} --name web-ui-password --value <PASS>"
   echo ""
 fi
 echo "  Upload videos to blob storage:"

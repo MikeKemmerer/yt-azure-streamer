@@ -282,6 +282,41 @@ if ($StreamKey) {
     Write-Host "    az keyvault secret set --vault-name $kvName --name youtube-stream-key --value <KEY>"
 }
 
+# ─── Prompt: Web UI credentials ─────────────────────────────────────
+
+Write-Host ''
+Write-Info 'The web management UI uses HTTP basic auth.'
+Write-Info 'Set a username and password now, or skip and configure later.'
+Write-Host ''
+$WebUiUser = Read-Prompt 'Web UI username (press Enter to skip)'
+if ($WebUiUser) {
+    while ($true) {
+        $secPass = Read-Host -Prompt '? Web UI password (hidden)' -AsSecureString
+        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secPass)
+        $WebUiPass = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        if (-not $WebUiPass) {
+            Write-Warn 'Password cannot be empty.'
+            continue
+        }
+        $secPass2 = Read-Host -Prompt '? Confirm password' -AsSecureString
+        $bstr2 = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secPass2)
+        $WebUiPass2 = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr2)
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr2)
+        if ($WebUiPass -ne $WebUiPass2) {
+            Write-Warn 'Passwords do not match. Try again.'
+            continue
+        }
+        break
+    }
+    Write-Ok 'Web UI credentials set (will be stored in Key Vault after deployment).'
+} else {
+    $WebUiPass = ''
+    Write-Warn 'No web UI credentials set. You can add them later in Key Vault:'
+    Write-Host "    az keyvault secret set --vault-name $kvName --name web-ui-user --value <USER>"
+    Write-Host "    az keyvault secret set --vault-name $kvName --name web-ui-password --value <PASS>"
+}
+
 # ─── Prompt: Custom domain ──────────────────────────────────────────
 
 $defaultDomain = Get-ConfigValue 'customDomain'
@@ -327,6 +362,7 @@ Write-Host "  SSH key:         $SshKeyPath"
 Write-Host "  Repo URL:        $RepoUrl"
 Write-Host "  Custom domain:   $(if ($CustomDomain) { $CustomDomain } else { 'none' })"
 Write-Host "  Stream key:      $(if ($StreamKey) { 'provided' } else { 'not set (set later)' })"
+Write-Host "  Web UI creds:    $(if ($WebUiUser) { "$WebUiUser / ********" } else { 'not set (set later)' })"
 Write-Host "  Deployer OID:    $(if ($DeployerOid) { $DeployerOid } else { 'not available' })"
 Write-Host ''
 Write-Host '  Resources:'
@@ -397,6 +433,33 @@ if ($StreamKey) {
     }
 }
 
+# ─── Post-deploy: Set web UI credentials in Key Vault ────────────────
+
+if ($WebUiUser -and $WebUiPass) {
+    Write-Info "Setting web UI credentials in Key Vault '$kvName'..."
+    $stored = $false
+    for ($attempt = 1; $attempt -le 10; $attempt++) {
+        az keyvault secret set --vault-name $kvName --name 'web-ui-user' --value $WebUiUser -o none 2>$null
+        $r1 = $LASTEXITCODE
+        az keyvault secret set --vault-name $kvName --name 'web-ui-password' --value $WebUiPass -o none 2>$null
+        $r2 = $LASTEXITCODE
+        if ($r1 -eq 0 -and $r2 -eq 0) {
+            Write-Ok 'Web UI credentials stored in Key Vault.'
+            $stored = $true
+            break
+        }
+        if ($attempt -eq 10) {
+            Write-Warn 'Could not write web UI credentials after 10 attempts.'
+            Write-Warn 'Set them manually:'
+            Write-Host "    az keyvault secret set --vault-name $kvName --name web-ui-user --value <USER>"
+            Write-Host "    az keyvault secret set --vault-name $kvName --name web-ui-password --value <PASS>"
+            break
+        }
+        Write-Warn "Waiting for Key Vault RBAC propagation (attempt $attempt/10)..."
+        Start-Sleep -Seconds 30
+    }
+}
+
 # ─── Post-deploy: Summary ───────────────────────────────────────────
 
 $VmIp = az vm show -d --resource-group $RgName --name "$NamePrefix-vm" --query publicIps -o tsv 2>$null
@@ -421,6 +484,12 @@ Write-Host ''
 if (-not $StreamKey) {
     Write-Host '  Set your YouTube stream key:'
     Write-Host "    az keyvault secret set --vault-name $kvName --name youtube-stream-key --value <KEY>"
+    Write-Host ''
+}
+if (-not $WebUiUser) {
+    Write-Host '  Set web UI credentials:'
+    Write-Host "    az keyvault secret set --vault-name $kvName --name web-ui-user --value <USER>"
+    Write-Host "    az keyvault secret set --vault-name $kvName --name web-ui-password --value <PASS>"
     Write-Host ''
 }
 Write-Host '  Upload videos to blob storage:'
