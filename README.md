@@ -27,14 +27,46 @@ ssh-keygen -t ed25519 -C "yt-streamer"
 
 ## Deployment
 
-### 1. Clone the repo
+### Quick Start (recommended)
+
+Clone the repo and run the interactive deployment script — it handles all pre-flight
+checks, prompts, resource creation, and post-deploy configuration in one pass:
+
+```bash
+git clone https://github.com/MikeKemmerer/yt-azure-streamer.git
+cd yt-azure-streamer
+
+# Linux / macOS / WSL
+./deploy.sh
+
+# Windows (PowerShell 7+)
+./deploy.ps1
+```
+
+The script will:
+1. Verify Azure CLI is installed and you're logged in
+2. Prompt for a globally unique name prefix, region, SSH key, stream key, and optional custom domain
+3. Validate name availability (storage account + Key Vault soft-delete check)
+4. Validate region (VM SKU + Automation Account availability)
+5. Deploy the ARM template
+6. Write the YouTube stream key to Key Vault (with RBAC retry)
+7. Print connection details and next steps
+
+Settings are saved to `.deploy-config.json` (git-ignored) for easy re-runs.
+
+### Manual Deployment
+
+<details>
+<summary>Click to expand manual step-by-step instructions</summary>
+
+#### 1. Clone the repo
 
 ```bash
 git clone https://github.com/MikeKemmerer/yt-azure-streamer.git
 cd yt-azure-streamer
 ```
 
-### 2. Create a resource group
+#### 2. Create a resource group
 
 ```bash
 az group create \
@@ -42,7 +74,7 @@ az group create \
   --location westus2
 ```
 
-### 3. Deploy the ARM template
+#### 3. Deploy the ARM template
 
 > **`namePrefix` rules:** alphanumeric only (no hyphens or underscores), 3–20 characters,
 > must be **globally unique** — it forms the storage account name and Key Vault name directly.
@@ -63,29 +95,31 @@ az deployment group create \
 | `adminPublicKey` | *(required)* | SSH public key string |
 | `repoUrl` | *(required)* | Git URL the VM clones at first boot |
 | `customDomain` | *(empty)* | Your own domain for automatic TLS via Let's Encrypt (see [TLS with Let's Encrypt](#tls-with-lets-encrypt)). Leave empty for plain HTTP |
+| `deployerObjectId` | *(empty)* | Your Azure AD object ID — grants Key Vault Secrets Officer so you can write the stream key after deployment |
 | `location` | resource group location | Azure region |
 
-The deployment creates and wires together: VNet, NSG (SSH/HTTP/HTTPS), public IP, NIC, Storage Account + `recordings` container, Automation Account, Key Vault, VM, and three role assignments.
+The deployment creates and wires together: VNet, NSG (SSH/HTTP/HTTPS), public IP, NIC, Storage Account + `recordings` container, Automation Account, Key Vault, VM, and up to four role assignments.
 
 Cloud-init then clones the repo and runs `install/install-services.sh` automatically — all services are running within ~10 minutes of the ARM deployment completing.
 
 **Accessing the web UI:** Your VM is automatically assigned the DNS name `{namePrefix}.{region}.cloudapp.azure.com` — for example, `stdemo.westus2.cloudapp.azure.com`. The installer detects this automatically and configures Caddy to serve on it over HTTP.
 
-### 4. Store your YouTube stream key
+#### 4. Store your YouTube stream key
 
-The ARM deployment outputs a ready-to-run command. Copy it from the deployment output:
-
-```bash
-az deployment group show \
-  --resource-group streamer-rg \
-  --name azuredeploy \
-  --query properties.outputs.setStreamKeyCmd.value \
-  -o tsv
-```
-
-Or run the command directly (replace `stdemo` with your prefix):
+> **Tip:** If you passed `deployerObjectId` during deployment, you already have Key Vault Secrets Officer.
+> Otherwise you'll need to grant yourself access first.
 
 ```bash
+# Get your object ID (skip if you passed deployerObjectId)
+az ad signed-in-user show --query id -o tsv
+
+# Grant yourself Key Vault Secrets Officer (skip if you passed deployerObjectId)
+az role assignment create \
+  --role "Key Vault Secrets Officer" \
+  --assignee <YOUR_OBJECT_ID> \
+  --scope $(az keyvault show --name stdemo-kv --query id -o tsv)
+
+# Set the stream key
 az keyvault secret set \
   --vault-name stdemo-kv \
   --name youtube-stream-key \
@@ -93,6 +127,8 @@ az keyvault secret set \
 ```
 
 Get your stream key from [YouTube Studio → Go Live → Stream](https://studio.youtube.com/).
+
+</details>
 
 ### 5. Upload your source videos
 
@@ -301,8 +337,10 @@ Caddy automatically provisions a Let's Encrypt certificate — no manual steps r
 
 ```
 yt-azure-streamer/
+  deploy.sh                   # Interactive deployment script (bash)
+  deploy.ps1                  # Interactive deployment script (PowerShell 7+)
   arm/
-    azuredeploy.json          # ARM template — all resources + 3 role assignments
+    azuredeploy.json          # ARM template — all resources + role assignments
   blobfuse2/
     blobfuse2.yaml            # blobfuse2 config template (MSI auth, filled in at install)
   caddy/
@@ -367,10 +405,11 @@ Example with `namePrefix=stdemo`: VM=`stdemo-vm`, storage=`stdemo`, KV=`stdemo-k
 
 ## Role Assignments (created by ARM)
 
-No manual steps are required. ARM creates three role assignments at deploy time:
+No manual steps are required. ARM creates three role assignments at deploy time (plus an optional fourth):
 
 | Principal | Role | Scope | Purpose |
 |---|---|---|---|
 | VM managed identity | Automation Contributor | Automation Account | `schedule-sync.sh` can upsert schedules |
 | Automation Account managed identity | Virtual Machine Contributor | VM | Start/Stop runbooks can manage the VM |
 | VM managed identity | Key Vault Secrets User | Key Vault | `streamer.sh` can read the stream key |
+| Deployer (optional) | Key Vault Secrets Officer | Key Vault | You can write the stream key after deployment (only if `deployerObjectId` is provided) |
