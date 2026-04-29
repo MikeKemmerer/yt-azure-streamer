@@ -53,7 +53,8 @@ az deployment group create \
   --template-file arm/azuredeploy.json \
   --parameters namePrefix=stdemo \
                adminPublicKey="$(cat ~/.ssh/id_ed25519.pub)" \
-               repoUrl="https://github.com/MikeKemmerer/yt-azure-streamer"
+               repoUrl="https://github.com/MikeKemmerer/yt-azure-streamer" \
+               customDomain="stream.example.com"
 ```
 
 | Parameter | Default | Description |
@@ -62,6 +63,7 @@ az deployment group create \
 | `adminUsername` | `azureuser` | SSH login username |
 | `adminPublicKey` | *(required)* | SSH public key string |
 | `repoUrl` | *(required)* | Git URL the VM clones at first boot |
+| `customDomain` | *(empty)* | Domain name for automatic TLS via Let's Encrypt. Leave empty for plain HTTP on port 80 |
 | `location` | resource group location | Azure region |
 
 The deployment creates and wires together: VNet, NSG (SSH/HTTP/HTTPS), public IP, NIC, Storage Account + `recordings` container, Automation Account, Key Vault, VM, and three role assignments.
@@ -234,12 +236,23 @@ cd /opt/yt && sudo git pull && sudo bash install/install-services.sh
 ## Web UI
 
 ```
-http://<vm-public-ip>/
+http://<vm-public-ip>/          # without customDomain
+https://stream.example.com/     # with customDomain
 ```
 
-The UI displays the deployment's prefix, storage account name, and automation account name. It is served by Caddy on port 80 (HTTP).
+The UI displays the deployment's prefix, storage account name, and automation account name. Caddy serves the frontend and reverse-proxies `/api/*` to the Node.js backend on port 8080.
 
-> **HTTPS / TLS:** Caddy's automatic Let's Encrypt requires a real domain name pointed at the VM's public IP. Add a DNS A record for your domain and replace `:80` with your domain in `caddy/Caddyfile`, then restart the caddy service.
+### TLS with Let's Encrypt
+
+When you pass the `customDomain` parameter during deployment, Caddy automatically provisions a Let's Encrypt certificate — no manual steps required.
+
+**Prerequisites:**
+1. Point a DNS A record for your domain at the VM's public IP **before** deploying (or within the first few minutes while cloud-init runs).
+2. Ports 80 and 443 must be open (the NSG allows both by default).
+
+The Azure DNS label (`{prefix}.{region}.cloudapp.azure.com`) is also created automatically, but cannot be used for Let's Encrypt since Azure owns the parent domain.
+
+**Without `customDomain`:** Caddy serves plain HTTP on port 80 (the default).
 
 ---
 

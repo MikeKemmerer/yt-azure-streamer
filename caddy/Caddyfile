@@ -1,4 +1,4 @@
-:80 {
+CADDY_SITE_ADDRESS {
 
   # Serve frontend static files
   root * /opt/yt/web/frontend
