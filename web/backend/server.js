@@ -294,6 +294,8 @@ const server = http.createServer(async (req, res) => {
 
     // ─── POST /api/streamer/start ──────────────────────────────────
     if (req.method === 'POST' && req.url === '/api/streamer/start') {
+      // Set manual override so the scheduler won't auto-stop
+      try { fs.writeFileSync('/run/streamer-manual-override', ''); } catch {};
       execFile('systemctl', ['start', 'streamer.service'], { timeout: 15000 }, (err) => {
         if (err) return jsonResponse(res, 500, { error: 'Failed to start streamer' });
         jsonResponse(res, 200, { ok: true, active: true });
@@ -303,6 +305,8 @@ const server = http.createServer(async (req, res) => {
 
     // ─── POST /api/streamer/stop ───────────────────────────────────
     if (req.method === 'POST' && req.url === '/api/streamer/stop') {
+      // Clear manual override so the scheduler resumes control
+      try { fs.unlinkSync('/run/streamer-manual-override'); } catch {};
       execFile('systemctl', ['stop', 'streamer.service'], { timeout: 15000 }, (err) => {
         if (err) return jsonResponse(res, 500, { error: 'Failed to stop streamer' });
         jsonResponse(res, 200, { ok: true, active: false });
