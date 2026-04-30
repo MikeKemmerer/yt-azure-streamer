@@ -67,10 +67,10 @@ else
     "http://169.254.169.254/metadata/instance/compute/location?api-version=2021-02-01&format=text" 2>/dev/null || true)
   if [[ -n "$NAME_PREFIX" && -n "$REGION" ]]; then
     AZURE_DNS="${NAME_PREFIX}.${REGION}.cloudapp.azure.com"
-    echo "No custom domain — serving HTTP on Azure DNS: $AZURE_DNS"
-    sed -i "s/CADDY_SITE_ADDRESS/http:\/\/${AZURE_DNS}/g" /opt/yt/caddy/Caddyfile
+    echo "No custom domain — using Azure DNS with auto-TLS: $AZURE_DNS"
+    sed -i "s/CADDY_SITE_ADDRESS/${AZURE_DNS}/g" /opt/yt/caddy/Caddyfile
   else
-    echo "No custom domain — serving plain HTTP on :80"
+    echo "No custom domain and cannot detect Azure DNS — serving plain HTTP on :80"
     sed -i "s/CADDY_SITE_ADDRESS/:80/g" /opt/yt/caddy/Caddyfile
   fi
 fi
