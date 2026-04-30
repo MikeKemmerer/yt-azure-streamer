@@ -32,7 +32,7 @@ az login --identity >/dev/null 2>&1 || true
 echo "Syncing '$SCHEDULE_FILE' → Automation Account '$AA'..."
 
 python3 - "$SCHEDULE_FILE" "$PADDING_MINUTES" "$RG" "$AA" "$VM" <<'PYEOF'
-import sys, json, subprocess, datetime
+import sys, json, subprocess, datetime, uuid
 
 try:
     from zoneinfo import ZoneInfo
@@ -60,20 +60,28 @@ def az_silent(*args):
 # Get subscription ID for REST API calls
 SUB = az("account", "show", "--query", "id", "-o", "tsv")
 
+BASE_URL = f"/subscriptions/{SUB}/resourceGroups/{RG}/providers/Microsoft.Automation/automationAccounts/{AA}"
+
 def delete_job_schedules_for(sched_name):
     """Delete any existing job schedules linked to sched_name (idempotent)."""
     result = subprocess.run(
-        ["az", "automation", "job-schedule", "list",
-         "--resource-group", RG, "--automation-account-name", AA,
-         "--query", f"[?schedule.name=='{sched_name}'].jobScheduleId",
-         "-o", "tsv"],
+        ["az", "rest", "--method", "GET",
+         "--url", f"{BASE_URL}/jobSchedules?api-version=2023-11-01"],
         capture_output=True, text=True)
-    for js_id in result.stdout.strip().splitlines():
-        if js_id.strip():
-            az_silent("automation", "job-schedule", "delete", "--yes",
-                      "--resource-group", RG,
-                      "--automation-account-name", AA,
-                      "--job-schedule-id", js_id.strip())
+    if result.returncode != 0:
+        return
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return
+    for js in data.get("value", []):
+        props = js.get("properties", {})
+        if props.get("schedule", {}).get("name") == sched_name:
+            js_id = js["name"]  # jobScheduleId is the resource name
+            subprocess.run(
+                ["az", "rest", "--method", "DELETE",
+                 "--url", f"{BASE_URL}/jobSchedules/{js_id}?api-version=2023-11-01"],
+                capture_output=True)
 
 def next_occurrence(weekday_idx, hour, minute, tz_obj):
     """Return the next UTC datetime for the given weekday+time."""
@@ -110,8 +118,6 @@ def apply_padding(day_idx, hour, minute, delta_minutes):
     remaining = total_minutes % 1440
     return new_day, remaining // 60, remaining % 60
 
-params_json = json.dumps({"ResourceGroupName": RG, "VMName": VM})
-
 for event in schedule.get("events", []):
     event_name = event.get("name", "stream").replace(" ", "-")
     start_h, start_m = map(int, event["start"].split(":"))
@@ -139,10 +145,10 @@ for event in schedule.get("events", []):
 
             # Remove stale schedule + job-schedules (idempotent upsert)
             delete_job_schedules_for(sched_name)
-            az_silent("automation", "schedule", "delete", "--yes",
-                      "--resource-group", RG,
-                      "--automation-account-name", AA,
-                      "--name", sched_name)
+            subprocess.run(
+                ["az", "rest", "--method", "DELETE",
+                 "--url", f"{BASE_URL}/schedules/{sched_name}?api-version=2023-11-01"],
+                capture_output=True)
 
             # Create schedule (use REST API — CLI doesn't support --week-days)
             sched_body = json.dumps({"properties": {
@@ -157,13 +163,16 @@ for event in schedule.get("events", []):
                "--url", f"/subscriptions/{SUB}/resourceGroups/{RG}/providers/Microsoft.Automation/automationAccounts/{AA}/schedules/{sched_name}?api-version=2023-11-01",
                "--body", sched_body)
 
-            # Link schedule to runbook
-            az("automation", "job-schedule", "create",
-               "--resource-group", RG,
-               "--automation-account-name", AA,
-               "--runbook-name", runbook,
-               "--schedule-name", sched_name,
-               "--parameters", params_json)
+            # Link schedule to runbook (REST API)
+            js_id = str(uuid.uuid4())
+            js_body = json.dumps({"properties": {
+                "schedule": {"name": sched_name},
+                "runbook": {"name": runbook},
+                "parameters": {"ResourceGroupName": RG, "VMName": VM}
+            }})
+            az("rest", "--method", "PUT",
+               "--url", f"{BASE_URL}/jobSchedules/{js_id}?api-version=2023-11-01",
+               "--body", js_body)
 
             print(f"  ✓ {sched_name}: {kind} at {h:02d}:{m:02d} UTC every {az_day}")
 
