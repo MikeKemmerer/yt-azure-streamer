@@ -294,9 +294,10 @@
     },
     {
       "comments": "VM managed identity → Automation Contributor on the Automation Account (allows schedule-sync.sh to update schedules)",
-      "type": "Microsoft.Automation/automationAccounts/providers/Microsoft.Authorization/roleAssignments",
+      "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "name": "[concat(variables('automationAccountName'), '/Microsoft.Authorization/', guid(resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName')), 'vm-automation-contributor'))]",
+      "name": "[guid(resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName')), 'vm-automation-contributor')]",
+      "scope": "[concat('Microsoft.Automation/automationAccounts/', variables('automationAccountName'))]",
       "dependsOn": [
         "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]",
         "[resourceId('Microsoft.Compute/virtualMachines', variables('vmName'))]"
@@ -309,9 +310,10 @@
     },
     {
       "comments": "Automation Account managed identity → Virtual Machine Contributor on the streamer VM (allows Start/Stop runbooks)",
-      "type": "Microsoft.Compute/virtualMachines/providers/Microsoft.Authorization/roleAssignments",
+      "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "name": "[concat(variables('vmName'), '/Microsoft.Authorization/', guid(resourceId('Microsoft.Compute/virtualMachines', variables('vmName')), 'aa-vm-contributor'))]",
+      "name": "[guid(resourceId('Microsoft.Compute/virtualMachines', variables('vmName')), 'aa-vm-contributor')]",
+      "scope": "[concat('Microsoft.Compute/virtualMachines/', variables('vmName'))]",
       "dependsOn": [
         "[resourceId('Microsoft.Compute/virtualMachines', variables('vmName'))]",
         "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]"
@@ -324,9 +326,10 @@
     },
     {
       "comments": "VM managed identity → Key Vault Secrets Officer on the Key Vault (allows reading and writing secrets — stream key, web UI credentials)",
-      "type": "Microsoft.KeyVault/vaults/providers/Microsoft.Authorization/roleAssignments",
+      "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "name": "[concat(variables('keyVaultName'), '/Microsoft.Authorization/', guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), 'vm-kv-secrets-officer'))]",
+      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), 'vm-kv-secrets-officer')]",
+      "scope": "[concat('Microsoft.KeyVault/vaults/', variables('keyVaultName'))]",
       "dependsOn": [
         "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
         "[resourceId('Microsoft.Compute/virtualMachines', variables('vmName'))]"
@@ -336,14 +339,14 @@
         "principalId": "[reference(resourceId('Microsoft.Compute/virtualMachines', variables('vmName')), '2023-09-01', 'full').identity.principalId]",
         "principalType": "ServicePrincipal"
       }
-    }
-    ,
+    },
     {
       "comments": "Deploying user → Key Vault Secrets Officer on the Key Vault (allows deploy.sh to write the YouTube stream key)",
       "condition": "[not(empty(parameters('deployerObjectId')))]",
-      "type": "Microsoft.KeyVault/vaults/providers/Microsoft.Authorization/roleAssignments",
+      "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "name": "[concat(variables('keyVaultName'), '/Microsoft.Authorization/', guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), 'deployer-kv-secrets-officer'))]",
+      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), 'deployer-kv-secrets-officer')]",
+      "scope": "[concat('Microsoft.KeyVault/vaults/', variables('keyVaultName'))]",
       "dependsOn": [
         "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]"
       ],

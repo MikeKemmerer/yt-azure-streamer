@@ -380,8 +380,16 @@ echo "  VM SKU:          Standard_F2s_v2"
 echo "  SSH key:         ${SSH_KEY_PATH}"
 echo "  Repo URL:        ${REPO_URL}"
 echo "  Custom domain:   ${CUSTOM_DOMAIN:-none}"
-echo "  Stream key:      ${STREAM_KEY:+provided}${STREAM_KEY:-not set (set later)}"
-echo "  Web UI creds:    ${WEB_UI_USER:+${WEB_UI_USER} / ********}${WEB_UI_USER:-not set (set later)}"
+if [[ -n "$STREAM_KEY" ]]; then
+  echo "  Stream key:      provided"
+else
+  echo "  Stream key:      not set (set later)"
+fi
+if [[ -n "$WEB_UI_USER" ]]; then
+  echo "  Web UI creds:    ${WEB_UI_USER} / ********"
+else
+  echo "  Web UI creds:    not set (set later)"
+fi
 echo "  Deployer OID:    ${DEPLOYER_OID:-not available}"
 echo ""
 echo "  Resources:"
@@ -484,6 +492,8 @@ if [[ -n "$WEB_UI_USER" && -n "$WEB_UI_PASS" ]]; then
 fi
 
 # ─── Post-deploy: Summary ───────────────────────────────────────────
+
+VM_IP=$(az vm show -d --resource-group "$RG_NAME" --name "${NAME_PREFIX}-vm" --query publicIps -o tsv 2>/dev/null || true)
 
 VM_IP=$(az vm show -d --resource-group "$RG_NAME" --name "${NAME_PREFIX}-vm" --query publicIps -o tsv 2>/dev/null || true)
 
