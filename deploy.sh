@@ -495,8 +495,6 @@ fi
 
 VM_IP=$(az vm show -d --resource-group "$RG_NAME" --name "${NAME_PREFIX}-vm" --query publicIps -o tsv 2>/dev/null || true)
 
-VM_IP=$(az vm show -d --resource-group "$RG_NAME" --name "${NAME_PREFIX}-vm" --query publicIps -o tsv 2>/dev/null || true)
-
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "${GREEN}Deployment Complete!${NC}"
