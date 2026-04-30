@@ -1,6 +1,6 @@
 # Blobfuse2 configuration template
-# This file is parameterized — the VM will replace STORAGE_ACCOUNT dynamically
-# based on /etc/nameprefix (written by ARM customData)
+# This file is parameterized — the installer will replace STORAGE_ACCOUNT dynamically
+# based on /etc/yt/nameprefix (written by ARM customData)
 
 logging:
   type: syslog

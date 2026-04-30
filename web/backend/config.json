@@ -1,6 +1,6 @@
 {
   "port": 8080,
-  "prefixFile": "/etc/nameprefix",
+  "prefixFile": "/etc/yt/nameprefix",
   "storageAccountTemplate": "STORAGE_ACCOUNT",
   "automationAccountTemplate": "AUTOMATION_ACCOUNT"
 }

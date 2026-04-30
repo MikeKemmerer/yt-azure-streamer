@@ -2,7 +2,7 @@
 
 /**
  * Backend API for yt-azure-streamer
- * - Reads namePrefix from /etc/nameprefix
+ * - Reads namePrefix from /etc/yt/nameprefix
  * - Stream key management (Key Vault)
  * - Settings management (schedule.json)
  * - Video / playlist management (blobfuse2 mount + playlist-config.json)
@@ -15,10 +15,10 @@ const { execFile, execFileSync } = require('child_process');
 
 const config = require('./config.json');
 
-const SCHEDULE_FILE = '/opt/yt/schedule.json';
-const PLAYLIST_CONFIG = '/opt/yt/playlist-config.json';
-const PLAYLIST_FILE = '/opt/yt/playlist.txt';
-const STATE_FILE = '/opt/yt/playlist-state.json';
+const SCHEDULE_FILE = '/etc/yt/schedule.json';
+const PLAYLIST_CONFIG = '/etc/yt/playlist-config.json';
+const PLAYLIST_FILE = '/etc/yt/playlist.txt';
+const STATE_FILE = '/etc/yt/playlist-state.json';
 const VIDEO_DIR = '/mnt/blobfuse2';
 const VIDEO_EXTENSIONS = ['.mp4', '.mkv', '.mov', '.avi', '.ts', '.flv'];
 

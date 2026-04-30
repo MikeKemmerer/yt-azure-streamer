@@ -4,19 +4,19 @@ set -euo pipefail
 # Streamer service: plays videos from blobfuse2 in playlist order to YouTube
 # RTMP, with bookmark-based resume and configurable max resolution.
 #
-# Config is read from /opt/yt/schedule.json:
+# Config is read from /etc/yt/schedule.json:
 #   "stream": { "max_resolution": "720p" }
 #
 # Supported resolutions: 144p 240p 360p 480p 720p 1080p 1440p 2160p
 # Videos below max_resolution are NOT upsampled.
 
-PREFIX=$(cat /etc/nameprefix 2>/dev/null || echo "unknown")
+PREFIX=$(cat /etc/yt/nameprefix 2>/dev/null || echo "unknown")
 KV_NAME="${PREFIX,,}-kv"
 
 VIDEO_DIR="/mnt/blobfuse2"
-PLAYLIST="/opt/yt/playlist.txt"
-STATE_FILE="/opt/yt/playlist-state.json"
-CONFIG_FILE="/opt/yt/schedule.json"
+PLAYLIST="/etc/yt/playlist.txt"
+STATE_FILE="/etc/yt/playlist-state.json"
+CONFIG_FILE="/etc/yt/schedule.json"
 
 # --- Resolution lookup tables ---
 declare -A RES_HEIGHT=(

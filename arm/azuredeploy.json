@@ -267,7 +267,7 @@
               ]
             }
           },
-          "customData": "[base64(concat('#cloud-config\n', 'package_update: true\n', 'package_upgrade: true\n', 'packages:\n', '  - git\n', 'write_files:\n', '  - path: /etc/nameprefix\n', '    content: \"', parameters('namePrefix'), '\"\n', '  - path: /etc/resourcegroup\n', '    content: \"', resourceGroup().name, '\"\n', '  - path: /etc/customdomain\n', '    content: \"', parameters('customDomain'), '\"\n', 'runcmd:\n', '  - git clone ', parameters('repoUrl'), ' /opt/yt\n', '  - bash /opt/yt/install/install-services.sh\n'))]"
+          "customData": "[base64(concat('#cloud-config\n', 'package_update: true\n', 'package_upgrade: true\n', 'packages:\n', '  - git\n', 'write_files:\n', '  - path: /etc/yt/nameprefix\n', '    content: \"', parameters('namePrefix'), '\"\n', '  - path: /etc/yt/resourcegroup\n', '    content: \"', resourceGroup().name, '\"\n', '  - path: /etc/yt/customdomain\n', '    content: \"', parameters('customDomain'), '\"\n', 'runcmd:\n', '  - git clone ', parameters('repoUrl'), ' /opt/yt\n', '  - bash /opt/yt/install/install-services.sh\n'))]"
         },
         "storageProfile": {
           "imageReference": {

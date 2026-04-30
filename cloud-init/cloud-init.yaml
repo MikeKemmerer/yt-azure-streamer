@@ -9,11 +9,11 @@ packages:
   - git
 
 write_files:
-  - path: /etc/nameprefix
+  - path: /etc/yt/nameprefix
     content: "REPLACED_BY_ARM_TEMPLATE"
-  - path: /etc/resourcegroup
+  - path: /etc/yt/resourcegroup
     content: "REPLACED_BY_ARM_TEMPLATE"
-  - path: /etc/customdomain
+  - path: /etc/yt/customdomain
     content: "REPLACED_BY_ARM_TEMPLATE_OR_EMPTY"
 
 runcmd:
