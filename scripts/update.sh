@@ -84,10 +84,16 @@ if [[ "$UNITS_CHANGED" == true ]]; then
 fi
 
 # --- Re-install Caddyfile if changed ---
+# The Caddyfile in the repo is a TEMPLATE (contains CADDY_SITE_ADDRESS placeholder).
+# The deployed config at /etc/caddy/Caddyfile has the real hostname.
+# We do NOT overwrite it. If the template structure changes, log a notice.
 if echo "$CHANGED" | grep -q "^caddy/Caddyfile$"; then
-  echo "Updating Caddyfile..."
-  cp "$REPO_DIR/caddy/Caddyfile" /etc/caddy/Caddyfile
-  systemctl reload caddy || systemctl restart caddy
+  echo "NOTE: caddy/Caddyfile template changed. Review /etc/caddy/Caddyfile manually if needed."
+fi
+
+# Same for blobfuse2 config
+if echo "$CHANGED" | grep -q "^blobfuse2/blobfuse2.yaml$"; then
+  echo "NOTE: blobfuse2/blobfuse2.yaml template changed. Review /etc/blobfuse2/blobfuse2.yaml manually if needed."
 fi
 
 # --- Restart affected services ---
