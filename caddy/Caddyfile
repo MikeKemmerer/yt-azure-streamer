@@ -8,7 +8,7 @@ CADDY_SITE_ADDRESS {
   file_server
 
   # Reverse proxy API calls to backend
-  handle_path /api/* {
+  handle /api/* {
     reverse_proxy localhost:8080
   }
 
