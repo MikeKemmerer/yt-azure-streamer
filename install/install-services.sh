@@ -175,33 +175,30 @@ for MODULE in Az.Accounts Az.Compute; do
   fi
 done
 
+BASE_URL="/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Automation/automationAccounts/$AA"
+LOCATION=$(az rest --method GET --url "$BASE_URL?api-version=2023-11-01" --query location -o tsv 2>/dev/null || echo "westus2")
+
 for RUNBOOK in Start-StreamerVM Stop-StreamerVM; do
   RUNBOOK_FILE="/opt/yt/runbooks/${RUNBOOK}.ps1"
   DEPLOYED=false
 
   for attempt in $(seq 1 10); do
-    # Create runbook if it doesn't already exist
-    if az automation runbook show \
-        --resource-group "$RG" \
-        --automation-account-name "$AA" \
-        --name "$RUNBOOK" >/dev/null 2>&1 \
-      || az automation runbook create \
-        --resource-group "$RG" \
-        --automation-account-name "$AA" \
-        --name "$RUNBOOK" \
-        --type "PowerShell" \
-        --description "Manages the streamer VM lifecycle" >/dev/null 2>&1; then
+    # Create runbook via REST API
+    if az rest --method PUT \
+        --url "$BASE_URL/runbooks/${RUNBOOK}?api-version=2023-11-01" \
+        --body "{\"properties\":{\"runbookType\":\"PowerShell\",\"description\":\"Manages the streamer VM lifecycle\",\"logProgress\":false,\"logVerbose\":false},\"location\":\"$LOCATION\"}" \
+        >/dev/null 2>&1; then
 
-      az automation runbook replace-content \
-        --resource-group "$RG" \
-        --automation-account-name "$AA" \
-        --name "$RUNBOOK" \
-        --content "@${RUNBOOK_FILE}" >/dev/null
+      # Upload draft content
+      az rest --method PUT \
+        --url "$BASE_URL/runbooks/${RUNBOOK}/draft/content?api-version=2023-11-01" \
+        --headers "Content-Type=text/powershell" \
+        --body @"${RUNBOOK_FILE}" >/dev/null 2>&1
 
-      az automation runbook publish \
-        --resource-group "$RG" \
-        --automation-account-name "$AA" \
-        --name "$RUNBOOK" >/dev/null
+      # Publish runbook
+      az rest --method POST \
+        --url "$BASE_URL/runbooks/${RUNBOOK}/publish?api-version=2023-11-01" \
+        >/dev/null 2>&1
 
       echo "  Runbook $RUNBOOK deployed."
       DEPLOYED=true
