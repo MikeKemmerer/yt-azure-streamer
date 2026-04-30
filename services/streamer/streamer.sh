@@ -92,6 +92,28 @@ except: pass
   fi
 fi
 
+# --- Read watermark config ---
+WATERMARK=false
+if [[ -f "$CONFIG_FILE" ]]; then
+  WM=$(python3 -c "
+import json, sys
+try:
+  cfg = json.load(open('$CONFIG_FILE'))
+  print(cfg.get('stream', {}).get('watermark', False))
+except: pass
+" 2>/dev/null || true)
+  if [[ "$WM" == "True" ]]; then
+    WATERMARK=true
+  fi
+fi
+echo "Watermark: $WATERMARK"
+
+# Watermark font — DejaVu Serif Bold (installed with fonts-dejavu-core on Ubuntu)
+WM_FONT="/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
+if [[ ! -f "$WM_FONT" ]]; then
+  WM_FONT="/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
+fi
+
 # --- Generate playlist ---
 bash /usr/local/bin/generate-playlist.sh $SHUFFLE_FLAG "$VIDEO_DIR" "$PLAYLIST"
 
@@ -161,29 +183,46 @@ INDEX=$START_INDEX
 while true; do
   VIDEO="${VIDEOS[$INDEX]}"
   BASENAME=$(basename "$VIDEO")
+  TITLE="${BASENAME%.*}"  # filename without extension
   echo "[$INDEX/$((NUM_VIDEOS-1))] Streaming: $BASENAME"
 
   # Probe the input resolution to decide whether to scale
   INPUT_H=$(ffprobe -v error -select_streams v:0 \
     -show_entries stream=height -of csv=p=0 "$VIDEO" 2>/dev/null || echo 0)
 
-  if [[ "$INPUT_H" -le "$MAX_H" ]]; then
-    # Input is at or below max — pass through video, no scaling
-    echo "  Input ${INPUT_H}p <= max ${MAX_H}p — video passthrough"
-    ffmpeg -re -i "$VIDEO" \
-      -c:v copy \
-      -c:a aac -b:a "$AUDIO_BR" -ar 44100 \
-      -f flv "$RTMP_URL" </dev/null || true
-  else
-    # Input exceeds max — downscale
+  # Build video filter chain
+  VF_PARTS=()
+  if [[ "$INPUT_H" -gt "$MAX_H" ]]; then
     echo "  Input ${INPUT_H}p > max ${MAX_H}p — downscaling to ${MAX_RES}"
-    ffmpeg -re -i "$VIDEO" \
-      -vf "$SCALE_FILTER" \
-      -c:v libx264 -preset veryfast -maxrate "$MAXRATE" -bufsize "$BUFSIZE" \
-      -pix_fmt yuv420p -g 50 \
-      -c:a aac -b:a "$AUDIO_BR" -ar 44100 \
-      -f flv "$RTMP_URL" </dev/null || true
+    VF_PARTS+=("$SCALE_FILTER")
+  else
+    echo "  Input ${INPUT_H}p <= max ${MAX_H}p — no scaling"
   fi
+
+  if [[ "$WATERMARK" == true && -f "$WM_FONT" ]]; then
+    # Escape special characters for ffmpeg drawtext
+    # Replace : with \: and ' with '' for ffmpeg filter escaping
+    SAFE_TITLE=$(printf '%s' "$TITLE" | sed "s/:/\\\\:/g; s/'/'\\\\\\\\''/g")
+    # Lower-third: serif bold, white text, drop shadow, semi-transparent box
+    # Font size relative to frame height (h/28), centered near bottom
+    # Text is limited to 90% of frame width via fontsize scaling
+    VF_PARTS+=("drawtext=fontfile=${WM_FONT}:text='${SAFE_TITLE}':fontsize='min(h/28,w*0.9/max(1,strlen(text)))':fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:box=1:boxcolor=black@0.4:boxborderw=10:x=(w-text_w)/2:y=h-h/8")
+  fi
+
+  # Build -vf argument
+  VF_ARG=""
+  if [[ ${#VF_PARTS[@]} -gt 0 ]]; then
+    VF_ARG="-vf $(IFS=,; echo "${VF_PARTS[*]}")"
+  fi
+
+  # Always re-encode to guarantee keyframes every 2 seconds (YouTube requires ≤4s)
+  # shellcheck disable=SC2086
+  ffmpeg -re -i "$VIDEO" \
+    $VF_ARG \
+    -c:v libx264 -preset veryfast -maxrate "$MAXRATE" -bufsize "$BUFSIZE" \
+    -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)" \
+    -c:a aac -b:a "$AUDIO_BR" -ar 44100 \
+    -f flv "$RTMP_URL" </dev/null || true
 
   # Update bookmark after each video completes (or is interrupted)
   echo "{\"index\": $INDEX, \"file\": \"$VIDEO\"}" > "$STATE_FILE"
