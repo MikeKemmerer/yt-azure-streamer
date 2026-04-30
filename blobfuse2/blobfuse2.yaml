@@ -8,8 +8,8 @@ logging:
 
 components:
   - libfuse
-  - attr_cache
   - file_cache
+  - attr_cache
   - azstorage
 
 azstorage:
