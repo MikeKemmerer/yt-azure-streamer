@@ -251,10 +251,11 @@ while true; do
     continue
   fi
 
-  # Check VM SKU availability
+  # Check VM SKU availability (use --size to filter server-side; the full
+  # list-skus response is too large and crashes WSL with a stack overflow)
   info "Checking Standard_F2s_v2 availability in ${REGION}..."
-  SKU_EXISTS=$(az vm list-skus --location "$REGION" --resource-type virtualMachines \
-    --query "[?name=='Standard_F2s_v2'].name | [0]" -o tsv 2>/dev/null) || true
+  SKU_EXISTS=$(az vm list-skus --location "$REGION" --size Standard_F2s_v2 \
+    --query "[0].name" -o tsv 2>/dev/null) || true
   if [[ -z "$SKU_EXISTS" ]]; then
     error "Standard_F2s_v2 is not available in '${REGION}' (or could not be verified). Choose a different region."
     continue
