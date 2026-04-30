@@ -57,6 +57,9 @@ def az_silent(*args):
     """Run an az command; ignore failures (used for idempotent deletes)."""
     subprocess.run(["az"] + list(args), capture_output=True)
 
+# Get subscription ID for REST API calls
+SUB = az("account", "show", "--query", "id", "-o", "tsv")
+
 def delete_job_schedules_for(sched_name):
     """Delete any existing job schedules linked to sched_name (idempotent)."""
     result = subprocess.run(
@@ -141,17 +144,18 @@ for event in schedule.get("events", []):
                       "--automation-account-name", AA,
                       "--name", sched_name)
 
-            # Create schedule
-            az("automation", "schedule", "create",
-               "--resource-group", RG,
-               "--automation-account-name", AA,
-               "--name", sched_name,
-               "--frequency", "Week",
-               "--interval", "1",
-               "--start-time", start_iso,
-               "--week-days", az_day,
-               "--time-zone", schedule.get("timezone", "UTC"),
-               "--description", f"Auto-{kind} VM for '{event_name}' ({day_abbr})")
+            # Create schedule (use REST API — CLI doesn't support --week-days)
+            sched_body = json.dumps({"properties": {
+                "description": f"Auto-{kind} VM for '{event_name}' ({day_abbr})",
+                "startTime": start_iso,
+                "frequency": "Week",
+                "interval": 1,
+                "timeZone": schedule.get("timezone", "UTC"),
+                "advancedSchedule": {"weekDays": [az_day]}
+            }})
+            az("rest", "--method", "PUT",
+               "--url", f"/subscriptions/{SUB}/resourceGroups/{RG}/providers/Microsoft.Automation/automationAccounts/{AA}/schedules/{sched_name}?api-version=2023-11-01",
+               "--body", sched_body)
 
             # Link schedule to runbook
             az("automation", "job-schedule", "create",
