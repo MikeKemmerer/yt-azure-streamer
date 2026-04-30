@@ -111,6 +111,12 @@
   <div class="card">
     <h2>Playlist</h2>
     <p class="hint">Drag to reorder. Uncheck to exclude from playlist. Changes are saved and the playlist is regenerated immediately.</p>
+    <div class="playlist-sort-controls">
+      <span class="sort-label">Sort:</span>
+      <button id="sort-name" class="secondary">By Name</button>
+      <button id="sort-date" class="secondary">By Date</button>
+      <button id="sort-shuffle" class="secondary">Shuffle</button>
+    </div>
     <div id="video-list-loading">Loading videos...</div>
     <ul id="video-list"></ul>
     <div class="playlist-actions">
@@ -142,6 +148,17 @@
       <button id="refresh-logs">Refresh</button>
     </div>
     <pre id="log-output" class="log-output">Select a service and click Refresh.</pre>
+  </div>
+
+  <!-- ── Update ──────────────────────────────────────────────────── -->
+  <div class="card">
+    <h2>Update</h2>
+    <p class="hint">Pull the latest code from GitHub and re-deploy changed scripts, units, and frontend files.</p>
+    <div class="update-controls">
+      <button id="run-update">Check for Updates</button>
+    </div>
+    <pre id="update-output" class="update-output" style="display:none"></pre>
+    <div id="update-status" class="status"></div>
   </div>
 
   <!-- ── Deployment Info ────────────────────────────────────────── -->

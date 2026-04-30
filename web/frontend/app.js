@@ -263,6 +263,44 @@ document.getElementById('deselect-all').addEventListener('click', () => {
   renderVideoList();
 });
 
+/* ── Playlist Sort / Shuffle ─────────────────────────────────────── */
+
+function parseDateFromFilename(filename) {
+  // Match patterns like "January 2, 2025" or "Dec 25, 2024" at the start
+  const match = filename.match(/^([A-Za-z]+\s+\d{1,2},\s*\d{4})/);
+  if (!match) return null;
+  const d = new Date(match[1]);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+document.getElementById('sort-name').addEventListener('click', () => {
+  videoData.sort((a, b) => a.file.localeCompare(b.file, undefined, { numeric: true }));
+  renderVideoList();
+});
+
+document.getElementById('sort-date').addEventListener('click', () => {
+  videoData.sort((a, b) => {
+    const da = parseDateFromFilename(a.file);
+    const db = parseDateFromFilename(b.file);
+    // Files with dates come first, sorted chronologically
+    if (da && db) return da - db;
+    if (da && !db) return -1;
+    if (!da && db) return 1;
+    // Both undated: alphabetical
+    return a.file.localeCompare(b.file, undefined, { numeric: true });
+  });
+  renderVideoList();
+});
+
+document.getElementById('sort-shuffle').addEventListener('click', () => {
+  // Fisher-Yates shuffle
+  for (let i = videoData.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [videoData[i], videoData[j]] = [videoData[j], videoData[i]];
+  }
+  renderVideoList();
+});
+
 /* ── Service Health ──────────────────────────────────────────────── */
 
 async function loadHealth() {
@@ -427,6 +465,30 @@ document.getElementById('refresh-logs').addEventListener('click', async () => {
     output.scrollTop = output.scrollHeight;
   } catch (e) {
     output.textContent = 'Error: ' + e.message;
+  }
+});
+
+/* ── Update ───────────────────────────────────────────────────────── */
+
+document.getElementById('run-update').addEventListener('click', async () => {
+  const btn = document.getElementById('run-update');
+  const output = document.getElementById('update-output');
+  const status = document.getElementById('update-status');
+  btn.disabled = true;
+  btn.textContent = 'Updating...';
+  output.style.display = 'none';
+  try {
+    const data = await api('/api/update', { method: 'POST' });
+    output.textContent = data.output || 'No output';
+    output.style.display = '';
+    showStatus(status, 'Update complete.', true);
+  } catch (e) {
+    showStatus(status, e.message, false);
+    output.textContent = e.message;
+    output.style.display = '';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Check for Updates';
   }
 });
 
