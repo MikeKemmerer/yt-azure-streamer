@@ -44,6 +44,7 @@ declare -A SCRIPT_MAP=(
   ["scripts/schedule-sync.sh"]="/usr/local/bin/schedule-sync.sh"
   ["scripts/generate-playlist.sh"]="/usr/local/bin/generate-playlist.sh"
   ["scripts/setup-caddy-auth.sh"]="/usr/local/bin/setup-caddy-auth.sh"
+  ["scripts/update.sh"]="/usr/local/bin/yt-update.sh"
 )
 
 for src in "${!SCRIPT_MAP[@]}"; do

@@ -417,7 +417,7 @@ const server = http.createServer(async (req, res) => {
     // ─── POST /api/update ─────────────────────────────────────────
     // Pull latest code and re-deploy changed files
     if (req.method === 'POST' && req.url === '/api/update') {
-      execFile('/opt/yt/scripts/update.sh', [], {
+      execFile('/usr/local/bin/yt-update.sh', [], {
         timeout: 60000,
         maxBuffer: 1024 * 256
       }, (err, stdout, stderr) => {
