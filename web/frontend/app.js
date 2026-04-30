@@ -137,6 +137,7 @@ async function loadSettings() {
     const data = await api('/api/settings');
     document.getElementById('max-resolution').value = data.max_resolution;
     document.getElementById('shuffle-toggle').checked = data.shuffle;
+    document.getElementById('watermark-toggle').checked = data.watermark;
   } catch { /* use defaults */ }
 }
 
@@ -149,7 +150,8 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         max_resolution: document.getElementById('max-resolution').value,
-        shuffle: document.getElementById('shuffle-toggle').checked
+        shuffle: document.getElementById('shuffle-toggle').checked,
+        watermark: document.getElementById('watermark-toggle').checked
       })
     });
     showStatus(status, 'Settings saved.', true);

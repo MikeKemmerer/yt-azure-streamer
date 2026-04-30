@@ -147,7 +147,8 @@ const server = http.createServer(async (req, res) => {
       const schedule = readSchedule();
       jsonResponse(res, 200, {
         max_resolution: schedule.stream?.max_resolution || '720p',
-        shuffle: schedule.stream?.shuffle || false
+        shuffle: schedule.stream?.shuffle || false,
+        watermark: schedule.stream?.watermark || false
       });
       return;
     }
@@ -170,10 +171,14 @@ const server = http.createServer(async (req, res) => {
       if (parsed.shuffle !== undefined) {
         schedule.stream.shuffle = !!parsed.shuffle;
       }
+      if (parsed.watermark !== undefined) {
+        schedule.stream.watermark = !!parsed.watermark;
+      }
       writeSchedule(schedule);
       jsonResponse(res, 200, {
         max_resolution: schedule.stream.max_resolution,
-        shuffle: schedule.stream.shuffle
+        shuffle: schedule.stream.shuffle,
+        watermark: schedule.stream.watermark
       });
       return;
     }

@@ -36,7 +36,7 @@ echo "Updating package lists..."
 apt-get update
 
 echo "Installing packages..."
-DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs npm ffmpeg fuse3 caddy blobfuse2 azure-cli
+DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs npm ffmpeg fuse3 caddy blobfuse2 azure-cli fonts-dejavu-core
 
 # Disable the default apt-installed caddy service; we use our own unit
 systemctl stop caddy.service 2>/dev/null || true
@@ -143,6 +143,24 @@ echo "Deploying Automation runbooks..."
 AA="${PREFIX}-automation"
 
 az login --identity >/dev/null 2>&1
+
+# Ensure required PowerShell modules are imported into the Automation Account
+# Az.Accounts is needed for Connect-AzAccount -Identity
+# Az.Compute is needed for Start-AzVM / Stop-AzVM
+echo "  Importing Az modules into Automation Account (if not present)..."
+for MODULE in Az.Accounts Az.Compute; do
+  if ! az automation module show \
+      --resource-group "$RG" \
+      --automation-account-name "$AA" \
+      --name "$MODULE" >/dev/null 2>&1; then
+    az automation module create \
+      --resource-group "$RG" \
+      --automation-account-name "$AA" \
+      --name "$MODULE" \
+      --content-link "https://www.powershellgallery.com/api/v2/package/${MODULE}" \
+      >/dev/null 2>&1 || echo "  WARNING: Failed to import $MODULE (may already exist)"
+  fi
+done
 
 for RUNBOOK in Start-StreamerVM Stop-StreamerVM; do
   RUNBOOK_FILE="/opt/yt/runbooks/${RUNBOOK}.ps1"
