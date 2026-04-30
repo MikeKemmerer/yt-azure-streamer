@@ -296,7 +296,7 @@
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "name": "[guid(resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName')), 'vm-automation-contributor')]",
-      "scope": "[concat('Microsoft.Automation/automationAccounts/', variables('automationAccountName'))]",
+      "scope": "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]",
       "dependsOn": [
         "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]",
         "[resourceId('Microsoft.Compute/virtualMachines', variables('vmName'))]"
@@ -312,7 +312,7 @@
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "name": "[guid(resourceId('Microsoft.Compute/virtualMachines', variables('vmName')), 'aa-vm-contributor')]",
-      "scope": "[concat('Microsoft.Compute/virtualMachines/', variables('vmName'))]",
+      "scope": "[resourceId('Microsoft.Compute/virtualMachines', variables('vmName'))]",
       "dependsOn": [
         "[resourceId('Microsoft.Compute/virtualMachines', variables('vmName'))]",
         "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]"
@@ -328,7 +328,7 @@
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "name": "[guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), 'vm-kv-secrets-officer')]",
-      "scope": "[concat('Microsoft.KeyVault/vaults/', variables('keyVaultName'))]",
+      "scope": "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
       "dependsOn": [
         "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
         "[resourceId('Microsoft.Compute/virtualMachines', variables('vmName'))]"
@@ -345,7 +345,7 @@
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "name": "[guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), 'deployer-kv-secrets-officer')]",
-      "scope": "[concat('Microsoft.KeyVault/vaults/', variables('keyVaultName'))]",
+      "scope": "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
       "dependsOn": [
         "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]"
       ],
