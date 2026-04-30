@@ -44,6 +44,7 @@ declare -A SCRIPT_MAP=(
   ["scripts/schedule-sync.sh"]="/usr/local/bin/schedule-sync.sh"
   ["scripts/generate-playlist.sh"]="/usr/local/bin/generate-playlist.sh"
   ["scripts/setup-caddy-auth.sh"]="/usr/local/bin/setup-caddy-auth.sh"
+  ["scripts/update.sh"]="/usr/local/bin/yt-update.sh"
 )
 
 for src in "${!SCRIPT_MAP[@]}"; do
@@ -84,10 +85,16 @@ if [[ "$UNITS_CHANGED" == true ]]; then
 fi
 
 # --- Re-install Caddyfile if changed ---
+# The Caddyfile in the repo is a TEMPLATE (contains CADDY_SITE_ADDRESS placeholder).
+# The deployed config lives at /etc/yt/caddy/Caddyfile.
+# We do NOT overwrite it. If the template structure changes, log a notice.
 if echo "$CHANGED" | grep -q "^caddy/Caddyfile$"; then
-  echo "Updating Caddyfile..."
-  cp "$REPO_DIR/caddy/Caddyfile" /etc/caddy/Caddyfile
-  systemctl reload caddy || systemctl restart caddy
+  echo "NOTE: caddy/Caddyfile template changed. Review /etc/yt/caddy/Caddyfile manually if needed."
+fi
+
+# Same for blobfuse2 config
+if echo "$CHANGED" | grep -q "^blobfuse2/blobfuse2.yaml$"; then
+  echo "NOTE: blobfuse2/blobfuse2.yaml template changed. Review /etc/yt/blobfuse2/blobfuse2.yaml manually if needed."
 fi
 
 # --- Restart affected services ---

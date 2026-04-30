@@ -1,7 +1,7 @@
 CADDY_SITE_ADDRESS {
 
   # Basic auth — credentials generated at install time from Key Vault secrets
-  import /etc/caddy/auth.conf
+  import /etc/yt/caddy/auth.conf
 
   # Serve frontend static files
   root * /opt/yt/web/frontend

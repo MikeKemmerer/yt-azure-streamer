@@ -4,8 +4,8 @@ After=network-online.target
 
 [Service]
 Type=notify
-ExecStart=/usr/bin/caddy run --environ --config /opt/yt/caddy/Caddyfile
-ExecReload=/usr/bin/caddy reload --config /opt/yt/caddy/Caddyfile
+ExecStart=/usr/bin/caddy run --environ --config /etc/yt/caddy/Caddyfile
+ExecReload=/usr/bin/caddy reload --config /etc/yt/caddy/Caddyfile
 Restart=always
 RestartSec=5
 LimitNOFILE=1048576

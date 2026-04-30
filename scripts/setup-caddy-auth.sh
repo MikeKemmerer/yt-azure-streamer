@@ -7,11 +7,11 @@
 
 set -euo pipefail
 
-PREFIX=$(cat /etc/nameprefix 2>/dev/null | tr -d '[:space:]')
+PREFIX=$(cat /etc/yt/nameprefix 2>/dev/null | tr -d '[:space:]')
 KV_NAME="${PREFIX,,}-kv"
 
 # Already configured?
-if [[ -f /etc/caddy/auth.conf ]] && grep -q "basic_auth" /etc/caddy/auth.conf 2>/dev/null; then
+if [[ -f /etc/yt/caddy/auth.conf ]] && grep -q "basic_auth" /etc/yt/caddy/auth.conf 2>/dev/null; then
   echo "Caddy auth already configured, nothing to do."
   exit 0
 fi
@@ -29,13 +29,13 @@ fi
 
 # Generate bcrypt hash and write Caddy auth snippet
 HASH=$(caddy hash-password --plaintext "$WEB_PASS")
-mkdir -p /etc/caddy
-cat > /etc/caddy/auth.conf <<EOF
+mkdir -p /etc/yt/caddy
+cat > /etc/yt/caddy/auth.conf <<EOF
 basic_auth {
   ${WEB_USER} ${HASH}
 }
 EOF
-chmod 600 /etc/caddy/auth.conf
+chmod 600 /etc/yt/caddy/auth.conf
 echo "Web UI authentication configured for user: $WEB_USER"
 
 # Reload Caddy to pick up the new auth config

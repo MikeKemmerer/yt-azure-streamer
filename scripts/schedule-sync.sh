@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Syncs /opt/yt/schedule.json to Azure Automation schedules.
+# Syncs /etc/yt/schedule.json to Azure Automation schedules.
 # Creates weekly recurring schedules for VM start (event.start - 2 min)
 # and VM stop (event.stop + 2 min), linked to Start/Stop runbooks.
 #
 # Usage:
-#   ./schedule-sync.sh                            (reads from /etc — systemd timer mode)
+#   ./schedule-sync.sh                            (reads from /etc/yt/ — systemd timer mode)
 #   ./schedule-sync.sh <resource-group> <prefix>  (CLI / workstation mode)
 
-SCHEDULE_FILE="/opt/yt/schedule.json"
+SCHEDULE_FILE="/etc/yt/schedule.json"
 PADDING_MINUTES=2
 
 if [[ $# -eq 0 ]]; then
-  PREFIX=$(cat /etc/nameprefix)
-  RG=$(cat /etc/resourcegroup)
+  PREFIX=$(cat /etc/yt/nameprefix)
+  RG=$(cat /etc/yt/resourcegroup)
 elif [[ $# -eq 2 ]]; then
   RG="$1"
   PREFIX="$2"

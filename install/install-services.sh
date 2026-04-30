@@ -8,8 +8,8 @@ set -euo pipefail
 
 echo "=== yt-azure-streamer installer ==="
 
-PREFIX=$(cat /etc/nameprefix)
-RG=$(cat /etc/resourcegroup)
+PREFIX=$(cat /etc/yt/nameprefix)
+RG=$(cat /etc/yt/resourcegroup)
 echo "Prefix: $PREFIX  Resource Group: $RG"
 
 # --- Package Repositories ---
@@ -46,34 +46,35 @@ systemctl disable caddy.service 2>/dev/null || true
 
 echo "Configuring blobfuse2..."
 STORAGE_NAME="${PREFIX,,}"  # lowercase
-sed -i "s/STORAGE_ACCOUNT/${STORAGE_NAME}/g" /opt/yt/blobfuse2/blobfuse2.yaml
+mkdir -p /etc/yt/blobfuse2
+sed "s/STORAGE_ACCOUNT/${STORAGE_NAME}/g" /opt/yt/blobfuse2/blobfuse2.yaml > /etc/yt/blobfuse2/blobfuse2.yaml
+chmod 644 /etc/yt/blobfuse2/blobfuse2.yaml
 
 mkdir -p /mnt/blobfuse2
 mkdir -p /mnt/blobfuse2_cache
 
 # --- Caddy / TLS Configuration ---
 
-CUSTOM_DOMAIN=$(cat /etc/customdomain 2>/dev/null | tr -d '[:space:]')
+CUSTOM_DOMAIN=$(cat /etc/yt/customdomain 2>/dev/null | tr -d '[:space:]')
 if [[ -n "$CUSTOM_DOMAIN" ]]; then
   echo "Custom domain: $CUSTOM_DOMAIN — Caddy will auto-provision Let's Encrypt TLS"
-  sed -i "s/CADDY_SITE_ADDRESS/${CUSTOM_DOMAIN}/g" /opt/yt/caddy/Caddyfile
+  SITE_ADDRESS="$CUSTOM_DOMAIN"
 else
   # Auto-detect Azure DNS FQDN from instance metadata
-  AZURE_FQDN=$(curl -s -H Metadata:true --noproxy "*" \
-    "http://169.254.169.254/metadata/instance/network/interface/0/ipv4/ipAddress/0/publicIpAddress?api-version=2021-02-01&format=text" 2>/dev/null || true)
-  # The FQDN is more reliably constructed from the namePrefix + region
-  NAME_PREFIX=$(cat /etc/nameprefix 2>/dev/null | tr -d '[:space:]')
+  NAME_PREFIX=$(cat /etc/yt/nameprefix 2>/dev/null | tr -d '[:space:]')
   REGION=$(curl -s -H Metadata:true --noproxy "*" \
     "http://169.254.169.254/metadata/instance/compute/location?api-version=2021-02-01&format=text" 2>/dev/null || true)
   if [[ -n "$NAME_PREFIX" && -n "$REGION" ]]; then
-    AZURE_DNS="${NAME_PREFIX}.${REGION}.cloudapp.azure.com"
-    echo "No custom domain — using Azure DNS with auto-TLS: $AZURE_DNS"
-    sed -i "s/CADDY_SITE_ADDRESS/${AZURE_DNS}/g" /opt/yt/caddy/Caddyfile
+    SITE_ADDRESS="${NAME_PREFIX}.${REGION}.cloudapp.azure.com"
+    echo "No custom domain — using Azure DNS with auto-TLS: $SITE_ADDRESS"
   else
+    SITE_ADDRESS=":80"
     echo "No custom domain and cannot detect Azure DNS — serving plain HTTP on :80"
-    sed -i "s/CADDY_SITE_ADDRESS/:80/g" /opt/yt/caddy/Caddyfile
   fi
 fi
+mkdir -p /etc/yt/caddy
+sed "s/CADDY_SITE_ADDRESS/${SITE_ADDRESS}/g" /opt/yt/caddy/Caddyfile > /etc/yt/caddy/Caddyfile
+chmod 644 /etc/yt/caddy/Caddyfile
 
 # --- Caddy / Basic Auth ---
 
@@ -82,8 +83,8 @@ fi
 # We write a no-auth placeholder now and let a systemd timer (caddy-auth-setup)
 # retry until the secrets appear, then configure auth and reload Caddy.
 echo "Web UI auth will be configured automatically once Key Vault secrets are available."
-mkdir -p /etc/caddy
-echo "# No auth configured — caddy-auth-setup.timer will populate this" > /etc/caddy/auth.conf
+mkdir -p /etc/yt/caddy
+echo "# No auth configured — caddy-auth-setup.timer will populate this" > /etc/yt/caddy/auth.conf
 
 # --- Install Scripts ---
 
@@ -95,8 +96,11 @@ install -m 755 /opt/yt/scripts/generate-playlist.sh    /usr/local/bin/generate-p
 install -m 755 /opt/yt/scripts/setup-caddy-auth.sh     /usr/local/bin/setup-caddy-auth.sh
 install -m 755 /opt/yt/scripts/update.sh               /usr/local/bin/yt-update.sh
 
-# schedule.json ships with the repo at /opt/yt/schedule.json — edit to customise stream times
-echo "Schedule template at /opt/yt/schedule.json — edit to customise."
+# schedule.json ships with the repo — copy initial version to /etc/yt/
+if [[ ! -f /etc/yt/schedule.json ]]; then
+  cp /opt/yt/schedule.json /etc/yt/schedule.json
+  echo "Initial schedule copied to /etc/yt/schedule.json"
+fi
 
 # --- Install Systemd Units ---
 

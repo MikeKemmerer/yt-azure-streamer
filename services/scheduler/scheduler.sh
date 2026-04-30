@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Scheduler daemon: reads /opt/yt/schedule.json and starts/stops
+# Scheduler daemon: reads /etc/yt/schedule.json and starts/stops
 # streamer.service based on the current time window.
 # Runs continuously under systemd (Type=simple, Restart=always).
 
-SCHEDULE_FILE="/opt/yt/schedule.json"
+SCHEDULE_FILE="/etc/yt/schedule.json"
 CHECK_INTERVAL=30  # seconds between checks
 MANUAL_OVERRIDE="/run/streamer-manual-override"
 
-PREFIX=$(cat /etc/nameprefix 2>/dev/null || echo "unknown")
+PREFIX=$(cat /etc/yt/nameprefix 2>/dev/null || echo "unknown")
 echo "Scheduler starting with prefix: $PREFIX"
 
 stream_is_running() {

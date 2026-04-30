@@ -7,7 +7,7 @@ Wants=network-online.target
 What=blobfuse2
 Where=/mnt/blobfuse2
 Type=fuse3
-Options=--config-file=/opt/yt/blobfuse2/blobfuse2.yaml,allow_other,_netdev
+Options=--config-file=/etc/yt/blobfuse2/blobfuse2.yaml,allow_other,_netdev
 
 [Install]
 WantedBy=multi-user.target

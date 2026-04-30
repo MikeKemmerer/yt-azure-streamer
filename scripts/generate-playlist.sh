@@ -18,8 +18,8 @@ if [[ "${1:-}" == "--shuffle" ]]; then
 fi
 
 VIDEO_DIR="${1:-/mnt/blobfuse2}"
-PLAYLIST_FILE="${2:-/opt/yt/playlist.txt}"
-PLAYLIST_CONFIG="/opt/yt/playlist-config.json"
+PLAYLIST_FILE="${2:-/etc/yt/playlist.txt}"
+PLAYLIST_CONFIG="/etc/yt/playlist-config.json"
 
 echo "Scanning $VIDEO_DIR for video files..."
 
