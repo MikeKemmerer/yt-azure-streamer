@@ -248,21 +248,24 @@ while true; do
 
   # Check VM SKU availability
   info "Checking Standard_F2s_v2 availability in ${REGION}..."
-  SKU_CHECK=$(az vm list-skus --location "$REGION" --resource-type virtualMachines \
-    --query "[?name=='Standard_F2s_v2'].restrictions[?type=='Location'] | length(@)" -o tsv 2>/dev/null || echo "unknown")
   SKU_EXISTS=$(az vm list-skus --location "$REGION" --resource-type virtualMachines \
-    --query "[?name=='Standard_F2s_v2'].name" -o tsv 2>/dev/null || true)
+    --query "[?name=='Standard_F2s_v2'].name | [0]" -o tsv 2>/dev/null) || true
   if [[ -z "$SKU_EXISTS" ]]; then
-    error "Standard_F2s_v2 is not available in '${REGION}'. Choose a different region."
+    error "Standard_F2s_v2 is not available in '${REGION}' (or could not be verified). Choose a different region."
     continue
   fi
   ok "VM SKU available in ${REGION}."
 
   # Check Automation Account availability
   info "Checking Automation Account availability in ${REGION}..."
-  AA_AVAILABLE=$(az provider show -n Microsoft.Automation \
-    --query "resourceTypes[?resourceType=='automationAccounts'].locations[?contains(@, '$(az account list-locations --query "[?name=='${REGION}'].displayName" -o tsv 2>/dev/null)')]" \
-    -o tsv 2>/dev/null || true)
+  REGION_DISPLAY=$(az account list-locations --query "[?name=='${REGION}'].displayName | [0]" -o tsv 2>/dev/null) || true
+  if [[ -n "$REGION_DISPLAY" ]]; then
+    AA_AVAILABLE=$(az provider show -n Microsoft.Automation \
+      --query "resourceTypes[?resourceType=='automationAccounts'].locations[] | [?contains(@, '${REGION_DISPLAY}')] | [0]" \
+      -o tsv 2>/dev/null) || true
+  else
+    AA_AVAILABLE=""
+  fi
   if [[ -z "$AA_AVAILABLE" ]]; then
     warn "Could not confirm Automation Account availability in '${REGION}'. Deployment may fail if unsupported."
   else
