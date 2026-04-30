@@ -1,0 +1,11 @@
+[Unit]
+Description=Retry Caddy auth setup until Key Vault secrets are available
+After=network-online.target
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=60
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -77,38 +77,13 @@ fi
 
 # --- Caddy / Basic Auth ---
 
-echo "Configuring web UI authentication..."
-KV_NAME="${PREFIX,,}-kv"
-
-# Fetch web UI credentials from Key Vault (written by deploy script)
-WEB_USER=""
-WEB_PASS=""
-for attempt in $(seq 1 10); do
-  WEB_USER=$(az keyvault secret show --vault-name "$KV_NAME" --name "web-ui-user" --query value -o tsv 2>/dev/null || true)
-  WEB_PASS=$(az keyvault secret show --vault-name "$KV_NAME" --name "web-ui-password" --query value -o tsv 2>/dev/null || true)
-  if [[ -n "$WEB_USER" && -n "$WEB_PASS" ]]; then
-    break
-  fi
-  echo "  Waiting for Key Vault RBAC propagation (attempt $attempt/10)..."
-  sleep 30
-done
-
+# Web UI credentials are written to Key Vault by deploy.sh AFTER the ARM
+# deployment completes, so they won't be available during cloud-init.
+# We write a no-auth placeholder now and let a systemd timer (caddy-auth-setup)
+# retry until the secrets appear, then configure auth and reload Caddy.
+echo "Web UI auth will be configured automatically once Key Vault secrets are available."
 mkdir -p /etc/caddy
-if [[ -n "$WEB_USER" && -n "$WEB_PASS" ]]; then
-  # Generate bcrypt hash for Caddy basic_auth
-  HASH=$(caddy hash-password --plaintext "$WEB_PASS")
-  cat > /etc/caddy/auth.conf <<EOF
-basic_auth {
-  ${WEB_USER} ${HASH}
-}
-EOF
-  chmod 600 /etc/caddy/auth.conf
-  echo "Web UI authentication configured for user: $WEB_USER"
-else
-  echo "WARNING: No web UI credentials found in Key Vault. Web UI will be unprotected."
-  # Write an empty snippet so the Caddy import doesn't fail
-  echo "# No auth configured" > /etc/caddy/auth.conf
-fi
+echo "# No auth configured — caddy-auth-setup.timer will populate this" > /etc/caddy/auth.conf
 
 # --- Install Scripts ---
 
@@ -117,6 +92,7 @@ install -m 755 /opt/yt/services/streamer/streamer.sh  /usr/local/bin/streamer.sh
 install -m 755 /opt/yt/services/scheduler/scheduler.sh /usr/local/bin/scheduler.sh
 install -m 755 /opt/yt/scripts/schedule-sync.sh        /usr/local/bin/schedule-sync.sh
 install -m 755 /opt/yt/scripts/generate-playlist.sh    /usr/local/bin/generate-playlist.sh
+install -m 755 /opt/yt/scripts/setup-caddy-auth.sh     /usr/local/bin/setup-caddy-auth.sh
 
 # schedule.json ships with the repo at /opt/yt/schedule.json — edit to customise stream times
 echo "Schedule template at /opt/yt/schedule.json — edit to customise."
@@ -129,6 +105,8 @@ install -m 644 /opt/yt/systemd/scheduler.service       /etc/systemd/system/sched
 install -m 644 /opt/yt/systemd/schedule-sync.service   /etc/systemd/system/schedule-sync.service
 install -m 644 /opt/yt/systemd/schedule-sync.timer     /etc/systemd/system/schedule-sync.timer
 install -m 644 /opt/yt/systemd/caddy.service           /etc/systemd/system/caddy.service
+install -m 644 /opt/yt/systemd/caddy-auth-setup.service /etc/systemd/system/caddy-auth-setup.service
+install -m 644 /opt/yt/systemd/caddy-auth-setup.timer  /etc/systemd/system/caddy-auth-setup.timer
 install -m 644 /opt/yt/systemd/web-backend.service     /etc/systemd/system/web-backend.service
 # Mount unit name must match Where= path: /mnt/blobfuse2 → mnt-blobfuse2.mount
 install -m 644 /opt/yt/systemd/blobfuse2.mount         /etc/systemd/system/mnt-blobfuse2.mount
@@ -143,6 +121,7 @@ systemctl enable streamer.service
 systemctl enable scheduler.service
 systemctl enable schedule-sync.timer
 systemctl enable caddy.service
+systemctl enable caddy-auth-setup.timer
 systemctl enable web-backend.service
 systemctl enable mnt-blobfuse2.mount
 
@@ -150,6 +129,7 @@ echo "Starting services..."
 systemctl start mnt-blobfuse2.mount
 systemctl start web-backend.service
 systemctl start caddy.service
+systemctl start caddy-auth-setup.timer
 systemctl start schedule-sync.timer
 
 # --- Deploy Automation Runbooks ---

@@ -1,0 +1,8 @@
+[Unit]
+Description=Configure Caddy basic auth from Key Vault secrets
+After=network-online.target caddy.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/setup-caddy-auth.sh
