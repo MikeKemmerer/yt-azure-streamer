@@ -177,7 +177,7 @@ VM_IP=$(az vm show -d --resource-group streamer-rg --name stdemo-vm --query publ
 ssh azureuser@$VM_IP
 
 # Edit the schedule on the VM
-sudo nano /opt/yt/schedule.json
+sudo nano /etc/yt/schedule.json
 ```
 
 See the [Schedule Configuration](#schedule-configuration) section below for the file format. The schedule-sync timer picks up changes within 10 minutes.
@@ -186,7 +186,7 @@ See the [Schedule Configuration](#schedule-configuration) section below for the 
 
 ## Schedule Configuration
 
-Edit `/opt/yt/schedule.json` on the VM to define when streams happen:
+Edit `/etc/yt/schedule.json` on the VM to define when streams happen:
 
 ```json
 {
@@ -212,10 +212,15 @@ Edit `/opt/yt/schedule.json` on the VM to define when streams happen:
 | `days` | Any subset of `Mon`, `Tue`, `Wed`, `Thu`, `Fri`, `Sat`, `Sun` |
 | `stream.max_resolution` | Maximum output resolution: `144p`, `240p`, `360p`, `480p`, `720p` (default), `1080p`, `1440p`, `2160p` |
 | `stream.shuffle` | `true` to randomize playlist order, `false` (default) for date/alphabetical sort |
+| `stream.watermark` | `true` to overlay the video filename as a lower-third title, `false` (default) to disable |
 
 **Resolution behavior:** Videos at or below `max_resolution` are passed through without re-encoding. Videos above it are downscaled. Videos are never upsampled.
 
+**Encoding details:** The streamer uses `libx264` with `veryfast` preset and forced keyframes every 2 seconds (`-force_key_frames "expr:gte(t,n_forced*2)"`). This satisfies YouTube's requirement of keyframe interval ≤ 4 seconds for stable ingest.
+
 **Shuffle behavior:** When `shuffle` is `true`, the playlist is randomized instead of sorted. The random order is written to disk and preserved across streamer restarts — it only changes when the playlist is regenerated (i.e. when the streamer is started fresh after new files are added or removed).
+
+**Watermark behavior:** When `watermark` is `true`, the video filename (minus extension) is rendered as a centered lower-third overlay using DejaVu Serif Bold. The font size auto-scales to prevent overflow on long titles. A semi-transparent box background and drop shadow ensure readability over any video content.
 
 **How the schedule works end-to-end:**
 
@@ -291,9 +296,13 @@ sudo systemctl start streamer.service
 sudo systemctl stop streamer.service
 ```
 
-### Re-run the installer (e.g. after a code update)
+### Update to latest code
 
 ```bash
+# Preferred: one-click update (safe, doesn't restart streamer)
+sudo /usr/local/bin/update.sh
+
+# Full reinstall (only needed for major changes)
 cd /opt/yt && sudo git pull && sudo bash install/install-services.sh
 ```
 
@@ -320,9 +329,10 @@ The web UI is protected by HTTP basic auth. Credentials are set during deploymen
 | **System** | VM uptime, memory usage, disk usage |
 | **Storage** | Video file count and total size on the blobfuse2 mount |
 | **Stream Key** | Update the YouTube stream key stored in Key Vault (takes effect on next stream start) |
-| **Stream Settings** | Max resolution selector (144p–2160p), shuffle toggle |
-| **Playlist** | Drag-and-drop reorder, per-video enable/disable checkboxes, Select All / Deselect All, instant playlist regeneration on save |
+| **Stream Settings** | Max resolution selector (144p–2160p), shuffle toggle, watermark (lower-third title) toggle |
+| **Playlist** | Drag-and-drop reorder, per-video enable/disable checkboxes, Select All / Deselect All, sort by name / sort by date / shuffle buttons, instant playlist regeneration on save |
 | **Logs** | Service log viewer with service selector (streamer, scheduler, schedule-sync, caddy, web-backend, blobfuse2), configurable line count (50–500), dark terminal-style output |
+| **Update** | One-click pull from GitHub with terminal output display — re-deploys changed scripts, units, and frontend files without interrupting a live stream |
 | **Deployment Info** | JSON dump of prefix, storage account, automation account, key vault, and hostname |
 
 ### API Endpoints
@@ -346,6 +356,7 @@ All endpoints are served under `/api/` and require authentication.
 | `PUT` | `/api/schedule` | Update schedule.json and trigger sync |
 | `GET` | `/api/storage` | Video file count and total size |
 | `GET` | `/api/system` | VM uptime, memory, and disk stats |
+| `POST` | `/api/update` | Pull latest code from GitHub, redeploy changed scripts/units |
 
 ### TLS with Let's Encrypt
 
@@ -392,11 +403,14 @@ yt-azure-streamer/
   runbooks/
     Start-StreamerVM.ps1      # Azure Automation runbook: start VM (MSI auth)
     Stop-StreamerVM.ps1       # Azure Automation runbook: deallocate VM (MSI auth)
-  schedule.json               # Stream schedule + resolution config — edit to customise
+  schedule.json               # Stream schedule + resolution config (template — deployed to /etc/yt/)
   scripts/
     generate-playlist.sh      # Scans blobfuse2 mount, writes ffmpeg concat playlist
+    migrate-configs.sh        # One-time migration: moves configs from /opt/yt/ → /etc/yt/
     role-assign.sh            # (legacy) manual role assignment — superseded by ARM
     schedule-sync.sh          # Syncs schedule.json → Azure Automation weekly schedules
+    setup-caddy-auth.sh       # Fetches web UI credentials from Key Vault → /etc/yt/caddy/auth.conf
+    update.sh                 # One-click update: git pull, redeploy changed scripts/units
   services/
     streamer/
       streamer.sh             # Playlist streamer: bookmark resume, resolution cap, ffmpeg → YouTube RTMP
@@ -456,3 +470,42 @@ No manual steps are required. ARM creates three role assignments at deploy time 
 | Automation Account managed identity | Virtual Machine Contributor | VM | Start/Stop runbooks can manage the VM |
 | VM managed identity | Key Vault Secrets Officer | Key Vault | `streamer.sh` reads the stream key; web backend writes stream key updates |
 | Deployer (optional) | Key Vault Secrets Officer | Key Vault | You can write the stream key after deployment (only if `deployerObjectId` is provided) |
+
+---
+
+## Configuration Files (`/etc/yt/`)
+
+All deployment-specific configuration lives under `/etc/yt/`, separate from the code in `/opt/yt/`. This means `git pull` never overwrites local settings, and `update.sh` is always safe to run.
+
+| File | Purpose |
+|---|---|
+| `/etc/yt/nameprefix` | Name prefix for all Azure resources |
+| `/etc/yt/resourcegroup` | Azure resource group name |
+| `/etc/yt/customdomain` | Custom domain for TLS (empty = use Azure DNS name) |
+| `/etc/yt/schedule.json` | Stream schedule, events, resolution, shuffle, watermark |
+| `/etc/yt/playlist.txt` | ffmpeg concat playlist (auto-generated) |
+| `/etc/yt/playlist-config.json` | Per-video enable/disable and order |
+| `/etc/yt/playlist-state.json` | Resume bookmark (last played index) |
+| `/etc/yt/blobfuse2/blobfuse2.yaml` | Blobfuse2 mount config (generated from template at install) |
+| `/etc/yt/caddy/Caddyfile` | Caddy reverse proxy config (generated from template at install) |
+| `/etc/yt/caddy/auth.conf` | HTTP basic auth credentials (fetched from Key Vault) |
+
+These files are created by `install-services.sh` on first boot. The `update.sh` script intentionally never touches `/etc/yt/` — only code under `/opt/yt/` is updated.
+
+---
+
+## Updating a Running VM
+
+Use the **Update** button in the web UI, or from SSH:
+
+```bash
+sudo /usr/local/bin/update.sh
+```
+
+The update script:
+1. Runs `git pull --ff-only` in `/opt/yt/`
+2. Compares changed files against the previous commit
+3. Re-installs any changed scripts to `/usr/local/bin/`
+4. Reloads changed systemd units
+5. Restarts affected services (except the streamer — pass `--restart-streamer` to include it)
+6. Never touches `/etc/yt/` configuration files
