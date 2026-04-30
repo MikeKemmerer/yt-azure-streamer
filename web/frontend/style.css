@@ -170,6 +170,19 @@ button.danger:hover:not(:disabled) { background: #b71c1c; }
   flex-wrap: wrap;
 }
 
+.playlist-sort-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.sort-label {
+  font-size: 0.85rem;
+  color: #666;
+  font-weight: 500;
+}
+
 pre {
   font-size: 0.85rem;
   white-space: pre-wrap;
@@ -321,4 +334,23 @@ details summary {
   font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
   font-size: 0.8rem;
   line-height: 1.5;
+}
+
+/* ── Update ───────────────────────────────────────────────────────── */
+
+.update-controls {
+  margin-bottom: 10px;
+}
+
+.update-output {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: 12px;
+  border-radius: 4px;
+  max-height: 250px;
+  overflow-y: auto;
+  font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  margin-top: 10px;
 }
