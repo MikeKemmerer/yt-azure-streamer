@@ -907,8 +907,9 @@ async function uploadFile(file) {
       if (!res.ok) {
         showStatus(status, data.error || 'Update failed', false);
       } else {
-        showStatus(status, 'Update complete.', true);
+        showStatus(status, 'Update complete. Reloading...', true);
         if (data.streamerPending) showRestartBtn();
+        setTimeout(() => location.reload(true), 6000);
       }
     } catch (e) {
       showStatus(status, 'Update applied — server restarted.', true);
