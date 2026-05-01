@@ -55,6 +55,8 @@ The script will:
 
 Settings are saved to `.deploy-config.json` (git-ignored) for easy re-runs.
 
+> **After `deploy.sh` finishes:** The VM starts running cloud-init in the background to install packages and configure all services. This takes approximately **10 minutes**. The web UI will not be reachable until cloud-init completes. You can monitor progress via SSH: `sudo tail -f /var/log/cloud-init-output.log`.
+
 ### Manual Deployment
 
 <details>
@@ -406,7 +408,7 @@ yt-azure-streamer/
   schedule.json               # Stream schedule + resolution config (template — deployed to /etc/yt/)
   scripts/
     generate-playlist.sh      # Scans blobfuse2 mount, writes ffmpeg concat playlist
-    migrate-configs.sh        # One-time migration: moves configs from /opt/yt/ → /etc/yt/
+    migrate-configs.sh        # Upgrade helper: moves configs from /opt/yt/ → /etc/yt/ (not needed on fresh installs)
     role-assign.sh            # (legacy) manual role assignment — superseded by ARM
     schedule-sync.sh          # Syncs schedule.json → Azure Automation weekly schedules
     setup-caddy-auth.sh       # Fetches web UI credentials from Key Vault → /etc/yt/caddy/auth.conf
@@ -422,6 +424,8 @@ yt-azure-streamer/
     schedule-sync.service     # Type=oneshot; called by timer
     schedule-sync.timer       # OnBootSec=2min, OnUnitActiveSec=10min
     caddy.service             # Custom Caddy unit (disables default apt unit)
+    caddy-auth-setup.service  # Type=oneshot; fetches web UI credentials from Key Vault
+    caddy-auth-setup.timer    # Retries every 5 min until secrets are available, then stops
     web-backend.service       # Node.js backend on port 8080
     blobfuse2.mount           # Installed as mnt-blobfuse2.mount; Type=fuse3
   tools/
@@ -509,3 +513,79 @@ The update script:
 4. Reloads changed systemd units
 5. Restarts affected services (except the streamer — pass `--restart-streamer` to include it)
 6. Never touches `/etc/yt/` configuration files
+
+> **Upgrading from an older install** (before the `/etc/yt/` config split): Run `sudo bash /opt/yt/scripts/migrate-configs.sh` **once** after pulling the new code. This moves all deployment-specific configs from `/opt/yt/` to `/etc/yt/` so future `git pull`s never conflict with local settings.
+
+---
+
+## Troubleshooting
+
+### Web UI not reachable after deploy
+
+Cloud-init runs in the background for ~10 minutes after `deploy.sh` finishes. Monitor progress:
+
+```bash
+sudo tail -f /var/log/cloud-init-output.log
+```
+
+The web UI becomes available once `install-services.sh` completes. If it still doesn't load after 15 minutes, check the Caddy service:
+
+```bash
+systemctl status caddy.service
+journalctl -u caddy.service -n 50
+```
+
+### Web UI shows "Unauthorized" or no auth prompt
+
+The `caddy-auth-setup.timer` fetches web UI credentials from Key Vault and writes `/etc/yt/caddy/auth.conf`. It retries every 5 minutes until the Key Vault secrets are available. Force a retry immediately:
+
+```bash
+sudo systemctl start caddy-auth-setup.service
+journalctl -u caddy-auth-setup.service -n 20
+```
+
+### Streamer fails to start — "stream key not found"
+
+The YouTube stream key must be stored in Key Vault before the streamer can start:
+
+```bash
+az keyvault secret set \
+  --vault-name <prefix>-kv \
+  --name youtube-stream-key \
+  --value <YOUR_STREAM_KEY>
+```
+
+### No videos in playlist / blobfuse2 mount not working
+
+Check that the blobfuse2 mount is up and that videos are uploaded:
+
+```bash
+systemctl status mnt-blobfuse2.mount
+ls /mnt/blobfuse2/
+```
+
+If the mount is failed, check logs and verify the VM managed identity has **Storage Blob Data Reader** on the storage account:
+
+```bash
+journalctl -u mnt-blobfuse2.mount -n 50
+```
+
+### Stream starts but YouTube shows no signal
+
+1. Confirm the stream key matches the active YouTube Live event in [YouTube Studio](https://studio.youtube.com/).
+2. Check ffmpeg output in the streamer log — look for RTMP connection errors:
+   ```bash
+   journalctl -u streamer.service -n 100
+   ```
+3. Outbound TCP on port 1935 (RTMP) must not be blocked. The default NSG only restricts inbound traffic; outbound is unrestricted.
+
+### Schedule sync not updating Azure Automation
+
+Run the sync manually and check for errors:
+
+```bash
+sudo /usr/local/bin/schedule-sync.sh
+journalctl -u schedule-sync.service -n 50
+```
+
+Ensure the VM managed identity has **Automation Contributor** on the Automation Account (wired by ARM automatically).
