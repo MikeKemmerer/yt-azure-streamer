@@ -326,24 +326,31 @@ except: pass
 
   # Progress bar (1% height at very bottom) and elapsed/remaining time (bottom right)
   if [[ "${DURATION:-0}" -gt 0 ]]; then
-    VF_PARTS+=("drawbox=x=0:y=ih-ih/100:w=iw*(t/${DURATION}):h=ih/100:color=red@0.8:thickness=fill:eval=frame")
+    # min(iw,...) is needed here: drawbox uses raw ffmpeg t (not the clamped eif exprs below),
+    # so iw*(t/DURATION) can briefly exceed iw when PTS overshoots the probed duration.
+    VF_PARTS+=("drawbox=x=0:y=ih-ih/100:w=min(iw\,iw*(t/${DURATION})):h=ih/100:color=red@0.8:thickness=fill:eval=frame")
     # Build time display: MM:SS if duration < 1h, else H:MM:SS
     # Escaping for unquoted drawtext text in filter_complex:
     #   \: → escaped colon (not option separator), unescapes to : (eif separator AND display colon)
     #   \, → escaped comma (not filter separator), unescapes to , (expression comma)
-    if [[ "$DURATION" -ge 3600 ]]; then
-      ELAPSED_EXPR='%{eif\:trunc(t/3600)\:d}\:%{eif\:mod(trunc(t/60)\,60)\:d\:2}\:%{eif\:mod(trunc(t)\,60)\:d\:2}'
-      DUR_H=$((DURATION/3600))
-      DUR_M=$(( (DURATION%3600)/60 ))
-      DUR_S=$((DURATION%60))
-      DUR_FMT=$(printf '%d\:%02d\:%02d' "$DUR_H" "$DUR_M" "$DUR_S")
-    else
-      ELAPSED_EXPR='%{eif\:trunc(t/60)\:d}\:%{eif\:mod(trunc(t)\,60)\:d\:2}'
-      DUR_M=$((DURATION/60))
-      DUR_S=$((DURATION%60))
-      DUR_FMT=$(printf '%d\:%02d' "$DUR_M" "$DUR_S")
+    # t is clamped to DURATION (shell-expanded integer) via min() in every eif to prevent elapsed > total
+    # at end-of-video when PTS slightly overshoots the probed duration.
+    # (Duplication of min() across eif sub-expressions is unavoidable: drawtext has no variable assignment.)
+    if [[ -f "$WM_FONT_SANS" ]]; then
+      if [[ "$DURATION" -ge 3600 ]]; then
+        ELAPSED_EXPR="%{eif\:trunc(min(t\,${DURATION})/3600)\:d}\:%{eif\:mod(trunc(min(t\,${DURATION})/60)\,60)\:d\:2}\:%{eif\:mod(trunc(min(t\,${DURATION}))\,60)\:d\:2}"
+        DUR_H=$((DURATION/3600))
+        DUR_M=$(( (DURATION%3600)/60 ))
+        DUR_S=$((DURATION%60))
+        DUR_FMT=$(printf '%d\:%02d\:%02d' "$DUR_H" "$DUR_M" "$DUR_S")
+      else
+        ELAPSED_EXPR="%{eif\:trunc(min(t\,${DURATION})/60)\:d}\:%{eif\:mod(trunc(min(t\,${DURATION}))\,60)\:d\:2}"
+        DUR_M=$((DURATION/60))
+        DUR_S=$((DURATION%60))
+        DUR_FMT=$(printf '%d\:%02d' "$DUR_M" "$DUR_S")
+      fi
+      VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:text=${ELAPSED_EXPR} / ${DUR_FMT}:fontsize=h/40:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-w/30:y=h-h/7")
     fi
-    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:text=${ELAPSED_EXPR} / ${DUR_FMT}:fontsize=h/40:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-w/30:y=h-h/7")
   fi
 
   NOW_FILE="/run/streamer-now.json"
