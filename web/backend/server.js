@@ -148,7 +148,11 @@ const server = http.createServer(async (req, res) => {
       const keyVault = prefix.toLowerCase() + '-kv';
       let hostname = '';
       try { hostname = require('os').hostname(); } catch {}
-      jsonResponse(res, 200, { prefix, storageAccount: storage, automationAccount: automation, keyVault, hostname });
+      let version = '';
+      try { version = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: '/opt/yt', timeout: 5000 }).toString().trim(); } catch {}
+      let branch = '';
+      try { branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: '/opt/yt', timeout: 5000 }).toString().trim(); } catch {}
+      jsonResponse(res, 200, { prefix, storageAccount: storage, automationAccount: automation, keyVault, hostname, version, branch });
       return;
     }
 

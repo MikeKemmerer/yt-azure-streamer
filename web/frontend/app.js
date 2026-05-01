@@ -40,6 +40,11 @@ async function loadInfo() {
   try {
     const data = await api('/api/info');
     document.getElementById('info').textContent = JSON.stringify(data, null, 2);
+    // Populate footer version
+    const versionEl = document.getElementById('app-version');
+    if (versionEl && data.version) {
+      versionEl.textContent = `${data.branch || 'main'} @ ${data.version}`;
+    }
   } catch {
     document.getElementById('info').textContent = 'Error loading info';
   }

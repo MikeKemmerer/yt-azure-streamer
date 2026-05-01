@@ -738,3 +738,16 @@ body.dark .title-modal-list input { background: #333; border-color: #555; color:
   line-height: 1.5;
   margin-top: 10px;
 }
+
+/* ── Footer ────────────────────────────────────────────────────────── */
+.app-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  margin-top: 24px;
+  font-size: 0.8rem;
+  color: #888;
+  border-top: 1px solid #eee;
+}
+body.dark .app-footer { color: #666; border-top-color: #333; }
