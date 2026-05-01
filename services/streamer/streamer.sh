@@ -328,21 +328,23 @@ except: pass
   if [[ "${DURATION:-0}" -gt 0 ]]; then
     VF_PARTS+=("drawbox=x=0:y=ih-ih/200:w=iw*(t/${DURATION}):h=ih/200:color=red@0.8:t=fill")
     # Build time display: MM:SS if duration < 1h, else H:MM:SS
+    # Uses unquoted text mode with proper escaping:
+    #   \\\: → \: in text value (eif argument separator)
+    #   \:  → :  in text value (display colon, not option separator)
+    #   \,  → ,  in text value (expression comma, not filter separator)
     if [[ "$DURATION" -ge 3600 ]]; then
-      # Elapsed with hours: H:MM:SS
-      ELAPSED_EXPR='%{eif\\:trunc(t/3600)\\:d}\\:%{eif\\:mod(trunc(t/60)\\,60)\\:d\\:2}\\:%{eif\\:mod(trunc(t)\\,60)\\:d\\:2}'
+      ELAPSED_EXPR='%{eif\\\:trunc(t/3600)\\\:d}\:%{eif\\\:mod(trunc(t/60)\,60)\\\:d\\\:2}\:%{eif\\\:mod(trunc(t)\,60)\\\:d\\\:2}'
       DUR_H=$((DURATION/3600))
       DUR_M=$(( (DURATION%3600)/60 ))
       DUR_S=$((DURATION%60))
-      DUR_FMT=$(printf '%d\\:%02d\\:%02d' "$DUR_H" "$DUR_M" "$DUR_S")
+      DUR_FMT=$(printf '%d\:%02d\:%02d' "$DUR_H" "$DUR_M" "$DUR_S")
     else
-      # Elapsed without hours: M:SS or MM:SS
-      ELAPSED_EXPR='%{eif\\:trunc(t/60)\\:d}\\:%{eif\\:mod(trunc(t)\\,60)\\:d\\:2}'
+      ELAPSED_EXPR='%{eif\\\:trunc(t/60)\\\:d}\:%{eif\\\:mod(trunc(t)\,60)\\\:d\\\:2}'
       DUR_M=$((DURATION/60))
       DUR_S=$((DURATION%60))
-      DUR_FMT=$(printf '%d\\:%02d' "$DUR_M" "$DUR_S")
+      DUR_FMT=$(printf '%d\:%02d' "$DUR_M" "$DUR_S")
     fi
-    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:text='${ELAPSED_EXPR} / ${DUR_FMT}':fontsize=h/40:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-w/30:y=h-h/7")
+    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:text=${ELAPSED_EXPR} / ${DUR_FMT}:fontsize=h/40:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-w/30:y=h-h/7")
   fi
 
   NOW_FILE="/run/streamer-now.json"
