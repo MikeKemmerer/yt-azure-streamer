@@ -6,12 +6,95 @@ body {
   padding: 24px;
   background: #f0f2f5;
   color: #1a1a1a;
+  transition: background .2s, color .2s;
+}
+
+.top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 600px;
+  margin-bottom: 20px;
 }
 
 h1 {
-  margin-bottom: 20px;
   font-size: 1.5rem;
 }
+
+/* ── Dark mode toggle ─────────────────────────────────────────────── */
+
+.dark-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  user-select: none;
+}
+.dark-toggle input { display: none; }
+.toggle-slider {
+  width: 36px;
+  height: 20px;
+  background: #ccc;
+  border-radius: 10px;
+  position: relative;
+  transition: background .2s;
+}
+.toggle-slider::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform .2s;
+}
+.dark-toggle input:checked + .toggle-slider {
+  background: #0078d4;
+}
+.dark-toggle input:checked + .toggle-slider::after {
+  transform: translateX(16px);
+}
+
+/* ── Dark mode overrides ──────────────────────────────────────────── */
+
+body.dark {
+  background: #1a1a1a;
+  color: #e0e0e0;
+}
+body.dark .card {
+  background: #2a2a2a;
+  box-shadow: 0 1px 3px rgba(0,0,0,.4);
+}
+body.dark .hint { color: #999; }
+body.dark .now-playing { background: #1b3a1e; }
+body.dark .up-next ol { color: #aaa; }
+body.dark input[type="password"],
+body.dark select,
+body.dark .schedule-editor input[type="text"],
+body.dark .schedule-editor input[type="time"],
+body.dark .log-controls select {
+  background: #333;
+  color: #e0e0e0;
+  border-color: #555;
+}
+body.dark button.secondary { background: #444; color: #ddd; }
+body.dark button.secondary:hover:not(:disabled) { background: #555; }
+body.dark #video-list li { border-bottom-color: #444; }
+body.dark #video-list li.drag-over { background: #1a3a5c; }
+body.dark .grip { color: #666; }
+body.dark .video-num { color: #777; }
+body.dark .uptime { color: #999; }
+body.dark .schedule-table th { color: #aaa; }
+body.dark .schedule-table td,
+body.dark .schedule-table th { border-bottom-color: #444; }
+body.dark .event-editor { border-bottom-color: #444; }
+body.dark .health-state { color: #999; }
+body.dark .sort-label { color: #999; }
+body.dark .countdown { color: #999; }
+body.dark .toggle-label { color: #ccc; }
 
 h2 {
   font-size: 1.1rem;
@@ -110,33 +193,37 @@ button.danger:hover:not(:disabled) { background: #b71c1c; }
   background: #e8f5e9;
   padding: 8px 12px;
   border-radius: 4px;
-  margin-bottom: 10px;
+  margin-bottom: 6px;
   font-size: 0.9rem;
-}
-.progress-text {
-  margin-left: 10px;
-  font-size: 0.8rem;
-  color: #555;
-}
-.progress-bar-container {
-  margin-top: 6px;
-  height: 6px;
-  background: #c8e6c9;
-  border-radius: 3px;
-  overflow: hidden;
-}
-.progress-bar {
-  height: 100%;
-  background: #43a047;
-  transition: width 1s linear;
 }
 .stream-preview {
   margin-bottom: 10px;
+  background: #000;
+  border-radius: 6px;
+  overflow: hidden;
 }
 .stream-preview img {
-  max-width: 100%;
-  border-radius: 4px;
-  border: 1px solid #ddd;
+  width: 100%;
+  display: block;
+}
+.progress-bar-container {
+  height: 5px;
+  background: #333;
+  cursor: default;
+}
+.progress-bar {
+  height: 100%;
+  background: #e53935;
+  transition: width 1s linear;
+}
+.progress-time {
+  display: flex;
+  justify-content: flex-end;
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  font-family: monospace;
+  color: #ccc;
+  background: #111;
 }
 
 .up-next {
