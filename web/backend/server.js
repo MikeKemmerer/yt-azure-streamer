@@ -20,7 +20,7 @@ const PLAYLIST_CONFIG = '/etc/yt/playlist-config.json';
 const PLAYLIST_FILE = '/etc/yt/playlist.txt';
 const STATE_FILE = '/etc/yt/playlist-state.json';
 const NOW_FILE = '/run/streamer-now.json';
-const PREVIEW_FILE = '/tmp/stream-preview.jpg';
+const PREVIEW_FILE = '/opt/yt/web/frontend/stream-preview.jpg';
 const VIDEO_DIR = '/mnt/blobfuse2';
 const VIDEO_EXTENSIONS = ['.mp4', '.mkv', '.mov', '.avi', '.ts', '.flv'];
 

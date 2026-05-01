@@ -95,7 +95,7 @@ async function refreshStreamerStatus() {
 
     // Stream preview
     if (data.active) {
-      previewImg.src = '/api/preview?' + Date.now();
+      previewImg.src = '/stream-preview.jpg?' + Date.now();
       previewImg.onload = () => { preview.style.display = ''; };
       previewImg.onerror = () => { preview.style.display = 'none'; };
     } else {
