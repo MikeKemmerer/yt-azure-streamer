@@ -73,6 +73,7 @@ async function refreshStreamerStatus() {
     uptimeEl.textContent = data.active && data.uptimeSeconds ? '(' + fmtDuration(data.uptimeSeconds) + ')' : '';
     startBtn.disabled = data.active;
     stopBtn.disabled = !data.active;
+    document.getElementById('streamer-skip').disabled = !data.active;
     if (data.active && data.nowPlaying) {
       nowTitle.textContent = data.nowPlaying;
       nowPlaying.style.display = '';
@@ -138,6 +139,16 @@ document.getElementById('streamer-stop').addEventListener('click', async () => {
     await api('/api/streamer/stop', { method: 'POST' });
     showStatus(status, 'Streamer stopped.', true);
     await refreshStreamerStatus();
+  } catch (e) { showStatus(status, e.message, false); }
+});
+
+document.getElementById('streamer-skip').addEventListener('click', async () => {
+  const status = document.getElementById('streamer-action-status');
+  try {
+    document.getElementById('streamer-skip').disabled = true;
+    await api('/api/streamer/skip', { method: 'POST' });
+    showStatus(status, 'Skipping to next video...', true);
+    setTimeout(refreshStreamerStatus, 3000);
   } catch (e) { showStatus(status, e.message, false); }
 });
 
