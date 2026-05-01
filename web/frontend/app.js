@@ -499,6 +499,7 @@ async function loadSystem() {
     const hrs = Math.floor((uptimeSec % 86400) / 3600);
     document.getElementById('system-stats').innerHTML = `
       <div class="stat-row"><strong>Uptime:</strong> ${days}d ${hrs}h</div>
+      <div class="stat-row"><strong>CPU:</strong> ${data.cpu.load1m != null ? data.cpu.load1m.toFixed(2) : '?'} / ${data.cpu.cores || '?'} cores (1m avg)</div>
       <div class="stat-row"><strong>Memory:</strong> ${data.memory.usedMB || '?'} / ${data.memory.totalMB || '?'} MB</div>
       <div class="stat-row"><strong>Disk:</strong> ${data.disk.usedGB || '?'} / ${data.disk.totalGB || '?'} GB</div>
     `;

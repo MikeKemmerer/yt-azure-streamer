@@ -205,7 +205,7 @@ while true; do
 
   if [[ "$WATERMARK" == true && -f "$WM_FONT_SANS" ]]; then
     # Break long titles into multiple lines at the nearest space to optimal split points
-    MAX_LINE=45
+    MAX_LINE=50
     TITLE_FILE="/tmp/streamer-title.txt"
     if [[ ${#TITLE} -gt $MAX_LINE ]]; then
       NUM_LINES=$(( (${#TITLE} + MAX_LINE - 1) / MAX_LINE ))

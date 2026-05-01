@@ -140,7 +140,10 @@ const server = http.createServer(async (req, res) => {
       const prefix = readPrefix();
       const storage = config.storageAccountTemplate.replace("STORAGE_ACCOUNT", prefix.toLowerCase());
       const automation = config.automationAccountTemplate.replace("AUTOMATION_ACCOUNT", prefix + "-automation");
-      jsonResponse(res, 200, { prefix, storageAccount: storage, automationAccount: automation });
+      const keyVault = prefix.toLowerCase() + '-kv';
+      let hostname = '';
+      try { hostname = require('os').hostname(); } catch {}
+      jsonResponse(res, 200, { prefix, storageAccount: storage, automationAccount: automation, keyVault, hostname });
       return;
     }
 
@@ -507,11 +510,21 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ─── GET /api/system ───────────────────────────────────────────
-    // Basic VM stats: uptime, memory, disk
+    // Basic VM stats: uptime, memory, disk, cpu
     if (req.method === 'GET' && req.url === '/api/system') {
-      const result = { uptime: '', memory: {}, disk: {} };
+      const result = { uptime: '', memory: {}, disk: {}, cpu: {} };
       try {
         result.uptime = fs.readFileSync('/proc/uptime', 'utf8').split(' ')[0];
+      } catch {}
+      try {
+        const loadavg = fs.readFileSync('/proc/loadavg', 'utf8').trim().split(/\s+/);
+        const numCpus = require('os').cpus().length;
+        result.cpu = {
+          load1m: parseFloat(loadavg[0]),
+          load5m: parseFloat(loadavg[1]),
+          load15m: parseFloat(loadavg[2]),
+          cores: numCpus
+        };
       } catch {}
       try {
         const meminfo = fs.readFileSync('/proc/meminfo', 'utf8');
