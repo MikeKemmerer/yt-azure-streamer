@@ -70,6 +70,10 @@ button.secondary { background: #e0e0e0; color: #333; }
 button.secondary:hover:not(:disabled) { background: #ccc; }
 button.danger { background: #d32f2f; }
 button.danger:hover:not(:disabled) { background: #b71c1c; }
+.restart-btn { background: #e65100; }
+.restart-btn:hover:not(:disabled) { background: #bf360c; }
+#restart-wrapper { margin-top: 10px; display: flex; align-items: center; gap: 8px; }
+.countdown { font-size: 0.85rem; color: #666; }
 
 /* ── Status messages ──────────────────────────────────────────────── */
 

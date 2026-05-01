@@ -319,6 +319,15 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // ─── POST /api/streamer/restart ────────────────────────────────
+    if (req.method === 'POST' && req.url === '/api/streamer/restart') {
+      execFile('systemctl', ['restart', 'streamer.service'], { timeout: 30000 }, (err) => {
+        if (err) return jsonResponse(res, 500, { error: 'Failed to restart streamer' });
+        jsonResponse(res, 200, { ok: true });
+      });
+      return;
+    }
+
     // ─── GET /api/health ───────────────────────────────────────────
     // Returns status of all systemd units at a glance
     if (req.method === 'GET' && req.url === '/api/health') {

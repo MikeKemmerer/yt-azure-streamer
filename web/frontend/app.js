@@ -113,6 +113,42 @@ document.getElementById('streamer-stop').addEventListener('click', async () => {
   } catch (e) { showStatus(status, e.message, false); }
 });
 
+let restartTimer = null;
+
+function showRestartButton() {
+  const wrapper = document.getElementById('restart-wrapper');
+  const countdown = document.getElementById('restart-countdown');
+  if (restartTimer) clearInterval(restartTimer);
+  wrapper.style.display = '';
+  let remaining = 10;
+  countdown.textContent = `(${remaining}s)`;
+  restartTimer = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      clearInterval(restartTimer);
+      restartTimer = null;
+      wrapper.style.display = 'none';
+    } else {
+      countdown.textContent = `(${remaining}s)`;
+    }
+  }, 1000);
+}
+
+document.getElementById('restart-streamer').addEventListener('click', async () => {
+  const status = document.getElementById('settings-status');
+  const btn = document.getElementById('restart-streamer');
+  const wrapper = document.getElementById('restart-wrapper');
+  if (restartTimer) { clearInterval(restartTimer); restartTimer = null; }
+  try {
+    btn.disabled = true;
+    await api('/api/streamer/restart', { method: 'POST' });
+    showStatus(status, 'Streamer restarted.', true);
+    wrapper.style.display = 'none';
+    await refreshStreamerStatus();
+  } catch (e) { showStatus(status, e.message, false); }
+  finally { btn.disabled = false; }
+});
+
 /* ── Stream Key ──────────────────────────────────────────────────── */
 
 document.getElementById('stream-key-form').addEventListener('submit', async (e) => {
@@ -155,6 +191,7 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
       })
     });
     showStatus(status, 'Settings saved.', true);
+    showRestartButton();
   } catch (e) { showStatus(status, e.message, false); }
 });
 
