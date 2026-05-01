@@ -239,12 +239,51 @@ while true; do
     else
       printf '%s' "$TITLE" > "$TITLE_FILE"
     fi
+
+    # --- "Up Next" cycling text ---
+    UPNEXT_FILE="/tmp/streamer-upnext.txt"
+    NEXT_INDEX=$(( (INDEX + 1) % NUM_VIDEOS ))
+    NEXT_BASENAME=$(basename "${VIDEOS[$NEXT_INDEX]}")
+    NEXT_TITLE="Up Next: ${NEXT_BASENAME%.*}"
+    UPNEXT_FONTSIZE="h/22"
+    if [[ ${#NEXT_TITLE} -gt $((MAX_LINE * 2)) ]]; then
+      UPNEXT_FONTSIZE="h/28"
+    fi
+    if [[ ${#NEXT_TITLE} -gt $MAX_LINE ]]; then
+      TARGET=$(( ${#NEXT_TITLE} / 2 ))
+      BEST=-1
+      for ((d=0; d < ${#NEXT_TITLE}; d++)); do
+        FWD=$((TARGET + d))
+        BWD=$((TARGET - d))
+        if [[ $FWD -lt ${#NEXT_TITLE} && "${NEXT_TITLE:FWD:1}" == " " ]]; then
+          BEST=$FWD; break
+        fi
+        if [[ $BWD -gt 0 && "${NEXT_TITLE:BWD:1}" == " " ]]; then
+          BEST=$BWD; break
+        fi
+      done
+      if [[ $BEST -gt 0 ]]; then
+        printf '%s\n%s' "${NEXT_TITLE:0:BEST}" "${NEXT_TITLE:BEST+1}" > "$UPNEXT_FILE"
+      else
+        printf '%s' "$NEXT_TITLE" > "$UPNEXT_FILE"
+      fi
+    else
+      printf '%s' "$NEXT_TITLE" > "$UPNEXT_FILE"
+    fi
+
+    # Alpha expressions for 41s cycle: 33s main visible, 0.5s crossfade, 7s up-next, 0.5s crossfade
+    # Commas escaped as \, for ffmpeg filter_complex syntax
+    ALPHA_MAIN='if(lt(mod(t\,41)\,32.5)\,1\,if(lt(mod(t\,41)\,33)\,(33-mod(t\,41))/0.5\,if(lt(mod(t\,41)\,40)\,0\,(mod(t\,41)-40)/0.5)))'
+    ALPHA_NEXT='if(lt(mod(t\,41)\,32.5)\,0\,if(lt(mod(t\,41)\,33)\,(mod(t\,41)-32.5)/0.5\,if(lt(mod(t\,41)\,40)\,1\,(41-mod(t\,41))/0.5)))'
+
     # Broadcast-style lower third:
-    # Single semi-transparent background bar, then two text lines on top
+    # Single semi-transparent background bar, church name always visible,
+    # title and "up next" crossfade on a 27s cycle
     CHURCH_NAME="Saint Demetrios Greek Orthodox Church - Seattle, WA"
     VF_PARTS+=("drawbox=x=0:y=ih-ih/6:w=iw:h=ih/6:color=black@0.5:t=fill")
     VF_PARTS+=("drawtext=fontfile=${WM_FONT_SERIF}:text='${CHURCH_NAME}':fontsize=h/32:fontcolor=white@0.9:shadowcolor=black@0.6:shadowx=2:shadowy=2:x=w/30:y=h-h/7")
-    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=${TITLE_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26")
+    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=${TITLE_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26:alpha='${ALPHA_MAIN}'")
+    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${UPNEXT_FILE}:fontsize=${UPNEXT_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26:alpha='${ALPHA_NEXT}'")
   fi
 
   # Build -vf argument as an array (avoids word-splitting issues with spaces in text)

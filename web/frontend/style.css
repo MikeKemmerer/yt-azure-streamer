@@ -523,6 +523,9 @@ body.dark .upload-pct { color: #aaa; }
 /* ── Update ───────────────────────────────────────────────────────── */
 
 .update-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   margin-bottom: 10px;
 }
 

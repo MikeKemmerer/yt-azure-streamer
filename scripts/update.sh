@@ -3,26 +3,34 @@ set -euo pipefail
 
 # Update script: pulls latest code and re-deploys changed scripts/units.
 # Safe to run while streaming — only restarts services whose files changed.
-# Usage: update.sh [--restart-streamer]
+# Usage: update.sh [--branch <branch>] [--restart-streamer]
 #
 # By default, streamer.service is NOT restarted (to avoid interrupting a live stream).
 # Pass --restart-streamer to force a restart.
+# --branch <name> selects which branch to pull (default: main)
 
 RESTART_STREAMER=false
-if [[ "${1:-}" == "--restart-streamer" ]]; then
-  RESTART_STREAMER=true
-fi
+BRANCH="main"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --restart-streamer) RESTART_STREAMER=true; shift ;;
+    --branch) BRANCH="${2:-main}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
 
 REPO_DIR="/opt/yt"
 cd "$REPO_DIR"
 
 echo "=== yt-azure-streamer update ==="
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) Starting update..."
+echo "Target branch: $BRANCH"
 
 # --- Pull latest code ---
-echo "Pulling latest from origin..."
+echo "Pulling latest from origin/$BRANCH..."
+git fetch origin "$BRANCH"
 BEFORE=$(git rev-parse HEAD)
-git pull --ff-only origin main
+git reset --hard "origin/$BRANCH"
 AFTER=$(git rev-parse HEAD)
 
 if [[ "$BEFORE" == "$AFTER" ]]; then

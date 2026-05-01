@@ -515,7 +515,16 @@ const server = http.createServer(async (req, res) => {
     // ─── POST /api/update ─────────────────────────────────────────
     // Pull latest code and re-deploy changed files
     if (req.method === 'POST' && req.url === '/api/update') {
-      execFile('/usr/local/bin/update.sh', [], {
+      const body = await readBody(req);
+      let branch = 'main';
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed.branch && /^[a-zA-Z0-9._-]+$/.test(parsed.branch)) {
+          branch = parsed.branch;
+        }
+      } catch { /* default to main */ }
+      const args = ['--branch', branch];
+      execFile('/usr/local/bin/yt-update.sh', args, {
         timeout: 60000,
         maxBuffer: 1024 * 256,
         env: { ...process.env, HOME: '/root', GIT_TERMINAL_PROMPT: '0' }

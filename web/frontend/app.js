@@ -647,11 +647,17 @@ document.getElementById('run-update').addEventListener('click', async () => {
   const btn = document.getElementById('run-update');
   const output = document.getElementById('update-output');
   const status = document.getElementById('update-status');
+  const useBeta = document.getElementById('update-beta').checked;
+  const branch = useBeta ? 'beta' : 'main';
   btn.disabled = true;
-  btn.textContent = 'Updating...';
+  btn.textContent = `Updating (${branch})...`;
   output.style.display = 'none';
   try {
-    const res = await fetch('/api/update', { method: 'POST' });
+    const res = await fetch('/api/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ branch })
+    });
     const data = await res.json();
     output.textContent = data.output || data.error || 'No output';
     output.style.display = '';
