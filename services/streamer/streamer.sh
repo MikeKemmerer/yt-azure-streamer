@@ -272,18 +272,18 @@ while true; do
     fi
 
     # Alpha expressions for 41s cycle: 33s main visible, 0.5s crossfade, 7s up-next, 0.5s crossfade
-    # Commas escaped as \, for ffmpeg filter_complex syntax
+    # Timeline: 0-32.5 main=1, 32.5-33 fade out main/fade in next, 33-40 next=1, 40-41 fade out next/fade in main
     ALPHA_MAIN='if(lt(mod(t\,41)\,32.5)\,1\,if(lt(mod(t\,41)\,33)\,(33-mod(t\,41))/0.5\,if(lt(mod(t\,41)\,40)\,0\,(mod(t\,41)-40)/0.5)))'
     ALPHA_NEXT='if(lt(mod(t\,41)\,32.5)\,0\,if(lt(mod(t\,41)\,33)\,(mod(t\,41)-32.5)/0.5\,if(lt(mod(t\,41)\,40)\,1\,(41-mod(t\,41))/0.5)))'
 
     # Broadcast-style lower third:
     # Single semi-transparent background bar, church name always visible,
-    # title and "up next" crossfade on a 27s cycle
+    # title and "up next" crossfade on a 41s cycle
     CHURCH_NAME="Saint Demetrios Greek Orthodox Church - Seattle, WA"
     VF_PARTS+=("drawbox=x=0:y=ih-ih/6:w=iw:h=ih/6:color=black@0.5:t=fill")
     VF_PARTS+=("drawtext=fontfile=${WM_FONT_SERIF}:text='${CHURCH_NAME}':fontsize=h/32:fontcolor=white@0.9:shadowcolor=black@0.6:shadowx=2:shadowy=2:x=w/30:y=h-h/7")
-    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=${TITLE_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26:alpha='${ALPHA_MAIN}'")
-    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${UPNEXT_FILE}:fontsize=${UPNEXT_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26:alpha='${ALPHA_NEXT}'")
+    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=${TITLE_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26:alpha=${ALPHA_MAIN}")
+    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${UPNEXT_FILE}:fontsize=${UPNEXT_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26:alpha=${ALPHA_NEXT}")
   fi
 
   # Build -vf argument as an array (avoids word-splitting issues with spaces in text)
