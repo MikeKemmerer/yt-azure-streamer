@@ -374,6 +374,16 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // ─── POST /api/streamer/skip ───────────────────────────────────
+    // Kill the current ffmpeg stream process, causing the loop to advance
+    if (req.method === 'POST' && req.url === '/api/streamer/skip') {
+      execFile('pkill', ['-f', 'ffmpeg.*flv.*rtmp'], { timeout: 5000 }, (err) => {
+        // pkill returns 1 if no process found — not a real error for us
+        jsonResponse(res, 200, { ok: true });
+      });
+      return;
+    }
+
     // ─── GET /api/health ───────────────────────────────────────────
     // Returns status of all systemd units at a glance
     if (req.method === 'GET' && req.url === '/api/health') {

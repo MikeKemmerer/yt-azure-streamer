@@ -247,11 +247,6 @@ while true; do
   fi
 
   # Build -vf argument as an array (avoids word-splitting issues with spaces in text)
-  VF_ARGS=()
-  if [[ ${#VF_PARTS[@]} -gt 0 ]]; then
-    VF_ARGS=(-vf "$(IFS=,; echo "${VF_PARTS[*]}")")
-  fi
-
   # Probe video duration and write "now playing" state for the web UI
   DURATION=$(ffprobe -v error -show_entries format=duration \
     -of csv=p=0 "$VIDEO" 2>/dev/null || echo "0")
@@ -260,32 +255,25 @@ while true; do
   printf '{"file":"%s","startedAt":%d,"duration":%d}\n' \
     "$VIDEO" "$(date +%s)" "${DURATION:-0}" > "$NOW_FILE"
 
-  # Start a background process to capture periodic preview screenshots
+  # Build filter_complex: apply filters, split into stream + preview
   PREVIEW_FILE="/tmp/stream-preview.jpg"
-  START_EPOCH=$(date +%s)
-  (
-    sleep 5
-    while kill -0 $$ 2>/dev/null; do
-      # Seek to current elapsed position and grab one frame
-      ELAPSED=$(( $(date +%s) - START_EPOCH ))
-      ffmpeg -y -ss "$ELAPSED" -i "$VIDEO" -frames:v 1 -q:v 5 \
-        "$PREVIEW_FILE" </dev/null 2>/dev/null || true
-      sleep 10
-    done
-  ) &
-  PREVIEW_PID=$!
+  VF_STRING=""
+  if [[ ${#VF_PARTS[@]} -gt 0 ]]; then
+    VF_STRING="$(IFS=,; echo "${VF_PARTS[*]}"),"
+  fi
+  FILTER_COMPLEX="[0:v]${VF_STRING}split=2[stream][prev];[prev]fps=1/10,scale=640:-2[preview]"
 
   # Always re-encode to guarantee keyframes every 2 seconds (YouTube requires ≤4s)
+  # The split sends the same filtered video to both RTMP and a periodic JPEG preview
   ffmpeg -re -i "$VIDEO" \
-    "${VF_ARGS[@]}" \
+    -filter_complex "$FILTER_COMPLEX" \
+    -map "[stream]" -map 0:a \
     -c:v libx264 -preset veryfast -maxrate "$MAXRATE" -bufsize "$BUFSIZE" \
     -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)" \
     -c:a aac -b:a "$AUDIO_BR" -ar 44100 \
-    -f flv "$RTMP_URL" </dev/null || true
-
-  # Stop preview capture
-  kill "$PREVIEW_PID" 2>/dev/null || true
-  wait "$PREVIEW_PID" 2>/dev/null || true
+    -f flv "$RTMP_URL" \
+    -map "[preview]" \
+    -update 1 -q:v 3 "$PREVIEW_FILE" </dev/null || true
 
   # Update bookmark after each video completes (or is interrupted)
   echo "{\"index\": $INDEX, \"file\": \"$VIDEO\"}" > "$STATE_FILE"
