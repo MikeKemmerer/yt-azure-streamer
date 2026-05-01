@@ -244,7 +244,7 @@ while true; do
     # Broadcast-style lower third:
     # Single semi-transparent background bar, then two text lines on top
     CHURCH_NAME="Saint Demetrios Greek Orthodox Church - Seattle, WA"
-    VF_PARTS+=("drawbox=x=0:y=h-h/6:w=iw:h=h/6:color=black@0.5:t=fill")
+    VF_PARTS+=("drawbox=x=0:y=ih-ih/6:w=iw:h=ih/6:color=black@0.5:t=fill")
     VF_PARTS+=("drawtext=fontfile=${WM_FONT_SERIF}:text='${CHURCH_NAME}':fontsize=h/32:fontcolor=white@0.9:shadowcolor=black@0.6:shadowx=2:shadowy=2:x=w/30:y=h-h/7")
     VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=h/20:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26")
   fi
