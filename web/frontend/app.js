@@ -385,6 +385,7 @@ function needsTitleSuggestion(v) {
   const displayName = hasTitle ? v.title : name;
   if (displayName.includes('_')) return true;
   if (/version/i.test(displayName)) return true;
+  if (/\.(mp4|mkv|mov|avi|ts|flv)/i.test(displayName)) return true;
   if (!/^[A-Za-z]+ \d{1,2},\s*\d{4}/.test(name)) return true;
   return false;
 }
@@ -394,7 +395,9 @@ function suggestTitle(filename) {
   t = t.replace(/_/g, ' ');
   // Remove trailing version-like patterns (v2, v3, etc.)
   t = t.replace(/\s*v\d+$/i, '');
-  return t;
+  // Remove embedded file extensions
+  t = t.replace(/\.(mp4|mkv|mov|avi|ts|flv)/gi, '');
+  return t.trim();
 }
 
 document.getElementById('title-suggestions').addEventListener('click', () => {
