@@ -209,16 +209,15 @@ while true; do
     VF_PARTS+=("drawtext=fontfile=${WM_FONT}:text='${SAFE_TITLE}':fontsize='min(h/28\,w*0.9/max(1\,strlen(text)))':fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:box=1:boxcolor=black@0.4:boxborderw=10:x=(w-text_w)/2:y=h-h/8")
   fi
 
-  # Build -vf argument
-  VF_ARG=""
+  # Build -vf argument as an array (avoids word-splitting issues with spaces in text)
+  VF_ARGS=()
   if [[ ${#VF_PARTS[@]} -gt 0 ]]; then
-    VF_ARG="-vf $(IFS=,; echo "${VF_PARTS[*]}")"
+    VF_ARGS=(-vf "$(IFS=,; echo "${VF_PARTS[*]}")")
   fi
 
   # Always re-encode to guarantee keyframes every 2 seconds (YouTube requires ≤4s)
-  # shellcheck disable=SC2086
   ffmpeg -re -i "$VIDEO" \
-    $VF_ARG \
+    "${VF_ARGS[@]}" \
     -c:v libx264 -preset veryfast -maxrate "$MAXRATE" -bufsize "$BUFSIZE" \
     -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)" \
     -c:a aac -b:a "$AUDIO_BR" -ar 44100 \
