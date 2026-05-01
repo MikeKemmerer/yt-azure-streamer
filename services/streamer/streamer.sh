@@ -328,7 +328,7 @@ except: pass
   if [[ "${DURATION:-0}" -gt 0 ]]; then
     # min(iw,...) is needed here: drawbox uses raw ffmpeg t (not the clamped eif exprs below),
     # so iw*(t/DURATION) can briefly exceed iw when PTS overshoots the probed duration.
-    VF_PARTS+=("drawbox=x=0:y=ih-ih/100:w=min(iw\,iw*(t/${DURATION})):h=ih/100:color=red@0.8:thickness=fill:eval=frame")
+    VF_PARTS+=("drawbox=x=0:y=ih-ih/100:w=min(iw\,iw*(t/${DURATION})):h=ih/100:color=red@0.8:thickness=fill")
     # Build time display: MM:SS if duration < 1h, else H:MM:SS
     # Escaping for unquoted drawtext text in filter_complex:
     #   \: → escaped colon (not option separator), unescapes to : (eif separator AND display colon)
