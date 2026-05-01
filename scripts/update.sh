@@ -47,6 +47,15 @@ echo "Changed files:"
 echo "$CHANGED"
 echo ""
 
+# --- Self-update: if this script changed, re-install and re-exec ---
+if echo "$CHANGED" | grep -q "^scripts/update.sh$"; then
+  echo "Update script itself changed — re-installing and re-executing..."
+  install -m 755 "$REPO_DIR/scripts/update.sh" "/usr/local/bin/yt-update.sh"
+  REEXEC_ARGS=(--branch "$BRANCH")
+  if [[ "$RESTART_STREAMER" == true ]]; then REEXEC_ARGS+=(--restart-streamer); fi
+  exec /usr/local/bin/yt-update.sh "${REEXEC_ARGS[@]}"
+fi
+
 # --- Re-install scripts if changed ---
 SCRIPTS_CHANGED=false
 declare -A SCRIPT_MAP=(
