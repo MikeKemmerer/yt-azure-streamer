@@ -200,13 +200,16 @@ while true; do
   fi
 
   if [[ "$WATERMARK" == true && -f "$WM_FONT" ]]; then
-    # Escape special characters for ffmpeg drawtext filter syntax
-    # Order matters: escape backslash first, then other special chars
-    SAFE_TITLE=$(printf '%s' "$TITLE" | sed "s/\\\\/\\\\\\\\\\\\\\\\/g; s/'/'\\\\\\\\''/g; s/:/\\\\:/g; s/,/\\\\,/g; s/;/\\\\;/g; s/\\[/\\\\[/g; s/\\]/\\\\]/g")
+    # For drawtext text='...', only single quotes need escaping.
+    # Inside single-quoted values, colons/commas/semicolons are literal.
+    # Escape ' as '\'' (end quote, escaped quote, start quote)
+    SAFE_TITLE="${TITLE//\'/\'\\\\\'\'}"
+    # Compute title length in bash (ffmpeg expressions don't have strlen)
+    TITLE_LEN=${#TITLE}
+    [[ "$TITLE_LEN" -lt 1 ]] && TITLE_LEN=1
     # Lower-third: serif bold, white text, drop shadow, semi-transparent box
-    # Font size relative to frame height (h/28), centered near bottom
-    # Text is limited to 90% of frame width via fontsize scaling
-    VF_PARTS+=("drawtext=fontfile=${WM_FONT}:text='${SAFE_TITLE}':fontsize='min(h/28,w*0.9/max(1,strlen(text)))':fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:box=1:boxcolor=black@0.4:boxborderw=10:x=(w-text_w)/2:y=h-h/8")
+    # Font size: min(h/28, w*0.9/title_length) — scales down for long titles
+    VF_PARTS+=("drawtext=fontfile=${WM_FONT}:text='${SAFE_TITLE}':fontsize='min(h/28,w*0.9/${TITLE_LEN})':fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:box=1:boxcolor=black@0.4:boxborderw=10:x=(w-text_w)/2:y=h-h/8")
   fi
 
   # Build -vf argument as an array (avoids word-splitting issues with spaces in text)
