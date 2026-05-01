@@ -336,26 +336,28 @@ with open('$NOW_FILE', 'w') as f:
   if [[ ${#VF_PARTS[@]} -gt 0 ]]; then
     VF_STRING="$(IFS=,; echo "${VF_PARTS[*]}"),"
   fi
-  FILTER_COMPLEX="[0:v]${VF_STRING}split=2[stream][prev];[prev]fps=1/10,scale=640:-2[preview]"
 
   # Check if input has an audio stream
   HAS_AUDIO=$(ffprobe -v error -select_streams a:0 \
     -show_entries stream=codec_type -of csv=p=0 "$VIDEO" 2>/dev/null || echo "")
 
   EXTRA_INPUTS=()
-  AUDIO_MAP=("-map" "0:a:0")
-  EXTRA_OPTS=()
   if [[ -z "$HAS_AUDIO" ]]; then
     echo "  No audio stream — generating silence"
     EXTRA_INPUTS=("-f" "lavfi" "-t" "${DURATION:-0}" "-i" "anullsrc=r=44100:cl=stereo")
-    AUDIO_MAP=("-map" "1:a")
+    AUDIO_FILTER="[1:a]anull[audio]"
+  else
+    # Normalize audio loudness to -14 LUFS (YouTube standard) with -1 dBTP true peak
+    AUDIO_FILTER="[0:a:0]loudnorm=I=-14:TP=-1:LRA=11[audio]"
   fi
+
+  FILTER_COMPLEX="[0:v]${VF_STRING}split=2[stream][prev];[prev]fps=1/10,scale=640:-2[preview];${AUDIO_FILTER}"
 
   # Always re-encode to guarantee keyframes every 2 seconds (YouTube requires ≤4s)
   # The split sends the same filtered video to both RTMP and a periodic JPEG preview
   ffmpeg -y -re -i "$VIDEO" "${EXTRA_INPUTS[@]}" \
     -filter_complex "$FILTER_COMPLEX" \
-    -map "[stream]" "${AUDIO_MAP[@]}" \
+    -map "[stream]" -map "[audio]" \
     -c:v libx264 -preset veryfast -maxrate "$MAXRATE" -bufsize "$BUFSIZE" \
     -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)" \
     -c:a aac -b:a "$AUDIO_BR" -ar 44100 \
