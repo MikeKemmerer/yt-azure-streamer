@@ -206,7 +206,7 @@ while true; do
     # Lower-third: serif bold, white text, drop shadow, semi-transparent box
     # Font size relative to frame height (h/28), centered near bottom
     # Text is limited to 90% of frame width via fontsize scaling
-    VF_PARTS+=("drawtext=fontfile=${WM_FONT}:text='${SAFE_TITLE}':fontsize='min(h/28\,w*0.9/max(1\,strlen(text)))':fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:box=1:boxcolor=black@0.4:boxborderw=10:x=(w-text_w)/2:y=h-h/8")
+    VF_PARTS+=("drawtext=fontfile=${WM_FONT}:text='${SAFE_TITLE}':fontsize='min(h/28,w*0.9/max(1,strlen(text)))':fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:box=1:boxcolor=black@0.4:boxborderw=10:x=(w-text_w)/2:y=h-h/8")
   fi
 
   # Build -vf argument as an array (avoids word-splitting issues with spaces in text)
