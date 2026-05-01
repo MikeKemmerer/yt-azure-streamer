@@ -273,9 +273,7 @@ button.danger:hover:not(:disabled) { background: #b71c1c; }
 
 .video-name {
   font-size: 0.9rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  word-break: break-word;
 }
 
 .video-title-input {
