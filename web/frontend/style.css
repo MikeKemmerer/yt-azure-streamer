@@ -266,18 +266,46 @@ button.danger:hover:not(:disabled) { background: #b71c1c; }
   flex-shrink: 0;
 }
 
-.video-name {
+.video-name-block {
   flex: 1;
+  min-width: 0;
+}
+
+.video-name {
   font-size: 0.9rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.video-title-input {
+  display: block;
+  width: 100%;
+  margin-top: 3px;
+  padding: 3px 6px;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  font-size: 0.8rem;
+  color: #333;
+  background: #fafafa;
+}
+.video-title-input:focus {
+  border-color: #0078d4;
+  outline: none;
+}
+
+body.dark .video-title-input {
+  background: #333;
+  border-color: #555;
+  color: #e0e0e0;
+}
+
 .video-num {
   font-size: 0.8rem;
   color: #999;
   flex-shrink: 0;
+  align-self: flex-start;
+  margin-top: 2px;
 }
 
 .playlist-actions {

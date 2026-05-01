@@ -295,9 +295,24 @@ function renderVideoList() {
       li.className = cb.checked ? '' : 'disabled';
     });
 
+    const nameBlock = document.createElement('div');
+    nameBlock.className = 'video-name-block';
+
     const label = document.createElement('span');
     label.className = 'video-name';
     label.textContent = v.file;
+
+    const titleInput = document.createElement('input');
+    titleInput.type = 'text';
+    titleInput.className = 'video-title-input';
+    titleInput.placeholder = 'Display title (leave blank to use filename)';
+    titleInput.value = v.title || '';
+    titleInput.addEventListener('input', () => {
+      videoData[i].title = titleInput.value;
+    });
+
+    nameBlock.appendChild(label);
+    nameBlock.appendChild(titleInput);
 
     const num = document.createElement('span');
     num.className = 'video-num';
@@ -305,7 +320,7 @@ function renderVideoList() {
 
     li.appendChild(grip);
     li.appendChild(cb);
-    li.appendChild(label);
+    li.appendChild(nameBlock);
     li.appendChild(num);
 
     li.addEventListener('dragstart', onDragStart);

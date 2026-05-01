@@ -188,8 +188,25 @@ INDEX=$START_INDEX
 while true; do
   VIDEO="${VIDEOS[$INDEX]}"
   BASENAME=$(basename "$VIDEO")
-  TITLE="${BASENAME%.*}"  # filename without extension
+  TITLE="${BASENAME%.*}"  # filename without extension (default)
+
+  # Check for custom display title in playlist config
+  CUSTOM_TITLE=$(python3 -c "
+import json, sys
+try:
+    cfg = json.load(open('/etc/yt/playlist-config.json'))
+    for v in cfg.get('videos', []):
+        if v.get('file') == sys.argv[1] and v.get('title'):
+            print(v['title'])
+            break
+except: pass
+" "$BASENAME" 2>/dev/null || true)
+  if [[ -n "$CUSTOM_TITLE" ]]; then
+    TITLE="$CUSTOM_TITLE"
+  fi
+
   echo "[$INDEX/$((NUM_VIDEOS-1))] Streaming: $BASENAME"
+  echo "  Title: $TITLE"
 
   # Probe the input resolution to decide whether to scale
   INPUT_H=$(ffprobe -v error -select_streams v:0 \
@@ -244,7 +261,22 @@ while true; do
     UPNEXT_FILE="/tmp/streamer-upnext.txt"
     NEXT_INDEX=$(( (INDEX + 1) % NUM_VIDEOS ))
     NEXT_BASENAME=$(basename "${VIDEOS[$NEXT_INDEX]}")
-    NEXT_TITLE="Up Next: ${NEXT_BASENAME%.*}"
+    NEXT_DISPLAY="${NEXT_BASENAME%.*}"
+    # Check for custom display title for next video
+    NEXT_CUSTOM=$(python3 -c "
+import json, sys
+try:
+    cfg = json.load(open('/etc/yt/playlist-config.json'))
+    for v in cfg.get('videos', []):
+        if v.get('file') == sys.argv[1] and v.get('title'):
+            print(v['title'])
+            break
+except: pass
+" "$NEXT_BASENAME" 2>/dev/null || true)
+    if [[ -n "$NEXT_CUSTOM" ]]; then
+      NEXT_DISPLAY="$NEXT_CUSTOM"
+    fi
+    NEXT_TITLE="Up Next: ${NEXT_DISPLAY}"
     UPNEXT_FONTSIZE="h/22"
     if [[ ${#NEXT_TITLE} -gt $((MAX_LINE * 2)) ]]; then
       UPNEXT_FONTSIZE="h/28"

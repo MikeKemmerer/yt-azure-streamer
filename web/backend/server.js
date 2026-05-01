@@ -227,13 +227,13 @@ const server = http.createServer(async (req, res) => {
         const known = new Set(playlistCfg.videos.map(v => v.file));
         videos = playlistCfg.videos
           .filter(v => allFiles.includes(v.file))  // remove deleted files
-          .map(v => ({ file: v.file, enabled: v.enabled !== false }));
+          .map(v => ({ file: v.file, enabled: v.enabled !== false, title: v.title || '' }));
         // Append any new files not yet in config
         for (const f of allFiles) {
-          if (!known.has(f)) videos.push({ file: f, enabled: true });
+          if (!known.has(f)) videos.push({ file: f, enabled: true, title: '' });
         }
       } else {
-        videos = allFiles.map(f => ({ file: f, enabled: true }));
+        videos = allFiles.map(f => ({ file: f, enabled: true, title: '' }));
       }
       jsonResponse(res, 200, { videos });
       return;
@@ -252,7 +252,7 @@ const server = http.createServer(async (req, res) => {
       const allFiles = new Set(listVideoFiles());
       const videos = parsed.videos
         .filter(v => v.file && typeof v.file === 'string' && allFiles.has(v.file))
-        .map(v => ({ file: v.file, enabled: v.enabled !== false }));
+        .map(v => ({ file: v.file, enabled: v.enabled !== false, title: v.title ? String(v.title).slice(0, 200) : '' }));
 
       writePlaylistConfig({ videos });
 
@@ -365,6 +365,20 @@ const server = http.createServer(async (req, res) => {
             duration: now.duration
           };
         }
+
+        // Resolve display titles from playlist config
+        const cfg = readPlaylistConfig();
+        const titleMap = new Map();
+        if (cfg && Array.isArray(cfg.videos)) {
+          for (const v of cfg.videos) {
+            if (v.title) titleMap.set(v.file, v.title);
+          }
+        }
+        const displayName = (filename) => titleMap.get(filename) || filename.replace(/\.[^.]+$/, '');
+        if (result.nowPlaying) result.nowPlaying = displayName(result.nowPlaying);
+        result.upNext = result.upNext.map(item => ({
+          ...item, name: displayName(item.name)
+        }));
 
         jsonResponse(res, 200, result);
       });
