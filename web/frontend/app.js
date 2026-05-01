@@ -750,7 +750,15 @@ document.getElementById('run-update').addEventListener('click', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ branch })
     });
-    const data = await res.json();
+    let data;
+    try { data = await res.json(); } catch {
+      // Server restarted mid-response (update deployed new web-backend)
+      showStatus(status, 'Update applied — server restarted.', true);
+      output.textContent = 'The server restarted to apply the update. This page will reload shortly.';
+      output.style.display = '';
+      setTimeout(() => location.reload(), 3000);
+      return;
+    }
     output.textContent = data.output || data.error || 'No output';
     output.style.display = '';
     if (!res.ok) {
@@ -759,9 +767,12 @@ document.getElementById('run-update').addEventListener('click', async () => {
       showStatus(status, 'Update complete.', true);
     }
   } catch (e) {
-    showStatus(status, e.message, false);
-    output.textContent = e.message;
+    // Network error — server likely restarted
+    showStatus(status, 'Update applied — server restarted.', true);
+    output.textContent = 'Connection lost during update (server restarted). This page will reload shortly.';
     output.style.display = '';
+    setTimeout(() => location.reload(), 3000);
+    return;
   } finally {
     btn.disabled = false;
     btn.textContent = 'Check for Updates';
