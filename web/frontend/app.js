@@ -54,6 +54,7 @@ async function loadInfo() {
 
 let progressState = { elapsed: 0, duration: 0, lastSync: 0 };
 let progressInterval = null;
+let lastVideoEndRefresh = 0;
 
 function startProgressTicker() {
   if (progressInterval) return;
@@ -65,6 +66,11 @@ function startProgressTicker() {
     const pct = Math.min(100, (clamped / progressState.duration) * 100);
     document.getElementById('progress-bar').style.width = pct + '%';
     document.getElementById('progress-elapsed').textContent = fmtDuration(clamped);
+    // When video should have ended, refresh to get new video info (max once per 5s)
+    if (elapsed >= progressState.duration + 2 && now - lastVideoEndRefresh > 5000) {
+      lastVideoEndRefresh = now;
+      refreshStreamerStatus();
+    }
   }, 1000);
 }
 
