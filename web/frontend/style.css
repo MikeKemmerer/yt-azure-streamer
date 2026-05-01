@@ -425,6 +425,74 @@ details summary {
   padding: 4px 0;
 }
 
+/* ── Upload ───────────────────────────────────────────────────────── */
+
+.upload-area {
+  border: 2px dashed #ccc;
+  border-radius: 6px;
+  padding: 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color .2s, background .2s;
+  margin-bottom: 12px;
+}
+.upload-area:hover,
+.upload-area.drag-over {
+  border-color: #0078d4;
+  background: #e3f2fd;
+}
+.upload-area input[type="file"] { display: none; }
+.upload-area p { margin: 0; color: #666; font-size: 0.9rem; }
+
+.upload-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 0.85rem;
+  border-bottom: 1px solid #eee;
+}
+.upload-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.upload-size {
+  color: #888;
+  flex-shrink: 0;
+}
+.upload-progress-bar {
+  width: 100px;
+  height: 6px;
+  background: #e0e0e0;
+  border-radius: 3px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.upload-progress-fill {
+  height: 100%;
+  background: #0078d4;
+  width: 0;
+  transition: width .2s;
+}
+.upload-pct {
+  width: 32px;
+  text-align: right;
+  font-size: 0.8rem;
+  color: #555;
+  flex-shrink: 0;
+}
+
+body.dark .upload-area { border-color: #555; }
+body.dark .upload-area:hover,
+body.dark .upload-area.drag-over { border-color: #0078d4; background: #1a3a5c; }
+body.dark .upload-area p { color: #999; }
+body.dark .upload-item { border-bottom-color: #444; }
+body.dark .upload-size { color: #999; }
+body.dark .upload-progress-bar { background: #444; }
+body.dark .upload-pct { color: #aaa; }
+
 /* ── Logs ──────────────────────────────────────────────────────────── */
 
 .log-controls {

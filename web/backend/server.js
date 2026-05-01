@@ -489,13 +489,50 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/api/update') {
       execFile('/usr/local/bin/yt-update.sh', [], {
         timeout: 60000,
-        maxBuffer: 1024 * 256
+        maxBuffer: 1024 * 256,
+        env: { ...process.env, HOME: '/root', GIT_TERMINAL_PROMPT: '0' }
       }, (err, stdout, stderr) => {
         const output = (stdout || '') + (stderr || '');
         if (err && !stdout) {
-          return jsonResponse(res, 500, { error: 'Update failed', output });
+          return jsonResponse(res, 500, { error: 'Update failed', output: output || err.message });
         }
         jsonResponse(res, 200, { ok: true, output });
+      });
+      return;
+    }
+
+    // ─── POST /api/videos/upload ─────────────────────────────────
+    // Stream-upload a video file to the blobfuse2 mount
+    if (req.method === 'POST' && req.url.startsWith('/api/videos/upload')) {
+      const filename = decodeURIComponent(req.headers['x-filename'] || '').replace(/[/\\]/g, '');
+      if (!filename) return jsonResponse(res, 400, { error: 'Missing X-Filename header' });
+      const ext = path.extname(filename).toLowerCase();
+      if (!VIDEO_EXTENSIONS.includes(ext)) {
+        return jsonResponse(res, 400, { error: `Invalid extension: ${ext}. Allowed: ${VIDEO_EXTENSIONS.join(', ')}` });
+      }
+      const dest = path.join(VIDEO_DIR, filename);
+      if (fs.existsSync(dest)) {
+        return jsonResponse(res, 409, { error: 'File already exists' });
+      }
+      const tmpDest = dest + '.uploading';
+      const ws = fs.createWriteStream(tmpDest);
+      let bytes = 0;
+      req.on('data', chunk => { bytes += chunk.length; ws.write(chunk); });
+      req.on('end', () => {
+        ws.end(() => {
+          try {
+            fs.renameSync(tmpDest, dest);
+            jsonResponse(res, 200, { ok: true, file: filename, bytes });
+          } catch (e) {
+            try { fs.unlinkSync(tmpDest); } catch {}
+            jsonResponse(res, 500, { error: 'Failed to finalize upload: ' + e.message });
+          }
+        });
+      });
+      req.on('error', () => {
+        ws.destroy();
+        try { fs.unlinkSync(tmpDest); } catch {}
+        jsonResponse(res, 500, { error: 'Upload stream error' });
       });
       return;
     }
