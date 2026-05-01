@@ -207,7 +207,7 @@
   <!-- ── Update ──────────────────────────────────────────────────── -->
   <div class="card">
     <h2>Update</h2>
-    <p class="hint">Pull the latest code from GitHub and re-deploy changed scripts, units, and frontend files.</p>
+    <p class="hint">Check for new code on GitHub and optionally deploy it.</p>
     <div class="update-controls">
       <label class="checkbox-label">
         <input type="checkbox" id="update-beta">
@@ -216,6 +216,10 @@
       <button id="run-update">Check for Updates</button>
     </div>
     <pre id="update-output" class="update-output" style="display:none"></pre>
+    <div id="update-actions" class="update-actions" style="display:none">
+      <button id="apply-update" class="btn-primary">Apply Update</button>
+      <button id="cancel-update" class="btn-secondary">Cancel</button>
+    </div>
     <div id="update-status" class="status"></div>
   </div>
 

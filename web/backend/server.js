@@ -526,6 +526,55 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // ─── POST /api/update/check ───────────────────────────────────
+    // Fetch latest and show what would change (without applying)
+    if (req.method === 'POST' && req.url === '/api/update/check') {
+      const body = await readBody(req);
+      let branch = 'main';
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed.branch && /^[a-zA-Z0-9._-]+$/.test(parsed.branch)) {
+          branch = parsed.branch;
+        }
+      } catch { /* default to main */ }
+
+      const repoDir = '/opt/yt';
+      const gitOpts = { cwd: repoDir, timeout: 30000, env: { ...process.env, HOME: '/root', GIT_TERMINAL_PROMPT: '0' } };
+
+      try {
+        execFileSync('git', ['fetch', 'origin', branch], gitOpts);
+      } catch (e) {
+        return jsonResponse(res, 500, { error: 'Fetch failed', output: e.stderr ? e.stderr.toString() : e.message });
+      }
+
+      let localHead, remoteHead;
+      try {
+        localHead = execFileSync('git', ['rev-parse', 'HEAD'], gitOpts).toString().trim();
+        remoteHead = execFileSync('git', ['rev-parse', `origin/${branch}`], gitOpts).toString().trim();
+      } catch (e) {
+        return jsonResponse(res, 500, { error: 'Failed to read refs', output: e.message });
+      }
+
+      if (localHead === remoteHead) {
+        return jsonResponse(res, 200, { upToDate: true, branch, localHead });
+      }
+
+      let commits = '', diffStat = '';
+      try {
+        commits = execFileSync('git', ['log', '--oneline', `${localHead}..origin/${branch}`], gitOpts).toString().trim();
+        diffStat = execFileSync('git', ['diff', '--stat', `${localHead}..origin/${branch}`], gitOpts).toString().trim();
+      } catch { /* non-fatal */ }
+
+      return jsonResponse(res, 200, {
+        upToDate: false,
+        branch,
+        localHead: localHead.slice(0, 7),
+        remoteHead: remoteHead.slice(0, 7),
+        commits,
+        diffStat
+      });
+    }
+
     // ─── POST /api/update ─────────────────────────────────────────
     // Pull latest code and re-deploy changed files
     if (req.method === 'POST' && req.url === '/api/update') {

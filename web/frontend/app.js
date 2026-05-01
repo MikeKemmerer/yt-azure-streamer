@@ -735,49 +735,115 @@ async function uploadFile(file) {
 
 /* ── Update ───────────────────────────────────────────────────────── */
 
-document.getElementById('run-update').addEventListener('click', async () => {
+(function () {
   const btn = document.getElementById('run-update');
   const output = document.getElementById('update-output');
   const status = document.getElementById('update-status');
-  const useBeta = document.getElementById('update-beta').checked;
-  const branch = useBeta ? 'beta' : 'main';
-  btn.disabled = true;
-  btn.textContent = `Updating (${branch})...`;
-  output.style.display = 'none';
-  try {
-    const res = await fetch('/api/update', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ branch })
-    });
-    let data;
-    try { data = await res.json(); } catch {
-      // Server restarted mid-response (update deployed new web-backend)
-      showStatus(status, 'Update applied — server restarted.', true);
-      output.textContent = 'The server restarted to apply the update. This page will reload shortly.';
-      output.style.display = '';
-      setTimeout(() => location.reload(), 3000);
-      return;
-    }
-    output.textContent = data.output || data.error || 'No output';
-    output.style.display = '';
-    if (!res.ok) {
-      showStatus(status, data.error || 'Update failed', false);
-    } else {
-      showStatus(status, 'Update complete.', true);
-    }
-  } catch (e) {
-    // Network error — server likely restarted
-    showStatus(status, 'Update applied — server restarted.', true);
-    output.textContent = 'Connection lost during update (server restarted). This page will reload shortly.';
-    output.style.display = '';
-    setTimeout(() => location.reload(), 3000);
-    return;
-  } finally {
+  const actions = document.getElementById('update-actions');
+  const applyBtn = document.getElementById('apply-update');
+  const cancelBtn = document.getElementById('cancel-update');
+
+  function getBranch() {
+    return document.getElementById('update-beta').checked ? 'beta' : 'main';
+  }
+
+  function resetUI() {
+    actions.style.display = 'none';
     btn.disabled = false;
     btn.textContent = 'Check for Updates';
   }
-});
+
+  // Step 1: Check for updates (fetch only, no apply)
+  btn.addEventListener('click', async () => {
+    const branch = getBranch();
+    btn.disabled = true;
+    btn.textContent = `Checking (${branch})...`;
+    output.style.display = 'none';
+    actions.style.display = 'none';
+    status.textContent = '';
+    try {
+      const res = await fetch('/api/update/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ branch })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showStatus(status, data.error || 'Check failed', false);
+        output.textContent = data.output || '';
+        output.style.display = data.output ? '' : 'none';
+        resetUI();
+        return;
+      }
+      if (data.upToDate) {
+        showStatus(status, `Already up to date on ${branch} (${data.localHead.slice(0, 7)}).`, true);
+        output.style.display = 'none';
+        resetUI();
+        return;
+      }
+      // Show available changes
+      let text = `Branch: ${branch}\n`;
+      text += `Current: ${data.localHead} → Latest: ${data.remoteHead}\n\n`;
+      text += `Commits:\n${data.commits}\n\n`;
+      text += `Files changed:\n${data.diffStat}`;
+      output.textContent = text;
+      output.style.display = '';
+      actions.style.display = '';
+      btn.disabled = true;
+      btn.textContent = 'Check for Updates';
+    } catch (e) {
+      showStatus(status, e.message, false);
+      resetUI();
+    }
+  });
+
+  // Step 2a: Apply update
+  applyBtn.addEventListener('click', async () => {
+    const branch = getBranch();
+    applyBtn.disabled = true;
+    cancelBtn.disabled = true;
+    applyBtn.textContent = `Applying (${branch})...`;
+    try {
+      const res = await fetch('/api/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ branch })
+      });
+      let data;
+      try { data = await res.json(); } catch {
+        showStatus(status, 'Update applied — server restarted.', true);
+        output.textContent = 'The server restarted to apply the update. This page will reload shortly.';
+        setTimeout(() => location.reload(), 3000);
+        return;
+      }
+      output.textContent = data.output || data.error || 'No output';
+      if (!res.ok) {
+        showStatus(status, data.error || 'Update failed', false);
+      } else {
+        showStatus(status, 'Update complete.', true);
+      }
+    } catch (e) {
+      showStatus(status, 'Update applied — server restarted.', true);
+      output.textContent = 'Connection lost during update (server restarted). This page will reload shortly.';
+      setTimeout(() => location.reload(), 3000);
+      return;
+    } finally {
+      actions.style.display = 'none';
+      applyBtn.disabled = false;
+      cancelBtn.disabled = false;
+      applyBtn.textContent = 'Apply Update';
+      resetUI();
+    }
+  });
+
+  // Step 2b: Cancel
+  cancelBtn.addEventListener('click', () => {
+    output.style.display = 'none';
+    actions.style.display = 'none';
+    status.textContent = '';
+    resetUI();
+  });
+})();
 
 /* ── Dark Mode ────────────────────────────────────────────────────── */
 

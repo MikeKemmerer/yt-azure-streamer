@@ -554,6 +554,33 @@ body.dark .upload-pct { color: #aaa; }
   gap: 12px;
   margin-bottom: 10px;
 }
+.update-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+.btn-primary {
+  background: #0078d4;
+  color: #fff;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+.btn-primary:hover { background: #106ebe; }
+.btn-secondary {
+  background: #e0e0e0;
+  color: #333;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+.btn-secondary:hover { background: #ccc; }
+body.dark .btn-secondary { background: #444; color: #ddd; }
+body.dark .btn-secondary:hover { background: #555; }
 
 /* ── Modal ─────────────────────────────────────────────────────────── */
 
