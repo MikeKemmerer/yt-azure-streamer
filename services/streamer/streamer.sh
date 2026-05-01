@@ -204,40 +204,37 @@ while true; do
   fi
 
   if [[ "$WATERMARK" == true && -f "$WM_FONT_SANS" ]]; then
-    # Break long titles into multiple lines at the nearest space to optimal split points
-    MAX_LINE=50
+    # Split title into max 2 lines; shrink font if title is very long
+    MAX_LINE=45
     TITLE_FILE="/tmp/streamer-title.txt"
+    TITLE_FONTSIZE="h/22"
+    # Force max 2 lines — if title is too long for 2 lines, shrink font
+    if [[ ${#TITLE} -gt $((MAX_LINE * 2)) ]]; then
+      TITLE_FONTSIZE="h/28"
+    fi
+    NUM_LINES=1
     if [[ ${#TITLE} -gt $MAX_LINE ]]; then
-      NUM_LINES=$(( (${#TITLE} + MAX_LINE - 1) / MAX_LINE ))
-      PARTS=()
-      POS=0
-      for ((line=1; line <= NUM_LINES; line++)); do
-        if [[ $line -eq $NUM_LINES ]]; then
-          PARTS+=("${TITLE:POS}")
-        else
-          TARGET=$(( ${#TITLE} * line / NUM_LINES ))
-          BEST=-1
-          for ((d=0; d < ${#TITLE}; d++)); do
-            FWD=$((TARGET + d))
-            BWD=$((TARGET - d))
-            if [[ $FWD -lt ${#TITLE} && "${TITLE:FWD:1}" == " " ]]; then
-              BEST=$FWD; break
-            fi
-            if [[ $BWD -gt $POS && "${TITLE:BWD:1}" == " " ]]; then
-              BEST=$BWD; break
-            fi
-          done
-          if [[ $BEST -gt $POS ]]; then
-            PARTS+=("${TITLE:POS:$((BEST - POS))}")
-            POS=$((BEST + 1))
-          else
-            PARTS+=("${TITLE:POS:$((TARGET - POS))}")
-            POS=$TARGET
-          fi
+      NUM_LINES=2
+    fi
+    if [[ $NUM_LINES -eq 2 ]]; then
+      # Split at the space nearest the midpoint
+      TARGET=$(( ${#TITLE} / 2 ))
+      BEST=-1
+      for ((d=0; d < ${#TITLE}; d++)); do
+        FWD=$((TARGET + d))
+        BWD=$((TARGET - d))
+        if [[ $FWD -lt ${#TITLE} && "${TITLE:FWD:1}" == " " ]]; then
+          BEST=$FWD; break
+        fi
+        if [[ $BWD -gt 0 && "${TITLE:BWD:1}" == " " ]]; then
+          BEST=$BWD; break
         fi
       done
-      # Write lines separated by newlines (no trailing newline)
-      printf '%s\n' "${PARTS[@]}" | head -c -1 > "$TITLE_FILE"
+      if [[ $BEST -gt 0 ]]; then
+        printf '%s\n%s' "${TITLE:0:BEST}" "${TITLE:BEST+1}" > "$TITLE_FILE"
+      else
+        printf '%s' "$TITLE" > "$TITLE_FILE"
+      fi
     else
       printf '%s' "$TITLE" > "$TITLE_FILE"
     fi
@@ -246,7 +243,7 @@ while true; do
     CHURCH_NAME="Saint Demetrios Greek Orthodox Church - Seattle, WA"
     VF_PARTS+=("drawbox=x=0:y=ih-ih/6:w=iw:h=ih/6:color=black@0.5:t=fill")
     VF_PARTS+=("drawtext=fontfile=${WM_FONT_SERIF}:text='${CHURCH_NAME}':fontsize=h/32:fontcolor=white@0.9:shadowcolor=black@0.6:shadowx=2:shadowy=2:x=w/30:y=h-h/7")
-    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=h/20:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26")
+    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=${TITLE_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26")
   fi
 
   # Build -vf argument as an array (avoids word-splitting issues with spaces in text)
@@ -269,11 +266,10 @@ while true; do
   (
     sleep 5
     while kill -0 $$ 2>/dev/null; do
-      # Compute elapsed time to seek into the video for an accurate frame
+      # Seek to current elapsed position and grab one frame
       ELAPSED=$(( $(date +%s) - START_EPOCH ))
-      ffmpeg -y -ss "$ELAPSED" -i "$VIDEO" \
-        ${VF_ARGS[@]:+"${VF_ARGS[@]}"} \
-        -vframes 1 -q:v 5 "$PREVIEW_FILE" </dev/null 2>/dev/null || true
+      ffmpeg -y -ss "$ELAPSED" -i "$VIDEO" -frames:v 1 -q:v 5 \
+        "$PREVIEW_FILE" </dev/null 2>/dev/null || true
       sleep 10
     done
   ) &
