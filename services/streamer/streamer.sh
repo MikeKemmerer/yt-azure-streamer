@@ -206,7 +206,7 @@ while true; do
 
   if [[ "$WATERMARK" == true && -f "$WM_FONT_SANS" ]]; then
     # Split title into max 2 lines; shrink font if title is very long
-    MAX_LINE=45
+    MAX_LINE=60
     TITLE_FILE="/tmp/streamer-title.txt"
     TITLE_FONTSIZE="h/22"
     # Force max 2 lines — if title is too long for 2 lines, shrink font
