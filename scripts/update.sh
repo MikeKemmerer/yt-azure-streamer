@@ -33,6 +33,9 @@ BEFORE=$(git rev-parse HEAD)
 git reset --hard "origin/$BRANCH"
 AFTER=$(git rev-parse HEAD)
 
+# Ensure scripts are executable (git may not preserve +x on some systems)
+chmod +x "$REPO_DIR"/scripts/*.sh "$REPO_DIR"/services/streamer/*.sh "$REPO_DIR"/services/scheduler/*.sh 2>/dev/null || true
+
 if [[ "$BEFORE" == "$AFTER" ]]; then
   echo "Already up to date ($BEFORE)."
   exit 0
