@@ -324,11 +324,8 @@ except: pass
     -of csv=p=0 "$VIDEO" 2>/dev/null || echo "0")
   DURATION=${DURATION%%.*}  # truncate to integer seconds
 
-  # Progress bar (1% height at very bottom) and elapsed/remaining time (bottom right)
+  # Elapsed/duration time display (bottom right)
   if [[ "${DURATION:-0}" -gt 0 ]]; then
-    # min(iw,...) is needed here: drawbox uses raw ffmpeg t (not the clamped eif exprs below),
-    # so iw*(t/DURATION) can briefly exceed iw when PTS overshoots the probed duration.
-    VF_PARTS+=("drawbox=x=0:y=ih-ih/100:w=min(iw\,iw*(t/${DURATION})):h=ih/100:color=red@0.8:thickness=fill")
     # Build time display: MM:SS if duration < 1h, else H:MM:SS
     # Use textfile= instead of text= to avoid filter graph escaping issues entirely.
     # File content is read directly by drawtext — colons/commas are literal.
