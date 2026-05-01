@@ -61,19 +61,21 @@ if [[ -n "$CUSTOM_DOMAIN" ]]; then
   SITE_ADDRESS="$CUSTOM_DOMAIN"
 else
   # Auto-detect Azure DNS FQDN from instance metadata
+  # Note: Azure DNS names (*.cloudapp.azure.com) cannot get Let's Encrypt certs,
+  # so we serve plain HTTP when using the auto-detected name.
   NAME_PREFIX=$(cat /etc/yt/nameprefix 2>/dev/null | tr -d '[:space:]')
   REGION=$(curl -s -H Metadata:true --noproxy "*" \
     "http://169.254.169.254/metadata/instance/compute/location?api-version=2021-02-01&format=text" 2>/dev/null || true)
   if [[ -n "$NAME_PREFIX" && -n "$REGION" ]]; then
-    SITE_ADDRESS="${NAME_PREFIX}.${REGION}.cloudapp.azure.com"
-    echo "No custom domain — using Azure DNS with auto-TLS: $SITE_ADDRESS"
+    SITE_ADDRESS="http://${NAME_PREFIX}-vm.${REGION}.cloudapp.azure.com"
+    echo "No custom domain — using Azure DNS (plain HTTP): $SITE_ADDRESS"
   else
     SITE_ADDRESS=":80"
     echo "No custom domain and cannot detect Azure DNS — serving plain HTTP on :80"
   fi
 fi
 mkdir -p /etc/yt/caddy
-sed "s/CADDY_SITE_ADDRESS/${SITE_ADDRESS}/g" /opt/yt/caddy/Caddyfile > /etc/yt/caddy/Caddyfile
+sed "s|CADDY_SITE_ADDRESS|${SITE_ADDRESS}|g" /opt/yt/caddy/Caddyfile > /etc/yt/caddy/Caddyfile
 chmod 644 /etc/yt/caddy/Caddyfile
 
 # --- Caddy / Basic Auth ---
