@@ -330,20 +330,21 @@ except: pass
     # so iw*(t/DURATION) can briefly exceed iw when PTS overshoots the probed duration.
     VF_PARTS+=("drawbox=x=0:y=ih-ih/100:w=min(iw\,iw*(t/${DURATION})):h=ih/100:color=red@0.8:thickness=fill")
     # Build time display: MM:SS if duration < 1h, else H:MM:SS
-    # Use single quotes around text value so colons/commas are literal (same as church name text).
-    # Inside quotes: bare : for eif arg separator, bare , for expression args.
+    # Escaping rules (no quotes - quotes don't protect against : splitting):
+    #   \: → prevents option-level colon splitting; after unescaping eif sees : as arg separator
+    #   \, → prevents graph-level comma splitting; after unescaping expressions see , as arg separator
     if [[ -f "$WM_FONT_SANS" ]]; then
       if [[ "$DURATION" -ge 3600 ]]; then
         DUR_H=$((DURATION/3600))
         DUR_M=$(( (DURATION%3600)/60 ))
         DUR_S=$((DURATION%60))
-        DUR_FMT=$(printf '%d:%02d:%02d' "$DUR_H" "$DUR_M" "$DUR_S")
-        TIME_TEXT="'%{eif:trunc(min(t,${DURATION})/3600):d}:%{eif:mod(trunc(min(t,${DURATION})/60),60):d:2}:%{eif:mod(trunc(min(t,${DURATION})),60):d:2} / ${DUR_FMT}'"
+        DUR_FMT=$(printf '%d\:%02d\:%02d' "$DUR_H" "$DUR_M" "$DUR_S")
+        TIME_TEXT="%{eif\:trunc(min(t\,${DURATION})/3600)\:d}\:%{eif\:mod(trunc(min(t\,${DURATION})/60)\,60)\:d\:2}\:%{eif\:mod(trunc(min(t\,${DURATION}))\,60)\:d\:2} / ${DUR_FMT}"
       else
         DUR_M=$((DURATION/60))
         DUR_S=$((DURATION%60))
-        DUR_FMT=$(printf '%d:%02d' "$DUR_M" "$DUR_S")
-        TIME_TEXT="'%{eif:trunc(min(t,${DURATION})/60):d}:%{eif:mod(trunc(min(t,${DURATION})),60):d:2} / ${DUR_FMT}'"
+        DUR_FMT=$(printf '%d\:%02d' "$DUR_M" "$DUR_S")
+        TIME_TEXT="%{eif\:trunc(min(t\,${DURATION})/60)\:d}\:%{eif\:mod(trunc(min(t\,${DURATION}))\,60)\:d\:2} / ${DUR_FMT}"
       fi
       VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:text=${TIME_TEXT}:fontsize=h/40:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-w/30:y=h-h/7")
     fi
