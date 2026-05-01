@@ -596,8 +596,31 @@ const server = http.createServer(async (req, res) => {
         if (err && !stdout) {
           return jsonResponse(res, 500, { error: 'Update failed', output: output || err.message });
         }
-        jsonResponse(res, 200, { ok: true, output });
+        // Check if streamer-related files were updated (indicates restart needed)
+        const streamerPending = /services\/streamer\/|streamer\.sh|streamer\.service/.test(output);
+        jsonResponse(res, 200, { ok: true, output, streamerPending });
       });
+      return;
+    }
+
+    // ─── POST /api/streamer/restart-after-current ─────────────────
+    // Signal the streamer to restart after the current video finishes
+    if (req.method === 'POST' && req.url === '/api/streamer/restart-after-current') {
+      const signalFile = '/run/streamer-restart-requested';
+      try {
+        fs.writeFileSync(signalFile, new Date().toISOString());
+        jsonResponse(res, 200, { ok: true, message: 'Restart scheduled after current video.' });
+      } catch (e) {
+        jsonResponse(res, 500, { error: 'Failed to write signal file', detail: e.message });
+      }
+      return;
+    }
+
+    // ─── GET /api/streamer/restart-pending ────────────────────────
+    // Check if a restart is already pending
+    if (req.method === 'GET' && req.url === '/api/streamer/restart-pending') {
+      const pending = fs.existsSync('/run/streamer-restart-requested');
+      jsonResponse(res, 200, { pending });
       return;
     }
 

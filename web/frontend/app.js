@@ -742,6 +742,8 @@ async function uploadFile(file) {
   const actions = document.getElementById('update-actions');
   const applyBtn = document.getElementById('apply-update');
   const cancelBtn = document.getElementById('cancel-update');
+  const restartBtn = document.getElementById('restart-streamer-btn');
+  const restartBanner = document.getElementById('streamer-restart-banner');
 
   function getBranch() {
     return document.getElementById('update-beta').checked ? 'beta' : 'main';
@@ -752,6 +754,22 @@ async function uploadFile(file) {
     btn.disabled = false;
     btn.textContent = 'Check for Updates';
   }
+
+  function showRestartBtn() {
+    if (restartBtn) restartBtn.style.display = '';
+  }
+  function hideRestartBtn() {
+    if (restartBtn) restartBtn.style.display = 'none';
+  }
+  function showRestartPending() {
+    if (restartBanner) restartBanner.style.display = '';
+    hideRestartBtn();
+  }
+
+  // Check on load if a restart is already pending
+  fetch('/api/streamer/restart-pending').then(r => r.json()).then(d => {
+    if (d.pending) showRestartPending();
+  }).catch(() => {});
 
   // Step 1: Check for updates (fetch only, no apply)
   btn.addEventListener('click', async () => {
@@ -821,6 +839,7 @@ async function uploadFile(file) {
         showStatus(status, data.error || 'Update failed', false);
       } else {
         showStatus(status, 'Update complete.', true);
+        if (data.streamerPending) showRestartBtn();
       }
     } catch (e) {
       showStatus(status, 'Update applied — server restarted.', true);
@@ -843,6 +862,30 @@ async function uploadFile(file) {
     status.textContent = '';
     resetUI();
   });
+
+  // Restart streamer after current video
+  if (restartBtn) {
+    restartBtn.addEventListener('click', async () => {
+      restartBtn.disabled = true;
+      restartBtn.textContent = 'Scheduling...';
+      try {
+        const res = await fetch('/api/streamer/restart-after-current', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) {
+          showRestartPending();
+          showStatus(status, 'Streamer will restart after the current video finishes.', true);
+        } else {
+          restartBtn.disabled = false;
+          restartBtn.textContent = 'Restart Streamer After Current Video';
+          showStatus(status, data.error || 'Failed to schedule restart', false);
+        }
+      } catch (e) {
+        restartBtn.disabled = false;
+        restartBtn.textContent = 'Restart Streamer After Current Video';
+        showStatus(status, e.message, false);
+      }
+    });
+  }
 })();
 
 /* ── Dark Mode ────────────────────────────────────────────────────── */

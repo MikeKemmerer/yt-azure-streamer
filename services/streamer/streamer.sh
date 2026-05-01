@@ -373,6 +373,14 @@ with open('$STATE_FILE', 'w') as f:
 " "$INDEX" "$VIDEO"
   echo "  Bookmark saved: index $INDEX"
 
+  # Check for graceful restart signal (set by web UI after an update)
+  RESTART_SIGNAL="/run/streamer-restart-requested"
+  if [[ -f "$RESTART_SIGNAL" ]]; then
+    rm -f "$RESTART_SIGNAL"
+    echo "Restart signal detected — exiting for service restart."
+    exit 0
+  fi
+
   # Advance to next video (wrap around)
   INDEX=$(( (INDEX + 1) % NUM_VIDEOS ))
 done

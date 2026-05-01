@@ -581,6 +581,43 @@ body.dark .upload-pct { color: #aaa; }
 .btn-secondary:hover { background: #ccc; }
 body.dark .btn-secondary { background: #444; color: #ddd; }
 body.dark .btn-secondary:hover { background: #555; }
+.btn-warning {
+  background: #e67e22;
+  color: #fff;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  margin-top: 10px;
+}
+.btn-warning:hover { background: #d35400; }
+.btn-warning:disabled { opacity: .6; cursor: default; }
+.restart-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 12px;
+  background: #fff3e0;
+  border: 1px solid #ffb74d;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  color: #e65100;
+}
+body.dark .restart-banner { background: #3e2a00; border-color: #e67e22; color: #ffb74d; }
+.restart-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e67e22;
+  animation: pulse-dot 1.5s ease-in-out infinite;
+  flex-shrink: 0;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
 
 /* ── Modal ─────────────────────────────────────────────────────────── */
 
