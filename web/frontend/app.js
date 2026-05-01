@@ -15,13 +15,11 @@ async function api(url, opts) {
 }
 
 function fmtDuration(seconds) {
-  if (!seconds || seconds < 0) return '';
+  if (!seconds || seconds < 0) return '0:00:00';
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
+  const s = Math.floor(seconds % 60);
+  return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
 function fmtDate(iso) {
@@ -49,6 +47,26 @@ async function loadInfo() {
 
 /* ── Streamer Control ────────────────────────────────────────────── */
 
+let progressState = { elapsed: 0, duration: 0, lastSync: 0 };
+let progressInterval = null;
+
+function startProgressTicker() {
+  if (progressInterval) return;
+  progressInterval = setInterval(() => {
+    if (progressState.duration <= 0) return;
+    const now = Date.now();
+    const elapsed = progressState.elapsed + (now - progressState.lastSync) / 1000;
+    const clamped = Math.min(elapsed, progressState.duration);
+    const pct = Math.min(100, (clamped / progressState.duration) * 100);
+    document.getElementById('progress-bar').style.width = pct + '%';
+    document.getElementById('progress-elapsed').textContent = fmtDuration(clamped);
+  }, 1000);
+}
+
+function stopProgressTicker() {
+  if (progressInterval) { clearInterval(progressInterval); progressInterval = null; }
+}
+
 async function refreshStreamerStatus() {
   try {
     const data = await api('/api/streamer');
@@ -59,9 +77,11 @@ async function refreshStreamerStatus() {
     const stopBtn = document.getElementById('streamer-stop');
     const nowPlaying = document.getElementById('now-playing');
     const nowTitle = document.getElementById('now-playing-title');
-    const progressText = document.getElementById('now-playing-progress');
     const progressBarContainer = document.getElementById('progress-bar-container');
     const progressBar = document.getElementById('progress-bar');
+    const progressTime = document.getElementById('progress-time');
+    const progressElapsed = document.getElementById('progress-elapsed');
+    const progressDuration = document.getElementById('progress-duration');
     const upNext = document.getElementById('up-next');
     const upNextLabel = document.getElementById('up-next-label');
     const upNextList = document.getElementById('up-next-list');
@@ -77,29 +97,30 @@ async function refreshStreamerStatus() {
     if (data.active && data.nowPlaying) {
       nowTitle.textContent = data.nowPlaying;
       nowPlaying.style.display = '';
-      // Progress
+      // Progress + preview
       if (data.progress && data.progress.duration > 0) {
-        const pct = Math.min(100, Math.round(data.progress.elapsed / data.progress.duration * 100));
-        progressText.textContent = `${fmtDuration(data.progress.elapsed)} / ${fmtDuration(data.progress.duration)}`;
+        progressState = { elapsed: data.progress.elapsed, duration: data.progress.duration, lastSync: Date.now() };
+        const pct = Math.min(100, (data.progress.elapsed / data.progress.duration) * 100);
         progressBar.style.width = pct + '%';
+        progressElapsed.textContent = fmtDuration(data.progress.elapsed);
+        progressDuration.textContent = fmtDuration(data.progress.duration);
         progressBarContainer.style.display = '';
+        progressTime.style.display = '';
+        startProgressTicker();
       } else {
-        progressText.textContent = '';
         progressBarContainer.style.display = 'none';
+        progressTime.style.display = 'none';
+        stopProgressTicker();
       }
-    } else {
-      nowPlaying.style.display = 'none';
-      progressText.textContent = '';
-      progressBarContainer.style.display = 'none';
-    }
-
-    // Stream preview
-    if (data.active) {
       previewImg.src = '/stream-preview.jpg?' + Date.now();
       previewImg.onload = () => { preview.style.display = ''; };
       previewImg.onerror = () => { preview.style.display = 'none'; };
     } else {
+      nowPlaying.style.display = 'none';
       preview.style.display = 'none';
+      progressBarContainer.style.display = 'none';
+      progressTime.style.display = 'none';
+      stopProgressTicker();
     }
 
     // Up Next
@@ -571,6 +592,18 @@ document.getElementById('run-update').addEventListener('click', async () => {
   }
 });
 
+/* ── Dark Mode ────────────────────────────────────────────────────── */
+
+const darkToggle = document.getElementById('dark-mode-toggle');
+if (localStorage.getItem('dark') === '1') {
+  document.body.classList.add('dark');
+  darkToggle.checked = true;
+}
+darkToggle.addEventListener('change', () => {
+  document.body.classList.toggle('dark', darkToggle.checked);
+  localStorage.setItem('dark', darkToggle.checked ? '1' : '0');
+});
+
 /* ── Init ────────────────────────────────────────────────────────── */
 
 loadInfo();
@@ -582,5 +615,6 @@ loadSchedule();
 loadSystem();
 loadStorage();
 
-setInterval(() => { refreshStreamerStatus(); loadHealth(); }, 10000);
+setInterval(() => { refreshStreamerStatus(); }, 5000);
+setInterval(() => { loadHealth(); }, 10000);
 setInterval(() => { loadSystem(); loadStorage(); }, 60000);
