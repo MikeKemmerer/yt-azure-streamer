@@ -265,7 +265,7 @@ while true; do
 
   # Always re-encode to guarantee keyframes every 2 seconds (YouTube requires ≤4s)
   # The split sends the same filtered video to both RTMP and a periodic JPEG preview
-  ffmpeg -re -i "$VIDEO" \
+  ffmpeg -y -re -i "$VIDEO" \
     -filter_complex "$FILTER_COMPLEX" \
     -map "[stream]" -map 0:a \
     -c:v libx264 -preset veryfast -maxrate "$MAXRATE" -bufsize "$BUFSIZE" \
