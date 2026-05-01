@@ -377,6 +377,80 @@ document.getElementById('deselect-all').addEventListener('click', () => {
   renderVideoList();
 });
 
+/* ── Title Suggestions Modal ─────────────────────────────────────── */
+
+function needsTitleSuggestion(v) {
+  const name = v.file.replace(/\.[^.]+$/, '');
+  const hasTitle = v.title && v.title.trim();
+  const displayName = hasTitle ? v.title : name;
+  if (displayName.includes('_')) return true;
+  if (/version/i.test(displayName)) return true;
+  if (!/^[A-Za-z]+ \d{1,2},\s*\d{4}/.test(name)) return true;
+  return false;
+}
+
+function suggestTitle(filename) {
+  let t = filename.replace(/\.[^.]+$/, '');
+  t = t.replace(/_/g, ' ');
+  // Remove trailing version-like patterns (v2, v3, etc.)
+  t = t.replace(/\s*v\d+$/i, '');
+  return t;
+}
+
+document.getElementById('title-suggestions').addEventListener('click', () => {
+  const modal = document.getElementById('title-modal');
+  const list = document.getElementById('title-modal-list');
+  list.innerHTML = '';
+
+  const candidates = videoData
+    .map((v, i) => ({ ...v, idx: i }))
+    .filter(needsTitleSuggestion);
+
+  if (candidates.length === 0) {
+    const li = document.createElement('li');
+    li.textContent = 'All files look good — no suggestions needed.';
+    list.appendChild(li);
+  } else {
+    candidates.forEach(c => {
+      const li = document.createElement('li');
+      li.dataset.idx = c.idx;
+
+      const nameEl = document.createElement('div');
+      nameEl.className = 'video-name';
+      nameEl.textContent = c.file;
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = 'Display title';
+      input.value = c.title || suggestTitle(c.file);
+      input.dataset.idx = c.idx;
+
+      li.appendChild(nameEl);
+      li.appendChild(input);
+      list.appendChild(li);
+    });
+  }
+
+  modal.style.display = '';
+});
+
+document.getElementById('title-modal-apply').addEventListener('click', () => {
+  const inputs = document.querySelectorAll('#title-modal-list input');
+  inputs.forEach(input => {
+    const idx = +input.dataset.idx;
+    videoData[idx].title = input.value.trim();
+  });
+  document.getElementById('title-modal').style.display = 'none';
+  renderVideoList();
+});
+
+document.getElementById('title-modal-close').addEventListener('click', () => {
+  document.getElementById('title-modal').style.display = 'none';
+});
+document.getElementById('title-modal-cancel').addEventListener('click', () => {
+  document.getElementById('title-modal').style.display = 'none';
+});
+
 /* ── Playlist Sort / Shuffle ─────────────────────────────────────── */
 
 function parseDateFromFilename(filename) {
