@@ -108,10 +108,14 @@ except: pass
 fi
 echo "Watermark: $WATERMARK"
 
-# Watermark font — DejaVu Serif Bold (installed with fonts-dejavu-core on Ubuntu)
-WM_FONT="/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
-if [[ ! -f "$WM_FONT" ]]; then
-  WM_FONT="/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
+# Watermark fonts
+WM_FONT_SERIF="/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
+if [[ ! -f "$WM_FONT_SERIF" ]]; then
+  WM_FONT_SERIF="/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
+fi
+WM_FONT_SANS="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+if [[ ! -f "$WM_FONT_SANS" ]]; then
+  WM_FONT_SANS="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 fi
 
 # --- Generate playlist ---
@@ -199,9 +203,9 @@ while true; do
     echo "  Input ${INPUT_H}p <= max ${MAX_H}p — no scaling"
   fi
 
-  if [[ "$WATERMARK" == true && -f "$WM_FONT" ]]; then
+  if [[ "$WATERMARK" == true && -f "$WM_FONT_SANS" ]]; then
     # Break long titles into multiple lines at the nearest space to optimal split points
-    MAX_LINE=30
+    MAX_LINE=45
     TITLE_FILE="/tmp/streamer-title.txt"
     if [[ ${#TITLE} -gt $MAX_LINE ]]; then
       NUM_LINES=$(( (${#TITLE} + MAX_LINE - 1) / MAX_LINE ))
@@ -237,9 +241,12 @@ while true; do
     else
       printf '%s' "$TITLE" > "$TITLE_FILE"
     fi
-    # Lower-third: serif bold, white text, drop shadow, semi-transparent box
-    # Font size h/20; textfile avoids all escaping issues
-    VF_PARTS+=("drawtext=fontfile=${WM_FONT}:textfile=${TITLE_FILE}:fontsize=h/20:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:box=1:boxcolor=black@0.4:boxborderw=10:x=(w-text_w)/2:y=h-text_h-h/10")
+    # Broadcast-style lower third:
+    # Top line: church name (smaller, serif)
+    # Bottom line(s): video title (larger, sans-serif, left-justified)
+    CHURCH_NAME="Saint Demetrios Greek Orthodox Church - Seattle, WA"
+    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SERIF}:text='${CHURCH_NAME}':fontsize=h/32:fontcolor=white@0.9:shadowcolor=black@0.6:shadowx=2:shadowy=2:box=1:boxcolor=black@0.5:boxborderw=6:x=w/30:y=h-h/5")
+    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=h/20:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:box=1:boxcolor=black@0.5:boxborderw=10:x=w/30:y=h-h/5+h/26")
   fi
 
   # Build -vf argument as an array (avoids word-splitting issues with spaces in text)
