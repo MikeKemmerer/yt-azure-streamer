@@ -59,9 +59,14 @@ async function refreshStreamerStatus() {
     const stopBtn = document.getElementById('streamer-stop');
     const nowPlaying = document.getElementById('now-playing');
     const nowTitle = document.getElementById('now-playing-title');
+    const progressText = document.getElementById('now-playing-progress');
+    const progressBarContainer = document.getElementById('progress-bar-container');
+    const progressBar = document.getElementById('progress-bar');
     const upNext = document.getElementById('up-next');
     const upNextLabel = document.getElementById('up-next-label');
     const upNextList = document.getElementById('up-next-list');
+    const preview = document.getElementById('stream-preview');
+    const previewImg = document.getElementById('preview-img');
 
     indicator.className = 'indicator ' + (data.active ? 'on' : 'off');
     label.textContent = data.active ? 'Streaming' : 'Stopped';
@@ -71,17 +76,40 @@ async function refreshStreamerStatus() {
     if (data.active && data.nowPlaying) {
       nowTitle.textContent = data.nowPlaying;
       nowPlaying.style.display = '';
+      // Progress
+      if (data.progress && data.progress.duration > 0) {
+        const pct = Math.min(100, Math.round(data.progress.elapsed / data.progress.duration * 100));
+        progressText.textContent = `${fmtDuration(data.progress.elapsed)} / ${fmtDuration(data.progress.duration)}`;
+        progressBar.style.width = pct + '%';
+        progressBarContainer.style.display = '';
+      } else {
+        progressText.textContent = '';
+        progressBarContainer.style.display = 'none';
+      }
     } else {
       nowPlaying.style.display = 'none';
+      progressText.textContent = '';
+      progressBarContainer.style.display = 'none';
+    }
+
+    // Stream preview
+    if (data.active) {
+      previewImg.src = '/api/preview?' + Date.now();
+      previewImg.onload = () => { preview.style.display = ''; };
+      previewImg.onerror = () => { preview.style.display = 'none'; };
+    } else {
+      preview.style.display = 'none';
     }
 
     // Up Next
     if (data.upNext && data.upNext.length > 0) {
       upNextLabel.textContent = data.active ? 'Up Next:' : 'On Resume:';
       upNextList.innerHTML = '';
-      for (const f of data.upNext) {
+      for (const item of data.upNext) {
         const li = document.createElement('li');
-        li.textContent = f;
+        const name = typeof item === 'string' ? item : item.name;
+        const dur = typeof item === 'object' && item.duration ? ` (${fmtDuration(item.duration)})` : '';
+        li.textContent = name + dur;
         upNextList.appendChild(li);
       }
       upNext.style.display = '';

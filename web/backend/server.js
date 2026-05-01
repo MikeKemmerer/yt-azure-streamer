@@ -19,8 +19,33 @@ const SCHEDULE_FILE = '/etc/yt/schedule.json';
 const PLAYLIST_CONFIG = '/etc/yt/playlist-config.json';
 const PLAYLIST_FILE = '/etc/yt/playlist.txt';
 const STATE_FILE = '/etc/yt/playlist-state.json';
+const NOW_FILE = '/run/streamer-now.json';
+const PREVIEW_FILE = '/tmp/stream-preview.jpg';
 const VIDEO_DIR = '/mnt/blobfuse2';
 const VIDEO_EXTENSIONS = ['.mp4', '.mkv', '.mov', '.avi', '.ts', '.flv'];
+
+// Duration cache: filename → seconds (avoids repeated ffprobe calls)
+const durationCache = new Map();
+
+function probeDuration(filePath) {
+  const basename = path.basename(filePath);
+  if (durationCache.has(basename)) return durationCache.get(basename);
+  try {
+    const out = execFileSync('ffprobe', [
+      '-v', 'error', '-show_entries', 'format=duration',
+      '-of', 'csv=p=0', filePath
+    ], { timeout: 10000 }).toString().trim();
+    const seconds = Math.round(parseFloat(out) || 0);
+    durationCache.set(basename, seconds);
+    return seconds;
+  } catch { return 0; }
+}
+
+function readNowPlaying() {
+  try {
+    return JSON.parse(fs.readFileSync(NOW_FILE, 'utf8'));
+  } catch { return null; }
+}
 
 function readPrefix() {
   try {
@@ -249,7 +274,7 @@ const server = http.createServer(async (req, res) => {
         }
         const playlist = readPlaylistOrder();
         const state = readPlaybackState();
-        const result = { active, uptimeSeconds, nowPlaying: null, upNext: [] };
+        const result = { active, uptimeSeconds, nowPlaying: null, upNext: [], progress: null };
 
         if (state && playlist.length > 0) {
           // The state file records the LAST COMPLETED video's index.
@@ -269,25 +294,43 @@ const server = http.createServer(async (req, res) => {
             // Currently streaming: now playing is the one AFTER the bookmark
             const nowIdx = (bookmarkIdx + 1) % playlist.length;
             result.nowPlaying = playlist[nowIdx];
-            // Up next: the 5 videos after now playing
+            // Up next: the 5 videos after now playing, with durations
             for (let i = 1; i <= 5 && i < playlist.length; i++) {
-              result.upNext.push(playlist[(nowIdx + i) % playlist.length]);
+              const name = playlist[(nowIdx + i) % playlist.length];
+              const dur = probeDuration(path.join(VIDEO_DIR, name));
+              result.upNext.push({ name, duration: dur });
             }
           } else if (active) {
             // Active but no valid bookmark — assume index 0
             result.nowPlaying = playlist[0] || null;
             for (let i = 1; i <= 5 && i < playlist.length; i++) {
-              result.upNext.push(playlist[i]);
+              const name = playlist[i];
+              const dur = probeDuration(path.join(VIDEO_DIR, name));
+              result.upNext.push({ name, duration: dur });
             }
           } else {
             // Stopped: show what will play next on resume
             const resumeIdx = bookmarkIdx >= 0 ? (bookmarkIdx + 1) % playlist.length : 0;
             result.nowPlaying = null;
-            result.upNext = playlist.slice(resumeIdx, resumeIdx + 5);
-            if (result.upNext.length < 5 && playlist.length > 0) {
-              // Wrap around
-              const need = 5 - result.upNext.length;
-              result.upNext = result.upNext.concat(playlist.slice(0, need));
+            const slice = playlist.slice(resumeIdx, resumeIdx + 5);
+            if (slice.length < 5 && playlist.length > 0) {
+              const need = 5 - slice.length;
+              slice.push(...playlist.slice(0, need));
+            }
+            result.upNext = slice.map(name => ({
+              name, duration: probeDuration(path.join(VIDEO_DIR, name))
+            }));
+          }
+
+          // Progress of current video (from /run/streamer-now.json)
+          if (active) {
+            const now = readNowPlaying();
+            if (now && now.startedAt && now.duration) {
+              const elapsed = Math.floor(Date.now() / 1000) - now.startedAt;
+              result.progress = {
+                elapsed: Math.min(elapsed, now.duration),
+                duration: now.duration
+              };
             }
           }
         }
@@ -493,6 +536,27 @@ const server = http.createServer(async (req, res) => {
         }
       } catch {}
       jsonResponse(res, 200, result);
+      return;
+    }
+
+    // ─── GET /api/preview ──────────────────────────────────────────
+    // Serve the latest stream preview screenshot (JPEG)
+    if (req.method === 'GET' && req.url === '/api/preview') {
+      try {
+        const stat = fs.statSync(PREVIEW_FILE);
+        // Only serve if less than 30s old
+        if (Date.now() - stat.mtimeMs < 30000) {
+          res.writeHead(200, {
+            'Content-Type': 'image/jpeg',
+            'Content-Length': stat.size,
+            'Cache-Control': 'no-cache'
+          });
+          fs.createReadStream(PREVIEW_FILE).pipe(res);
+          return;
+        }
+      } catch {}
+      res.writeHead(204);
+      res.end();
       return;
     }
 
