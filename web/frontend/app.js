@@ -568,6 +568,79 @@ document.getElementById('refresh-logs').addEventListener('click', async () => {
   }
 });
 
+/* ── Upload ───────────────────────────────────────────────────────── */
+
+const uploadArea = document.getElementById('upload-area');
+const uploadInput = document.getElementById('upload-input');
+const uploadQueue = document.getElementById('upload-queue');
+const uploadStatus = document.getElementById('upload-status');
+
+uploadArea.addEventListener('click', () => uploadInput.click());
+uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.classList.add('drag-over'); });
+uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('drag-over'));
+uploadArea.addEventListener('drop', (e) => {
+  e.preventDefault();
+  uploadArea.classList.remove('drag-over');
+  handleFiles(e.dataTransfer.files);
+});
+uploadInput.addEventListener('change', () => { handleFiles(uploadInput.files); uploadInput.value = ''; });
+
+async function handleFiles(files) {
+  for (const file of files) {
+    await uploadFile(file);
+  }
+  loadVideos();
+  loadStorage();
+}
+
+async function uploadFile(file) {
+  const item = document.createElement('div');
+  item.className = 'upload-item';
+  item.innerHTML = `
+    <span class="upload-name">${esc(file.name)}</span>
+    <span class="upload-size">${(file.size / (1024 * 1024)).toFixed(1)} MB</span>
+    <div class="upload-progress-bar"><div class="upload-progress-fill"></div></div>
+    <span class="upload-pct">0%</span>
+  `;
+  uploadQueue.appendChild(item);
+  const fill = item.querySelector('.upload-progress-fill');
+  const pct = item.querySelector('.upload-pct');
+
+  try {
+    await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/videos/upload');
+      xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const p = Math.round((e.loaded / e.total) * 100);
+          fill.style.width = p + '%';
+          pct.textContent = p + '%';
+        }
+      };
+      xhr.onload = () => {
+        if (xhr.status === 200) {
+          fill.style.width = '100%';
+          fill.style.background = '#43a047';
+          pct.textContent = '✓';
+          resolve();
+        } else {
+          let msg = 'Upload failed';
+          try { msg = JSON.parse(xhr.responseText).error; } catch {}
+          reject(new Error(msg));
+        }
+      };
+      xhr.onerror = () => reject(new Error('Network error'));
+      xhr.send(file);
+    });
+  } catch (e) {
+    fill.style.width = '100%';
+    fill.style.background = '#d32f2f';
+    pct.textContent = '✗';
+    showStatus(uploadStatus, e.message, false);
+  }
+}
+
 /* ── Update ───────────────────────────────────────────────────────── */
 
 document.getElementById('run-update').addEventListener('click', async () => {
@@ -578,10 +651,15 @@ document.getElementById('run-update').addEventListener('click', async () => {
   btn.textContent = 'Updating...';
   output.style.display = 'none';
   try {
-    const data = await api('/api/update', { method: 'POST' });
-    output.textContent = data.output || 'No output';
+    const res = await fetch('/api/update', { method: 'POST' });
+    const data = await res.json();
+    output.textContent = data.output || data.error || 'No output';
     output.style.display = '';
-    showStatus(status, 'Update complete.', true);
+    if (!res.ok) {
+      showStatus(status, data.error || 'Update failed', false);
+    } else {
+      showStatus(status, 'Update complete.', true);
+    }
   } catch (e) {
     showStatus(status, e.message, false);
     output.textContent = e.message;
