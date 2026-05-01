@@ -200,16 +200,46 @@ while true; do
   fi
 
   if [[ "$WATERMARK" == true && -f "$WM_FONT" ]]; then
-    # For drawtext text='...', only single quotes need escaping.
-    # Inside single-quoted values, colons/commas/semicolons are literal.
-    # Escape ' as '\'' (end quote, escaped quote, start quote)
-    SAFE_TITLE="${TITLE//\'/\'\\\\\'\'}"
-    # Compute title length in bash (ffmpeg expressions don't have strlen)
-    TITLE_LEN=${#TITLE}
-    [[ "$TITLE_LEN" -lt 1 ]] && TITLE_LEN=1
+    # Break long titles into multiple lines at the nearest space to optimal split points
+    MAX_LINE=30
+    TITLE_FILE="/tmp/streamer-title.txt"
+    if [[ ${#TITLE} -gt $MAX_LINE ]]; then
+      NUM_LINES=$(( (${#TITLE} + MAX_LINE - 1) / MAX_LINE ))
+      PARTS=()
+      POS=0
+      for ((line=1; line <= NUM_LINES; line++)); do
+        if [[ $line -eq $NUM_LINES ]]; then
+          PARTS+=("${TITLE:POS}")
+        else
+          TARGET=$(( ${#TITLE} * line / NUM_LINES ))
+          BEST=-1
+          for ((d=0; d < ${#TITLE}; d++)); do
+            FWD=$((TARGET + d))
+            BWD=$((TARGET - d))
+            if [[ $FWD -lt ${#TITLE} && "${TITLE:FWD:1}" == " " ]]; then
+              BEST=$FWD; break
+            fi
+            if [[ $BWD -gt $POS && "${TITLE:BWD:1}" == " " ]]; then
+              BEST=$BWD; break
+            fi
+          done
+          if [[ $BEST -gt $POS ]]; then
+            PARTS+=("${TITLE:POS:$((BEST - POS))}")
+            POS=$((BEST + 1))
+          else
+            PARTS+=("${TITLE:POS:$((TARGET - POS))}")
+            POS=$TARGET
+          fi
+        fi
+      done
+      # Write lines separated by newlines (no trailing newline)
+      printf '%s\n' "${PARTS[@]}" | head -c -1 > "$TITLE_FILE"
+    else
+      printf '%s' "$TITLE" > "$TITLE_FILE"
+    fi
     # Lower-third: serif bold, white text, drop shadow, semi-transparent box
-    # Font size: min(h/28, w*0.9/title_length) — scales down for long titles
-    VF_PARTS+=("drawtext=fontfile=${WM_FONT}:text='${SAFE_TITLE}':fontsize='min(h/28,w*0.9/${TITLE_LEN})':fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:box=1:boxcolor=black@0.4:boxborderw=10:x=(w-text_w)/2:y=h-h/8")
+    # Font size h/14 (doubled); textfile avoids all escaping issues
+    VF_PARTS+=("drawtext=fontfile=${WM_FONT}:textfile=${TITLE_FILE}:fontsize=h/14:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:box=1:boxcolor=black@0.4:boxborderw=10:x=(w-text_w)/2:y=h-text_h-h/10")
   fi
 
   # Build -vf argument as an array (avoids word-splitting issues with spaces in text)
