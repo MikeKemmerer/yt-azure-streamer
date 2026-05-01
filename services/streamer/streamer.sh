@@ -238,8 +238,8 @@ while true; do
       printf '%s' "$TITLE" > "$TITLE_FILE"
     fi
     # Lower-third: serif bold, white text, drop shadow, semi-transparent box
-    # Font size h/14 (doubled); textfile avoids all escaping issues
-    VF_PARTS+=("drawtext=fontfile=${WM_FONT}:textfile=${TITLE_FILE}:fontsize=h/14:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:box=1:boxcolor=black@0.4:boxborderw=10:x=(w-text_w)/2:y=h-text_h-h/10")
+    # Font size h/20; textfile avoids all escaping issues
+    VF_PARTS+=("drawtext=fontfile=${WM_FONT}:textfile=${TITLE_FILE}:fontsize=h/20:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:box=1:boxcolor=black@0.4:boxborderw=10:x=(w-text_w)/2:y=h-text_h-h/10")
   fi
 
   # Build -vf argument as an array (avoids word-splitting issues with spaces in text)
