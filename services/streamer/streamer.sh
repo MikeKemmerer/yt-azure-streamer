@@ -345,7 +345,7 @@ except: pass
         printf '%%{eif:trunc(min(t,%d)/60):d}:%%{eif:mod(trunc(min(t,%d)),60):d:2} / %s' \
           "$DURATION" "$DURATION" "$DUR_FMT" > "$TIME_FILE"
       fi
-      VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TIME_FILE}:fontsize=h/40:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-w/30:y=h-h/7")
+      VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TIME_FILE}:fontsize=h/40:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-w/30:y=h-h/20")
     fi
   fi
 
