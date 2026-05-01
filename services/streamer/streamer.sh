@@ -323,6 +323,13 @@ except: pass
   DURATION=$(ffprobe -v error -show_entries format=duration \
     -of csv=p=0 "$VIDEO" 2>/dev/null || echo "0")
   DURATION=${DURATION%%.*}  # truncate to integer seconds
+
+  # Progress bar (0.5% height at very bottom) and elapsed/remaining time (bottom right)
+  if [[ "${DURATION:-0}" -gt 0 ]]; then
+    VF_PARTS+=("drawbox=x=0:y=ih-ih/200:w=iw*(t/${DURATION}):h=ih/200:color=red@0.8:t=fill")
+    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:text='%{pts\\:hms} / $(printf '%02d\\:%02d\\:%02d' $((DURATION/3600)) $(( (DURATION%3600)/60 )) $((DURATION%60)))':fontsize=h/40:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-w/30:y=h-h/7")
+  fi
+
   NOW_FILE="/run/streamer-now.json"
   python3 -c "
 import json, sys
