@@ -119,11 +119,16 @@ const VALID_RESOLUTIONS = ['144p', '240p', '360p', '480p', '720p', '1080p', '144
 
 function readPlaylistOrder() {
   // Parse the ffmpeg concat playlist file into an array of basenames
+  // ffmpeg concat format escapes single quotes as: '\''
   try {
     const raw = fs.readFileSync(PLAYLIST_FILE, 'utf8');
     return raw.split('\n')
       .filter(l => l.startsWith("file '"))
-      .map(l => path.basename(l.replace(/^file '/, '').replace(/'$/, '')));
+      .map(l => {
+        const unquoted = l.replace(/^file '/, '').replace(/'$/, '');
+        const unescaped = unquoted.replace(/'\\''/g, "'");
+        return path.basename(unescaped);
+      });
   } catch { return []; }
 }
 
@@ -277,6 +282,7 @@ const server = http.createServer(async (req, res) => {
         }
         const playlist = readPlaylistOrder();
         const state = readPlaybackState();
+        const now = active ? readNowPlaying() : null;
         const result = { active, uptimeSeconds, nowPlaying: null, upNext: [], progress: null };
 
         if (state && playlist.length > 0) {
@@ -304,12 +310,23 @@ const server = http.createServer(async (req, res) => {
               result.upNext.push({ name, duration: dur });
             }
           } else if (active) {
-            // Active but no valid bookmark — assume index 0
-            result.nowPlaying = playlist[0] || null;
-            for (let i = 1; i <= 5 && i < playlist.length; i++) {
-              const name = playlist[i];
-              const dur = probeDuration(path.join(VIDEO_DIR, name));
-              result.upNext.push({ name, duration: dur });
+            // Active but no valid bookmark — use NOW_FILE or assume index 0
+            const nowFile = now ? path.basename(now.file || '') : null;
+            const nowIdx = nowFile ? playlist.indexOf(nowFile) : -1;
+            if (nowIdx >= 0) {
+              result.nowPlaying = playlist[nowIdx];
+              for (let i = 1; i <= 5 && i < playlist.length; i++) {
+                const name = playlist[(nowIdx + i) % playlist.length];
+                const dur = probeDuration(path.join(VIDEO_DIR, name));
+                result.upNext.push({ name, duration: dur });
+              }
+            } else {
+              result.nowPlaying = nowFile || playlist[0] || null;
+              for (let i = 1; i <= 5 && i < playlist.length; i++) {
+                const name = playlist[i];
+                const dur = probeDuration(path.join(VIDEO_DIR, name));
+                result.upNext.push({ name, duration: dur });
+              }
             }
           } else {
             // Stopped: show what will play next on resume
@@ -324,18 +341,29 @@ const server = http.createServer(async (req, res) => {
               name, duration: probeDuration(path.join(VIDEO_DIR, name))
             }));
           }
-
-          // Progress of current video (from /run/streamer-now.json)
-          if (active) {
-            const now = readNowPlaying();
-            if (now && now.startedAt && now.duration) {
-              const elapsed = Math.floor(Date.now() / 1000) - now.startedAt;
-              result.progress = {
-                elapsed: Math.min(elapsed, now.duration),
-                duration: now.duration
-              };
+        } else if (active && playlist.length > 0) {
+          // State file missing or broken — fallback to NOW_FILE
+          const nowFile = now ? path.basename(now.file || '') : null;
+          const nowIdx = nowFile ? playlist.indexOf(nowFile) : -1;
+          if (nowIdx >= 0) {
+            result.nowPlaying = playlist[nowIdx];
+            for (let i = 1; i <= 5 && i < playlist.length; i++) {
+              const name = playlist[(nowIdx + i) % playlist.length];
+              const dur = probeDuration(path.join(VIDEO_DIR, name));
+              result.upNext.push({ name, duration: dur });
             }
+          } else {
+            result.nowPlaying = nowFile || playlist[0] || null;
           }
+        }
+
+        // Progress of current video (from /run/streamer-now.json)
+        if (active && now && now.startedAt && now.duration) {
+          const elapsed = Math.floor(Date.now() / 1000) - now.startedAt;
+          result.progress = {
+            elapsed: Math.min(elapsed, now.duration),
+            duration: now.duration
+          };
         }
 
         jsonResponse(res, 200, result);
@@ -487,7 +515,7 @@ const server = http.createServer(async (req, res) => {
     // ─── POST /api/update ─────────────────────────────────────────
     // Pull latest code and re-deploy changed files
     if (req.method === 'POST' && req.url === '/api/update') {
-      execFile('/usr/local/bin/yt-update.sh', [], {
+      execFile('/usr/local/bin/update.sh', [], {
         timeout: 60000,
         maxBuffer: 1024 * 256,
         env: { ...process.env, HOME: '/root', GIT_TERMINAL_PROMPT: '0' }

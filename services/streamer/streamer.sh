@@ -122,7 +122,8 @@ fi
 bash /usr/local/bin/generate-playlist.sh $SHUFFLE_FLAG "$VIDEO_DIR" "$PLAYLIST"
 
 # Parse playlist into an array of file paths
-mapfile -t VIDEOS < <(grep "^file " "$PLAYLIST" | sed "s/^file '//;s/'$//")
+# Parse playlist into an array of file paths (unescape ffmpeg's '\'' quoting)
+mapfile -t VIDEOS < <(grep "^file " "$PLAYLIST" | sed "s/^file '//;s/'$//" | sed "s/'\\\\''/'/g")
 NUM_VIDEOS=${#VIDEOS[@]}
 
 if [[ $NUM_VIDEOS -eq 0 ]]; then
@@ -252,8 +253,11 @@ while true; do
     -of csv=p=0 "$VIDEO" 2>/dev/null || echo "0")
   DURATION=${DURATION%%.*}  # truncate to integer seconds
   NOW_FILE="/run/streamer-now.json"
-  printf '{"file":"%s","startedAt":%d,"duration":%d}\n' \
-    "$VIDEO" "$(date +%s)" "${DURATION:-0}" > "$NOW_FILE"
+  python3 -c "
+import json, sys
+with open('$NOW_FILE', 'w') as f:
+    json.dump({'file': sys.argv[1], 'startedAt': int(sys.argv[2]), 'duration': int(sys.argv[3])}, f)
+" "$VIDEO" "$(date +%s)" "${DURATION:-0}"
 
   # Build filter_complex: apply filters, split into stream + preview
   PREVIEW_FILE="/opt/yt/web/frontend/stream-preview.jpg"
@@ -276,7 +280,11 @@ while true; do
     -update 1 -q:v 3 "$PREVIEW_FILE" </dev/null || true
 
   # Update bookmark after each video completes (or is interrupted)
-  echo "{\"index\": $INDEX, \"file\": \"$VIDEO\"}" > "$STATE_FILE"
+  python3 -c "
+import json, sys
+with open('$STATE_FILE', 'w') as f:
+    json.dump({'index': int(sys.argv[1]), 'file': sys.argv[2]}, f)
+" "$INDEX" "$VIDEO"
   echo "  Bookmark saved: index $INDEX"
 
   # Advance to next video (wrap around)
