@@ -433,12 +433,12 @@ document.getElementById('deselect-all').addEventListener('click', () => {
 /* ── Title Suggestions Modal ─────────────────────────────────────── */
 
 function needsTitleSuggestion(v) {
+  // If the user has already set a custom title, no suggestion needed
+  if (v.title && v.title.trim()) return false;
   const name = v.file.replace(/\.[^.]+$/, '');
-  const hasTitle = v.title && v.title.trim();
-  const displayName = hasTitle ? v.title : name;
-  if (displayName.includes('_')) return true;
-  if (/version/i.test(displayName)) return true;
-  if (/\.(mp4|mkv|mov|avi|ts|flv)/i.test(displayName)) return true;
+  if (name.includes('_')) return true;
+  if (/version/i.test(name)) return true;
+  if (/\.(mp4|mkv|mov|avi|ts|flv)/i.test(name)) return true;
   if (!/^[A-Za-z]+ \d{1,2},\s*\d{4}/.test(name)) return true;
   return false;
 }
