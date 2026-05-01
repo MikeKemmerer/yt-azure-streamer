@@ -324,22 +324,21 @@ except: pass
     -of csv=p=0 "$VIDEO" 2>/dev/null || echo "0")
   DURATION=${DURATION%%.*}  # truncate to integer seconds
 
-  # Progress bar (0.5% height at very bottom) and elapsed/remaining time (bottom right)
+  # Progress bar (1% height at very bottom) and elapsed/remaining time (bottom right)
   if [[ "${DURATION:-0}" -gt 0 ]]; then
-    VF_PARTS+=("drawbox=x=0:y=ih-ih/200:w=iw*(t/${DURATION}):h=ih/200:color=red@0.8:t=fill")
+    VF_PARTS+=("drawbox=x=0:y=ih-ih/100:w=iw*(t/${DURATION}):h=ih/100:color=red@0.8:t=fill")
     # Build time display: MM:SS if duration < 1h, else H:MM:SS
-    # Uses unquoted text mode with proper escaping:
-    #   \\\: → \: in text value (eif argument separator)
-    #   \:  → :  in text value (display colon, not option separator)
-    #   \,  → ,  in text value (expression comma, not filter separator)
+    # Escaping for unquoted drawtext text in filter_complex:
+    #   \: → escaped colon (not option separator), unescapes to : (eif separator AND display colon)
+    #   \, → escaped comma (not filter separator), unescapes to , (expression comma)
     if [[ "$DURATION" -ge 3600 ]]; then
-      ELAPSED_EXPR='%{eif\\\:trunc(t/3600)\\\:d}\:%{eif\\\:mod(trunc(t/60)\,60)\\\:d\\\:2}\:%{eif\\\:mod(trunc(t)\,60)\\\:d\\\:2}'
+      ELAPSED_EXPR='%{eif\:trunc(t/3600)\:d}\:%{eif\:mod(trunc(t/60)\,60)\:d\:2}\:%{eif\:mod(trunc(t)\,60)\:d\:2}'
       DUR_H=$((DURATION/3600))
       DUR_M=$(( (DURATION%3600)/60 ))
       DUR_S=$((DURATION%60))
       DUR_FMT=$(printf '%d\:%02d\:%02d' "$DUR_H" "$DUR_M" "$DUR_S")
     else
-      ELAPSED_EXPR='%{eif\\\:trunc(t/60)\\\:d}\:%{eif\\\:mod(trunc(t)\,60)\\\:d\\\:2}'
+      ELAPSED_EXPR='%{eif\:trunc(t/60)\:d}\:%{eif\:mod(trunc(t)\,60)\:d\:2}'
       DUR_M=$((DURATION/60))
       DUR_S=$((DURATION%60))
       DUR_FMT=$(printf '%d\:%02d' "$DUR_M" "$DUR_S")
