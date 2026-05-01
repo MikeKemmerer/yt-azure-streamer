@@ -326,7 +326,7 @@ except: pass
 
   # Progress bar (1% height at very bottom) and elapsed/remaining time (bottom right)
   if [[ "${DURATION:-0}" -gt 0 ]]; then
-    VF_PARTS+=("drawbox=x=0:y=ih-ih/100:w=iw*(t/${DURATION}):h=ih/100:color=red@0.8:t=fill")
+    VF_PARTS+=("drawbox=x=0:y=ih-ih/100:w=iw*(t/${DURATION}):h=ih/100:color=red@0.8:thickness=fill:eval=frame")
     # Build time display: MM:SS if duration < 1h, else H:MM:SS
     # Escaping for unquoted drawtext text in filter_complex:
     #   \: → escaped colon (not option separator), unescapes to : (eif separator AND display colon)
