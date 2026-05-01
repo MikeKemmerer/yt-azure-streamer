@@ -274,10 +274,16 @@ async function loadVideos() {
   }
 }
 
-function renderVideoList() {
+function renderVideoList(filter) {
   const list = document.getElementById('video-list');
   list.innerHTML = '';
+  const query = (filter || '').toLowerCase();
   videoData.forEach((v, i) => {
+    const displayTitle = v.title || v.file.replace(/\.[^.]+$/, '');
+    if (query && !displayTitle.toLowerCase().includes(query) && !v.file.toLowerCase().includes(query)) {
+      return; // skip items that don't match search
+    }
+
     const li = document.createElement('li');
     li.draggable = true;
     li.dataset.idx = i;
@@ -298,21 +304,68 @@ function renderVideoList() {
     const nameBlock = document.createElement('div');
     nameBlock.className = 'video-name-block';
 
-    const label = document.createElement('span');
-    label.className = 'video-name';
-    label.textContent = v.file;
+    // Title row: title text + pencil edit icon
+    const titleRow = document.createElement('div');
+    titleRow.className = 'video-title-row';
 
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'video-title-display';
+    titleSpan.textContent = displayTitle;
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'video-edit-btn';
+    editBtn.textContent = '✏️';
+    editBtn.title = 'Edit title';
+
+    // Hidden inline edit input
     const titleInput = document.createElement('input');
     titleInput.type = 'text';
     titleInput.className = 'video-title-input';
-    titleInput.placeholder = 'Display title (leave blank to use filename)';
-    titleInput.value = v.title || '';
-    titleInput.addEventListener('input', () => {
-      videoData[i].title = titleInput.value;
+    titleInput.value = v.title || displayTitle;
+    titleInput.style.display = 'none';
+
+    editBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      titleSpan.style.display = 'none';
+      editBtn.style.display = 'none';
+      titleInput.style.display = '';
+      titleInput.focus();
+      titleInput.select();
     });
 
-    nameBlock.appendChild(label);
-    nameBlock.appendChild(titleInput);
+    function commitEdit() {
+      const newTitle = titleInput.value.trim();
+      // If input matches derived filename title, store as empty (use default)
+      const derived = v.file.replace(/\.[^.]+$/, '');
+      videoData[i].title = (newTitle === derived) ? '' : newTitle;
+      titleSpan.textContent = newTitle || derived;
+      titleInput.style.display = 'none';
+      titleSpan.style.display = '';
+      editBtn.style.display = '';
+    }
+
+    titleInput.addEventListener('blur', commitEdit);
+    titleInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commitEdit(); }
+      if (e.key === 'Escape') {
+        titleInput.value = v.title || displayTitle;
+        titleInput.style.display = 'none';
+        titleSpan.style.display = '';
+        editBtn.style.display = '';
+      }
+    });
+
+    titleRow.appendChild(titleSpan);
+    titleRow.appendChild(editBtn);
+    titleRow.appendChild(titleInput);
+
+    // Filename row (muted, smaller)
+    const fileRow = document.createElement('div');
+    fileRow.className = 'video-filename';
+    fileRow.textContent = v.file;
+
+    nameBlock.appendChild(titleRow);
+    nameBlock.appendChild(fileRow);
 
     const num = document.createElement('span');
     num.className = 'video-num';
@@ -490,6 +543,11 @@ document.getElementById('sort-shuffle').addEventListener('click', () => {
     [videoData[i], videoData[j]] = [videoData[j], videoData[i]];
   }
   renderVideoList();
+});
+
+// Playlist search filter
+document.getElementById('playlist-search').addEventListener('input', (e) => {
+  renderVideoList(e.target.value);
 });
 
 /* ── Service Health ──────────────────────────────────────────────── */
