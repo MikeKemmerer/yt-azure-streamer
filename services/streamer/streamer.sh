@@ -256,7 +256,7 @@ while true; do
     "$VIDEO" "$(date +%s)" "${DURATION:-0}" > "$NOW_FILE"
 
   # Build filter_complex: apply filters, split into stream + preview
-  PREVIEW_FILE="/tmp/stream-preview.jpg"
+  PREVIEW_FILE="/opt/yt/web/frontend/stream-preview.jpg"
   VF_STRING=""
   if [[ ${#VF_PARTS[@]} -gt 0 ]]; then
     VF_STRING="$(IFS=,; echo "${VF_PARTS[*]}"),"
