@@ -537,7 +537,6 @@ const server = http.createServer(async (req, res) => {
           branch = parsed.branch;
         }
       } catch { /* default to main */ }
-      console.log(`[update] Received update request for branch: ${branch}`);
       const args = ['--branch', branch];
       execFile('/usr/local/bin/yt-update.sh', args, {
         timeout: 60000,
