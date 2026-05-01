@@ -113,6 +113,31 @@ button.danger:hover:not(:disabled) { background: #b71c1c; }
   margin-bottom: 10px;
   font-size: 0.9rem;
 }
+.progress-text {
+  margin-left: 10px;
+  font-size: 0.8rem;
+  color: #555;
+}
+.progress-bar-container {
+  margin-top: 6px;
+  height: 6px;
+  background: #c8e6c9;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.progress-bar {
+  height: 100%;
+  background: #43a047;
+  transition: width 1s linear;
+}
+.stream-preview {
+  margin-bottom: 10px;
+}
+.stream-preview img {
+  max-width: 100%;
+  border-radius: 4px;
+  border: 1px solid #ddd;
+}
 
 .up-next {
   margin-bottom: 10px;

@@ -242,11 +242,11 @@ while true; do
       printf '%s' "$TITLE" > "$TITLE_FILE"
     fi
     # Broadcast-style lower third:
-    # Top line: church name (smaller, serif)
-    # Bottom line(s): video title (larger, sans-serif, left-justified)
+    # Single semi-transparent background bar, then two text lines on top
     CHURCH_NAME="Saint Demetrios Greek Orthodox Church - Seattle, WA"
-    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SERIF}:text='${CHURCH_NAME}':fontsize=h/32:fontcolor=white@0.9:shadowcolor=black@0.6:shadowx=2:shadowy=2:box=1:boxcolor=black@0.5:boxborderw=6:x=w/30:y=h-h/5")
-    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=h/20:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:box=1:boxcolor=black@0.5:boxborderw=10:x=w/30:y=h-h/5+h/26")
+    VF_PARTS+=("drawbox=x=0:y=h-h/6:w=iw:h=h/6:color=black@0.5:t=fill")
+    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SERIF}:text='${CHURCH_NAME}':fontsize=h/32:fontcolor=white@0.9:shadowcolor=black@0.6:shadowx=2:shadowy=2:x=w/30:y=h-h/7")
+    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=h/20:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26")
   fi
 
   # Build -vf argument as an array (avoids word-splitting issues with spaces in text)
@@ -255,6 +255,30 @@ while true; do
     VF_ARGS=(-vf "$(IFS=,; echo "${VF_PARTS[*]}")")
   fi
 
+  # Probe video duration and write "now playing" state for the web UI
+  DURATION=$(ffprobe -v error -show_entries format=duration \
+    -of csv=p=0 "$VIDEO" 2>/dev/null || echo "0")
+  DURATION=${DURATION%%.*}  # truncate to integer seconds
+  NOW_FILE="/run/streamer-now.json"
+  printf '{"file":"%s","startedAt":%d,"duration":%d}\n' \
+    "$VIDEO" "$(date +%s)" "${DURATION:-0}" > "$NOW_FILE"
+
+  # Start a background process to capture periodic preview screenshots
+  PREVIEW_FILE="/tmp/stream-preview.jpg"
+  START_EPOCH=$(date +%s)
+  (
+    sleep 5
+    while kill -0 $$ 2>/dev/null; do
+      # Compute elapsed time to seek into the video for an accurate frame
+      ELAPSED=$(( $(date +%s) - START_EPOCH ))
+      ffmpeg -y -ss "$ELAPSED" -i "$VIDEO" \
+        ${VF_ARGS[@]:+"${VF_ARGS[@]}"} \
+        -vframes 1 -q:v 5 "$PREVIEW_FILE" </dev/null 2>/dev/null || true
+      sleep 10
+    done
+  ) &
+  PREVIEW_PID=$!
+
   # Always re-encode to guarantee keyframes every 2 seconds (YouTube requires ≤4s)
   ffmpeg -re -i "$VIDEO" \
     "${VF_ARGS[@]}" \
@@ -262,6 +286,10 @@ while true; do
     -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)" \
     -c:a aac -b:a "$AUDIO_BR" -ar 44100 \
     -f flv "$RTMP_URL" </dev/null || true
+
+  # Stop preview capture
+  kill "$PREVIEW_PID" 2>/dev/null || true
+  wait "$PREVIEW_PID" 2>/dev/null || true
 
   # Update bookmark after each video completes (or is interrupted)
   echo "{\"index\": $INDEX, \"file\": \"$VIDEO\"}" > "$STATE_FILE"
