@@ -269,7 +269,7 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
 /* ── Playlist / Videos ───────────────────────────────────────────── */
 
 let videoData = [];
-let dragSrcIdx = null;
+let sortableInstance = null;
 
 async function loadVideos() {
   const list = document.getElementById('video-list');
@@ -296,7 +296,6 @@ function renderVideoList(filter) {
     }
 
     const li = document.createElement('li');
-    li.draggable = true;
     li.dataset.idx = i;
     li.className = v.enabled ? '' : 'disabled';
 
@@ -387,37 +386,26 @@ function renderVideoList(filter) {
     li.appendChild(nameBlock);
     li.appendChild(num);
 
-    li.addEventListener('dragstart', onDragStart);
-    li.addEventListener('dragover', onDragOver);
-    li.addEventListener('drop', onDrop);
-    li.addEventListener('dragend', onDragEnd);
-
     list.appendChild(li);
   });
-}
 
-function onDragStart(e) {
-  dragSrcIdx = +e.currentTarget.dataset.idx;
-  e.currentTarget.classList.add('dragging');
-  e.dataTransfer.effectAllowed = 'move';
-}
-function onDragOver(e) {
-  e.preventDefault();
-  e.dataTransfer.dropEffect = 'move';
-  e.currentTarget.classList.add('drag-over');
-}
-function onDrop(e) {
-  e.preventDefault();
-  e.currentTarget.classList.remove('drag-over');
-  const targetIdx = +e.currentTarget.dataset.idx;
-  if (dragSrcIdx === null || dragSrcIdx === targetIdx) return;
-  const [moved] = videoData.splice(dragSrcIdx, 1);
-  videoData.splice(targetIdx, 0, moved);
-  renderVideoList();
-}
-function onDragEnd(e) {
-  e.currentTarget.classList.remove('dragging');
-  document.querySelectorAll('#video-list li').forEach(li => li.classList.remove('drag-over'));
+  // (Re-)initialize SortableJS for mouse + touch drag support
+  if (sortableInstance) sortableInstance.destroy();
+  sortableInstance = new Sortable(list, {
+    handle: '.grip',
+    animation: 150,
+    ghostClass: 'sortable-ghost',
+    chosenClass: 'sortable-chosen',
+    dragClass: 'sortable-drag',
+    onEnd: function (evt) {
+      const oldIdx = evt.oldIndex;
+      const newIdx = evt.newIndex;
+      if (oldIdx === newIdx) return;
+      const [moved] = videoData.splice(oldIdx, 1);
+      videoData.splice(newIdx, 0, moved);
+      renderVideoList();
+    }
+  });
 }
 
 document.getElementById('save-playlist').addEventListener('click', async () => {

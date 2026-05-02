@@ -83,7 +83,7 @@ body.dark .log-controls select {
 body.dark button.secondary { background: #444; color: #ddd; }
 body.dark button.secondary:hover:not(:disabled) { background: #555; }
 body.dark #video-list li { border-bottom-color: #444; }
-body.dark #video-list li.drag-over { background: #1a3a5c; }
+body.dark #video-list li.sortable-ghost { background: #1a3a5c; }
 body.dark .grip { color: #666; }
 body.dark .video-num { color: #777; }
 body.dark .uptime { color: #999; }
@@ -251,19 +251,20 @@ button.danger:hover:not(:disabled) { background: #b71c1c; }
   gap: 8px;
   padding: 8px 6px;
   border-bottom: 1px solid #eee;
-  cursor: grab;
   user-select: none;
   transition: background .15s;
 }
-#video-list li:active { cursor: grabbing; }
+#video-list li:active { cursor: default; }
 #video-list li.disabled { opacity: .5; }
-#video-list li.dragging { opacity: .4; }
-#video-list li.drag-over { background: #e3f2fd; }
+#video-list li.sortable-ghost { opacity: .4; background: #e3f2fd; }
+#video-list li.sortable-chosen { cursor: grabbing; }
 
 .grip {
   color: #999;
   font-size: 1rem;
   flex-shrink: 0;
+  cursor: grab;
+  touch-action: none;
 }
 
 .video-name-block {
