@@ -77,7 +77,7 @@ def delete_job_schedules_for(sched_name):
     for js in data.get("value", []):
         props = js.get("properties", {})
         if props.get("schedule", {}).get("name") == sched_name:
-            js_id = js["name"]  # jobScheduleId is the resource name
+            js_id = props.get("jobScheduleId") or js["id"].rsplit("/", 1)[-1]
             subprocess.run(
                 ["az", "rest", "--method", "DELETE",
                  "--url", f"{BASE_URL}/jobSchedules/{js_id}?api-version=2023-11-01"],
