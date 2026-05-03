@@ -526,7 +526,15 @@ const server = http.createServer(async (req, res) => {
           }));
       }
       writeSchedule(schedule);
-      jsonResponse(res, 200, { ok: true });
+
+      // Trigger immediate sync to Azure Automation Account
+      execFile('/usr/local/bin/schedule-sync.sh', [], { timeout: 60000 }, (err, stdout, stderr) => {
+        if (err) {
+          console.error('schedule-sync failed:', stderr || err.message);
+          return jsonResponse(res, 200, { ok: true, syncError: 'Schedule saved but Azure sync failed' });
+        }
+        jsonResponse(res, 200, { ok: true, synced: true });
+      });
       return;
     }
 
