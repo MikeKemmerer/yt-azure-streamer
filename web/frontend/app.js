@@ -658,16 +658,24 @@ document.getElementById('add-event').addEventListener('click', () => {
 
 document.getElementById('save-schedule').addEventListener('click', async () => {
   const status = document.getElementById('schedule-status');
+  const btn = document.getElementById('save-schedule');
   collectScheduleEdits();
+  btn.disabled = true;
+  showStatus(status, 'Saving and syncing to Azure\u2026', true);
   try {
-    await api('/api/schedule', {
+    const result = await api('/api/schedule', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(scheduleData)
     });
-    showStatus(status, 'Schedule saved.', true);
+    if (result.syncError) {
+      showStatus(status, 'Schedule saved, but Azure sync failed.', false);
+    } else {
+      showStatus(status, 'Schedule saved and synced to Azure.', true);
+    }
     loadSchedule();
   } catch (e) { showStatus(status, e.message, false); }
+  finally { btn.disabled = false; }
 });
 
 /* ── System / Storage ────────────────────────────────────────────── */
