@@ -6,7 +6,7 @@ CADDY_SITE_ADDRESS {
   # Serve frontend static files — no caching for JS/CSS so updates take effect
   root * /opt/yt/web/frontend
   header /*.js Cache-Control "no-cache, must-revalidate"
-  header //*.css Cache-Control "no-cache, must-revalidate"
+  header /*.css Cache-Control "no-cache, must-revalidate"
   file_server
 
   # Reverse proxy API calls to backend

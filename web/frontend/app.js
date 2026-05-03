@@ -426,12 +426,24 @@ function renderVideoList(filter) {
     chosenClass: 'sortable-chosen',
     dragClass: 'sortable-drag',
     onEnd: function (evt) {
-      const oldIdx = evt.oldIndex;
-      const newIdx = evt.newIndex;
-      if (oldIdx === newIdx) return;
-      const [moved] = videoData.splice(oldIdx, 1);
-      videoData.splice(newIdx, 0, moved);
-      renderVideoList();
+      if (evt.oldIndex === evt.newIndex) return;
+      if (query) {
+        // Filter is active: DOM indices ≠ videoData indices.
+        // Read the new visual order via data-idx (set by renderVideoList, unchanged by SortableJS).
+        const newVisibleIdxs = [...list.querySelectorAll('li')].map(li => parseInt(li.dataset.idx, 10));
+        // Sorted positions in videoData that the visible items occupy
+        const visiblePositions = newVisibleIdxs.slice().sort((a, b) => a - b);
+        const newVideoData = [...videoData];
+        for (let i = 0; i < visiblePositions.length; i++) {
+          newVideoData[visiblePositions[i]] = videoData[newVisibleIdxs[i]];
+        }
+        videoData.length = 0;
+        videoData.push(...newVideoData);
+      } else {
+        const [moved] = videoData.splice(evt.oldIndex, 1);
+        videoData.splice(evt.newIndex, 0, moved);
+      }
+      renderVideoList(query);
     }
   });
 }
