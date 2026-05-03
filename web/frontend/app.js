@@ -1,10 +1,12 @@
 /* ── Helpers ─────────────────────────────────────────────────────── */
 
-function showStatus(el, msg, ok) {
+function showStatus(el, msg, ok, persist) {
   el.textContent = msg;
   el.className = 'status ' + (ok ? 'ok' : 'err');
   clearTimeout(el._t);
-  el._t = setTimeout(() => { el.textContent = ''; el.className = 'status'; }, 6000);
+  if (!persist) {
+    el._t = setTimeout(() => { el.textContent = ''; el.className = 'status'; }, 6000);
+  }
 }
 
 async function api(url, opts) {
@@ -655,7 +657,7 @@ document.getElementById('save-schedule').addEventListener('click', async () => {
   const btn = document.getElementById('save-schedule');
   collectScheduleEdits();
   btn.disabled = true;
-  showStatus(status, 'Saving and syncing to Azure\u2026', true);
+  showStatus(status, 'Saving and syncing to Azure\u2026', true, true);
   try {
     const result = await api('/api/schedule', {
       method: 'PUT',
