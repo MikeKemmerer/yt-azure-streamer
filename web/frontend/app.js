@@ -580,12 +580,6 @@ async function loadHealth() {
 
 let scheduleData = { timezone: 'UTC', events: [] };
 
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
 async function loadSchedule() {
   try {
     const data = await api('/api/schedule');
