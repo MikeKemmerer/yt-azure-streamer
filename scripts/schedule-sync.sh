@@ -118,41 +118,9 @@ def apply_padding(day_idx, hour, minute, delta_minutes):
     remaining = total_minutes % 1440
     return new_day, remaining // 60, remaining % 60
 
-# Build the set of schedule names we EXPECT to exist after this sync
-expected_schedules = set()
-for event in schedule.get("events", []):
-    event_name = event.get("name", "stream").replace(" ", "-")
-    for day_abbr in event.get("days", []):
-        if day_abbr not in day_map:
-            continue
-        expected_schedules.add(f"{event_name}-{day_abbr}-start")
-        expected_schedules.add(f"{event_name}-{day_abbr}-stop")
-
-# Delete all existing automation schedules NOT in the expected set
-# This cleans up removed events and removed days
-print("Cleaning up stale schedules...")
-result = subprocess.run(
-    ["az", "rest", "--method", "GET",
-     "--url", f"{BASE_URL}/schedules?api-version=2023-11-01"],
-    capture_output=True, text=True)
-if result.returncode == 0:
-    try:
-        existing = json.loads(result.stdout)
-        for sched in existing.get("value", []):
-            sched_name = sched.get("name", "")
-            # Only touch schedules that look like ours (contain -start or -stop suffix)
-            if not (sched_name.endswith("-start") or sched_name.endswith("-stop")):
-                continue
-            if sched_name not in expected_schedules:
-                print(f"  Removing stale schedule: {sched_name}")
-                delete_job_schedules_for(sched_name)
-                subprocess.run(
-                    ["az", "rest", "--method", "DELETE",
-                     "--url", f"{BASE_URL}/schedules/{sched_name}?api-version=2023-11-01"],
-                    capture_output=True)
-    except json.JSONDecodeError:
-        print("  WARNING: could not parse existing schedules", file=sys.stderr)
-
+# ─── Build desired state ────────────────────────────────────────────
+# desired[name] = { weekDay, hour, minute, runbook, timezone, description }
+desired = {}
 for event in schedule.get("events", []):
     event_name = event.get("name", "stream").replace(" ", "-")
     start_h, start_m = map(int, event["start"].split(":"))
@@ -162,10 +130,7 @@ for event in schedule.get("events", []):
         if day_abbr not in day_map:
             print(f"  WARNING: unknown day '{day_abbr}', skipping")
             continue
-
         day_idx = day_map[day_abbr]
-
-        # Apply padding with correct midnight/week-boundary wrapping
         start_day, start_ph, start_pm = apply_padding(day_idx, start_h, start_m, -padding_min)
         stop_day,  stop_ph,  stop_pm  = apply_padding(day_idx, stop_h,  stop_m,  +padding_min)
 
@@ -173,43 +138,136 @@ for event in schedule.get("events", []):
             ("start", start_day, start_ph, start_pm, RUNBOOK_START),
             ("stop",  stop_day,  stop_ph,  stop_pm,  RUNBOOK_STOP),
         ]:
-            az_day     = az_days_full[pd]
             sched_name = f"{event_name}-{day_abbr}-{kind}"
-            next_dt    = next_occurrence(pd, h, m, tz)
-            start_iso  = next_dt.strftime("%Y-%m-%dT%H:%M:%S+00:00")
-
-            # Remove stale schedule + job-schedules (idempotent upsert)
-            delete_job_schedules_for(sched_name)
-            subprocess.run(
-                ["az", "rest", "--method", "DELETE",
-                 "--url", f"{BASE_URL}/schedules/{sched_name}?api-version=2023-11-01"],
-                capture_output=True)
-
-            # Create schedule (use REST API — CLI doesn't support --week-days)
-            sched_body = json.dumps({"properties": {
+            desired[sched_name] = {
+                "weekDay": az_days_full[pd],
+                "hour": h,
+                "minute": m,
+                "runbook": runbook,
+                "timezone": schedule.get("timezone", "UTC"),
                 "description": f"Auto-{kind} VM for '{event_name}' ({day_abbr})",
-                "startTime": start_iso,
-                "frequency": "Week",
-                "interval": 1,
-                "timeZone": schedule.get("timezone", "UTC"),
-                "advancedSchedule": {"weekDays": [az_day]}
-            }})
-            az("rest", "--method", "PUT",
-               "--url", f"/subscriptions/{SUB}/resourceGroups/{RG}/providers/Microsoft.Automation/automationAccounts/{AA}/schedules/{sched_name}?api-version=2023-11-01",
-               "--body", sched_body)
+            }
 
-            # Link schedule to runbook (REST API)
-            js_id = str(uuid.uuid4())
-            js_body = json.dumps({"properties": {
-                "schedule": {"name": sched_name},
-                "runbook": {"name": runbook},
-                "parameters": {"ResourceGroupName": RG, "VMName": VM}
-            }})
-            az("rest", "--method", "PUT",
-               "--url", f"{BASE_URL}/jobSchedules/{js_id}?api-version=2023-11-01",
-               "--body", js_body)
+# ─── Fetch current state from Azure ────────────────────────────────
+print("Fetching current schedules from Azure...")
+result = subprocess.run(
+    ["az", "rest", "--method", "GET",
+     "--url", f"{BASE_URL}/schedules?api-version=2023-11-01"],
+    capture_output=True, text=True)
+if result.returncode != 0:
+    print("ERROR: failed to list schedules from Azure", file=sys.stderr)
+    sys.exit(1)
 
-            print(f"  ✓ {sched_name}: {kind} at {h:02d}:{m:02d} UTC every {az_day}")
+try:
+    existing_data = json.loads(result.stdout)
+except json.JSONDecodeError:
+    print("ERROR: could not parse schedules response", file=sys.stderr)
+    sys.exit(1)
+
+# Parse existing schedules into comparable form
+# existing[name] = { weekDay, hour, minute, timezone }
+existing = {}
+for sched in existing_data.get("value", []):
+    name = sched.get("name", "")
+    # Only consider schedules that look like ours
+    if not (name.endswith("-start") or name.endswith("-stop")):
+        continue
+    props = sched.get("properties", {})
+    adv = props.get("advancedSchedule", {})
+    week_days = adv.get("weekDays", [])
+    start_time = props.get("startTime", "")
+    tz_name = props.get("timeZone", "UTC")
+    # Parse hour:minute from startTime
+    try:
+        dt = datetime.datetime.fromisoformat(start_time.replace("+00:00", "+00:00"))
+        # Convert to the schedule's timezone to compare
+        sched_tz = ZoneInfo(tz_name) if tz_name != "UTC" else datetime.timezone.utc
+        dt_local = dt.astimezone(sched_tz)
+        existing[name] = {
+            "weekDay": week_days[0] if week_days else "",
+            "hour": dt_local.hour,
+            "minute": dt_local.minute,
+            "timezone": tz_name,
+        }
+    except Exception:
+        # Can't parse — mark for recreation
+        existing[name] = None
+
+# ─── Compute diff ───────────────────────────────────────────────────
+to_create = []   # names that need to be created or updated
+to_delete = []   # names that should be removed
+
+for name in existing:
+    if name not in desired:
+        to_delete.append(name)
+
+for name, want in desired.items():
+    have = existing.get(name)
+    if have is None:
+        # Doesn't exist or unparseable — create it
+        to_create.append(name)
+    else:
+        # Compare relevant fields
+        if (have["weekDay"] != want["weekDay"] or
+            have["hour"] != want["hour"] or
+            have["minute"] != want["minute"] or
+            have["timezone"] != want["timezone"]):
+            to_create.append(name)  # will delete + recreate
+
+if not to_create and not to_delete:
+    print("No changes needed — Azure schedules already match.")
+    sys.exit(0)
+
+print(f"Changes: {len(to_create)} create/update, {len(to_delete)} delete")
+
+# ─── Apply deletes ─────────────────────────────────────────────────
+for name in to_delete:
+    print(f"  Removing: {name}")
+    delete_job_schedules_for(name)
+    subprocess.run(
+        ["az", "rest", "--method", "DELETE",
+         "--url", f"{BASE_URL}/schedules/{name}?api-version=2023-11-01"],
+        capture_output=True)
+
+# ─── Apply creates/updates ─────────────────────────────────────────
+for name in to_create:
+    want = desired[name]
+    # Delete existing first (idempotent upsert)
+    if name in existing:
+        delete_job_schedules_for(name)
+        subprocess.run(
+            ["az", "rest", "--method", "DELETE",
+             "--url", f"{BASE_URL}/schedules/{name}?api-version=2023-11-01"],
+            capture_output=True)
+
+    next_dt = next_occurrence(
+        az_days_full.index(want["weekDay"]), want["hour"], want["minute"], tz)
+    start_iso = next_dt.strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+    sched_body = json.dumps({"properties": {
+        "description": want["description"],
+        "startTime": start_iso,
+        "frequency": "Week",
+        "interval": 1,
+        "timeZone": want["timezone"],
+        "advancedSchedule": {"weekDays": [want["weekDay"]]}
+    }})
+    az("rest", "--method", "PUT",
+       "--url", f"{BASE_URL}/schedules/{name}?api-version=2023-11-01",
+       "--body", sched_body)
+
+    # Link schedule to runbook
+    js_id = str(uuid.uuid4())
+    js_body = json.dumps({"properties": {
+        "schedule": {"name": name},
+        "runbook": {"name": want["runbook"]},
+        "parameters": {"ResourceGroupName": RG, "VMName": VM}
+    }})
+    az("rest", "--method", "PUT",
+       "--url", f"{BASE_URL}/jobSchedules/{js_id}?api-version=2023-11-01",
+       "--body", js_body)
+
+    print(f"  ✓ {name}: {want['weekDay']} {want['hour']:02d}:{want['minute']:02d}")
 
 print("Schedule sync complete.")
 PYEOF
