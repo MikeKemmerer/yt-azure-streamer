@@ -287,7 +287,8 @@ const server = http.createServer(async (req, res) => {
         const playlist = readPlaylistOrder();
         const state = readPlaybackState();
         const now = active ? readNowPlaying() : null;
-        const result = { active, uptimeSeconds, nowPlaying: null, upNext: [], progress: null };
+        const stopPending = fs.existsSync('/run/streamer-stop-after-current');
+        const result = { active, uptimeSeconds, nowPlaying: null, upNext: [], progress: null, stopPending };
 
         if (state && playlist.length > 0) {
           // The state file records the LAST COMPLETED video's index.
@@ -427,6 +428,27 @@ const server = http.createServer(async (req, res) => {
         // pkill returns 1 if no process found — not a real error for us
         jsonResponse(res, 200, { ok: true });
       });
+      return;
+    }
+
+    // ─── POST /api/streamer/stop-after-current ─────────────────────
+    // Signal the streamer to stop gracefully after the current video ends
+    if (req.method === 'POST' && req.url === '/api/streamer/stop-after-current') {
+      const signal = '/run/streamer-stop-after-current';
+      try {
+        fs.writeFileSync(signal, '');
+        jsonResponse(res, 200, { ok: true, pending: true });
+      } catch (e) {
+        jsonResponse(res, 500, { error: 'Failed to write stop signal' });
+      }
+      return;
+    }
+
+    // ─── DELETE /api/streamer/stop-after-current ────────────────────
+    // Cancel a pending stop-after-current
+    if (req.method === 'DELETE' && req.url === '/api/streamer/stop-after-current') {
+      try { fs.unlinkSync('/run/streamer-stop-after-current'); } catch {}
+      jsonResponse(res, 200, { ok: true, pending: false });
       return;
     }
 

@@ -107,6 +107,15 @@ async function refreshStreamerStatus() {
     startBtn.disabled = data.active;
     stopBtn.disabled = !data.active;
     document.getElementById('streamer-skip').disabled = !data.active;
+    const stopAfterBtn = document.getElementById('streamer-stop-after');
+    stopAfterBtn.disabled = !data.active;
+    if (data.active && data.stopPending) {
+      stopAfterBtn.textContent = 'Cancel Stop After Current';
+      stopAfterBtn.classList.add('pending');
+    } else {
+      stopAfterBtn.textContent = 'Stop After Current';
+      stopAfterBtn.classList.remove('pending');
+    }
     if (data.active && data.nowPlaying) {
       nowTitle.textContent = data.nowPlaying;
       nowPlaying.style.display = '';
@@ -183,6 +192,23 @@ document.getElementById('streamer-skip').addEventListener('click', async () => {
     await api('/api/streamer/skip', { method: 'POST' });
     showStatus(status, 'Skipping to next video...', true);
     setTimeout(refreshStreamerStatus, 3000);
+  } catch (e) { showStatus(status, e.message, false); }
+});
+
+document.getElementById('streamer-stop-after').addEventListener('click', async () => {
+  const status = document.getElementById('streamer-action-status');
+  const btn = document.getElementById('streamer-stop-after');
+  const isPending = btn.classList.contains('pending');
+  try {
+    btn.disabled = true;
+    if (isPending) {
+      await api('/api/streamer/stop-after-current', { method: 'DELETE' });
+      showStatus(status, 'Stop after current cancelled.', true);
+    } else {
+      await api('/api/streamer/stop-after-current', { method: 'POST' });
+      showStatus(status, 'Will stop after current video.', true);
+    }
+    await refreshStreamerStatus();
   } catch (e) { showStatus(status, e.message, false); }
 });
 

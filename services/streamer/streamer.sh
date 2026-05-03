@@ -407,6 +407,14 @@ with open('$STATE_FILE', 'w') as f:
     exit 0
   fi
 
+  # Check for stop-after-current signal (set by web UI)
+  STOP_SIGNAL="/run/streamer-stop-after-current"
+  if [[ -f "$STOP_SIGNAL" ]]; then
+    rm -f "$STOP_SIGNAL"
+    echo "Stop-after-current signal detected — stopping streamer."
+    exit 0
+  fi
+
   # Advance to next video (wrap around)
   INDEX=$(( (INDEX + 1) % NUM_VIDEOS ))
 done
