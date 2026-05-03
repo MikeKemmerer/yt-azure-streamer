@@ -118,6 +118,41 @@ def apply_padding(day_idx, hour, minute, delta_minutes):
     remaining = total_minutes % 1440
     return new_day, remaining // 60, remaining % 60
 
+# Build the set of schedule names we EXPECT to exist after this sync
+expected_schedules = set()
+for event in schedule.get("events", []):
+    event_name = event.get("name", "stream").replace(" ", "-")
+    for day_abbr in event.get("days", []):
+        if day_abbr not in day_map:
+            continue
+        expected_schedules.add(f"{event_name}-{day_abbr}-start")
+        expected_schedules.add(f"{event_name}-{day_abbr}-stop")
+
+# Delete all existing automation schedules NOT in the expected set
+# This cleans up removed events and removed days
+print("Cleaning up stale schedules...")
+result = subprocess.run(
+    ["az", "rest", "--method", "GET",
+     "--url", f"{BASE_URL}/schedules?api-version=2023-11-01"],
+    capture_output=True, text=True)
+if result.returncode == 0:
+    try:
+        existing = json.loads(result.stdout)
+        for sched in existing.get("value", []):
+            sched_name = sched.get("name", "")
+            # Only touch schedules that look like ours (contain -start or -stop suffix)
+            if not (sched_name.endswith("-start") or sched_name.endswith("-stop")):
+                continue
+            if sched_name not in expected_schedules:
+                print(f"  Removing stale schedule: {sched_name}")
+                delete_job_schedules_for(sched_name)
+                subprocess.run(
+                    ["az", "rest", "--method", "DELETE",
+                     "--url", f"{BASE_URL}/schedules/{sched_name}?api-version=2023-11-01"],
+                    capture_output=True)
+    except json.JSONDecodeError:
+        print("  WARNING: could not parse existing schedules", file=sys.stderr)
+
 for event in schedule.get("events", []):
     event_name = event.get("name", "stream").replace(" ", "-")
     start_h, start_m = map(int, event["start"].split(":"))
