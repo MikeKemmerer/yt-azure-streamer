@@ -620,13 +620,30 @@ async function loadHealth() {
 
 let scheduleData = { timezone: 'UTC', events: [] };
 
+function populateTimezoneDropdown(selectedTz) {
+  const select = document.getElementById('schedule-tz');
+  if (select.options.length > 0) {
+    select.value = selectedTz;
+    return;
+  }
+  const timezones = Intl.supportedValuesOf('timeZone');
+  timezones.unshift('UTC');
+  for (const tz of timezones) {
+    const opt = document.createElement('option');
+    opt.value = tz;
+    opt.textContent = tz.replace(/_/g, ' ');
+    select.appendChild(opt);
+  }
+  select.value = selectedTz;
+}
+
 async function loadSchedule() {
   try {
     const data = await api('/api/schedule');
     scheduleData = { timezone: data.timezone, events: data.events };
     document.getElementById('next-start').textContent = fmtDate(data.nextStart);
     document.getElementById('next-stop').textContent = fmtDate(data.nextStop);
-    document.getElementById('schedule-tz').value = data.timezone;
+    populateTimezoneDropdown(data.timezone);
     renderScheduleEvents();
     renderScheduleEditor();
   } catch {}
