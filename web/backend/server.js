@@ -553,7 +553,7 @@ const server = http.createServer(async (req, res) => {
       execFile('/usr/local/bin/schedule-sync.sh', [], { timeout: 60000 }, (err, stdout, stderr) => {
         if (err) {
           console.error('schedule-sync failed:', stderr || err.message);
-          return jsonResponse(res, 200, { ok: true, syncError: 'Schedule saved but Azure sync failed' });
+          return jsonResponse(res, 200, { ok: true, syncError: (stderr || err.message).slice(0, 500) });
         }
         jsonResponse(res, 200, { ok: true, synced: true });
       });

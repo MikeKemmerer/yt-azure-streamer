@@ -720,7 +720,7 @@ document.getElementById('save-schedule').addEventListener('click', async () => {
       body: JSON.stringify(scheduleData)
     });
     if (result.syncError) {
-      showStatus(status, 'Schedule saved, but Azure sync failed.', false);
+      showStatus(status, `Schedule saved, but Azure sync failed: ${result.syncError}`, false);
     } else {
       showStatus(status, 'Schedule saved and synced to Azure.', true);
     }
