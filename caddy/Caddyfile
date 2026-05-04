@@ -3,8 +3,10 @@ CADDY_SITE_ADDRESS {
   # Basic auth — credentials generated at install time from Key Vault secrets
   import /etc/yt/caddy/auth.conf
 
-  # Serve frontend static files
+  # Serve frontend static files — no caching for JS/CSS so updates take effect
   root * /opt/yt/web/frontend
+  header /*.js Cache-Control "no-cache, must-revalidate"
+  header /*.css Cache-Control "no-cache, must-revalidate"
   file_server
 
   # Reverse proxy API calls to backend

@@ -29,6 +29,8 @@ echo "Target branch: $BRANCH"
 # --- Pull latest code ---
 echo "Pulling latest from origin/$BRANCH..."
 git fetch origin "$BRANCH"
+# Switch to the target branch (create local tracking branch if needed)
+git checkout "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH" "origin/$BRANCH"
 BEFORE=$(git rev-parse HEAD)
 git reset --hard "origin/$BRANCH"
 AFTER=$(git rev-parse HEAD)

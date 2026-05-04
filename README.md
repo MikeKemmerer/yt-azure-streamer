@@ -182,7 +182,7 @@ ssh azureuser@$VM_IP
 sudo nano /etc/yt/schedule.json
 ```
 
-See the [Schedule Configuration](#schedule-configuration) section below for the file format. The schedule-sync timer picks up changes within 10 minutes.
+See the [Schedule Configuration](#schedule-configuration) section below for the file format. Saving from the web UI syncs to Azure immediately; SSH edits are picked up within 10 minutes by the timer.
 
 ---
 
@@ -222,13 +222,18 @@ Edit `/etc/yt/schedule.json` on the VM to define when streams happen:
 
 **Shuffle behavior:** When `shuffle` is `true`, the playlist is randomized instead of sorted. The random order is written to disk and preserved across streamer restarts — it only changes when the playlist is regenerated (i.e. when the streamer is started fresh after new files are added or removed).
 
-**Watermark behavior:** When `watermark` is `true`, the video filename (minus extension) is rendered as a centered lower-third overlay using DejaVu Serif Bold. The font size auto-scales to prevent overflow on long titles. A semi-transparent box background and drop shadow ensure readability over any video content.
+**Watermark behavior:** When `watermark` is `true`, a broadcast-style lower third is rendered with the church name, current video title (cycling with "Up Next" on a 41-second crossfade), elapsed/total time display, and a semi-transparent background bar. Long titles auto-wrap to two lines and font size adapts. Custom display titles from the playlist config override filenames.
+
+**Audio normalization:** All audio is normalized to -14 LUFS (YouTube standard) with -1 dBTP true peak using ffmpeg's `loudnorm` filter. Videos without audio tracks automatically get a silent audio stream generated so the stream never drops.
 
 **How the schedule works end-to-end:**
 
 1. `schedule-sync.timer` fires every 10 minutes and runs `schedule-sync.sh`
-2. `schedule-sync.sh` reads `schedule.json` and upserts Azure Automation weekly schedules — the VM is **started 2 minutes before** each event's `start` time and **deallocated 2 minutes after** each event's `stop` time (billing stops on deallocation)
-3. `scheduler.service` runs as a daemon on the VM, checking every 30 seconds whether the current time is inside a stream window, then starting or stopping `streamer.service` accordingly
+2. `schedule-sync.sh` reads `schedule.json`, fetches existing Azure Automation schedules, **diffs** the desired vs. current state, and only creates/updates/deletes what actually changed — unchanged schedules are left alone for speed
+3. Saving the schedule from the web UI triggers `schedule-sync.sh` **immediately** (no 10-minute wait)
+4. The VM is **started 2 minutes before** each event's `start` time and **deallocated 2 minutes after** each event's `stop` time (billing stops on deallocation)
+5. `scheduler.service` runs as a daemon on the VM, checking every 30 seconds whether the current time is inside a stream window, then starting or stopping `streamer.service` accordingly
+6. Removing an event or day from the schedule automatically cleans up the corresponding Azure Automation schedules
 
 To manually trigger a schedule sync from the VM:
 
@@ -325,16 +330,16 @@ The web UI is protected by HTTP basic auth. Credentials are set during deploymen
 
 | Card | Description |
 |---|---|
-| **Streamer** | Live status indicator (green/grey dot), stream uptime, now-playing title, up-next queue, manual Start / Stop buttons |
+| **Streamer** | Live status indicator (green/grey dot), stream uptime, now-playing title with progress bar, up-next queue, manual Start / Stop / Stop After Current / Skip buttons |
 | **Service Health** | At-a-glance status of all 6 systemd units (streamer, scheduler, schedule-sync, caddy, web-backend, blobfuse2) |
 | **Schedule** | Next start/stop times, event table, inline editor to add/remove/edit events with day-of-week checkboxes and timezone |
 | **System** | VM uptime, memory usage, disk usage |
 | **Storage** | Video file count and total size on the blobfuse2 mount |
 | **Stream Key** | Update the YouTube stream key stored in Key Vault (takes effect on next stream start) |
 | **Stream Settings** | Max resolution selector (144p–2160p), shuffle toggle, watermark (lower-third title) toggle |
-| **Playlist** | Drag-and-drop reorder, per-video enable/disable checkboxes, Select All / Deselect All, sort by name / sort by date / shuffle buttons, instant playlist regeneration on save |
+| **Playlist** | Touch-friendly drag-and-drop reorder (SortableJS), per-video enable/disable checkboxes, inline title editing, search filter, Select All / Deselect All, sort by name / sort by date / shuffle buttons, instant playlist regeneration on save |
 | **Logs** | Service log viewer with service selector (streamer, scheduler, schedule-sync, caddy, web-backend, blobfuse2), configurable line count (50–500), dark terminal-style output |
-| **Update** | One-click pull from GitHub with terminal output display — re-deploys changed scripts, units, and frontend files without interrupting a live stream |
+| **Update** | Two-step update: check for changes first, then apply — re-deploys changed scripts, units, and frontend files without interrupting a live stream. Auto-reloads frontend after successful update |
 | **Deployment Info** | JSON dump of prefix, storage account, automation account, key vault, and hostname |
 
 ### API Endpoints
@@ -347,6 +352,10 @@ All endpoints are served under `/api/` and require authentication.
 | `GET` | `/api/streamer` | Streamer status, uptime, now-playing, up-next |
 | `POST` | `/api/streamer/start` | Start the streamer service |
 | `POST` | `/api/streamer/stop` | Stop the streamer service |
+| `POST` | `/api/streamer/skip` | Skip to the next video (kills current ffmpeg) |
+| `POST` | `/api/streamer/stop-after-current` | Signal the streamer to stop after the current video ends |
+| `DELETE` | `/api/streamer/stop-after-current` | Cancel a pending stop-after-current |
+| `POST` | `/api/streamer/restart` | Restart the streamer service |
 | `POST` | `/api/stream-key` | Update YouTube stream key in Key Vault |
 | `GET` | `/api/settings` | Read max_resolution and shuffle from schedule.json |
 | `PUT` | `/api/settings` | Update max_resolution and shuffle |
@@ -355,7 +364,8 @@ All endpoints are served under `/api/` and require authentication.
 | `GET` | `/api/health` | Systemd unit states for all services |
 | `GET` | `/api/logs` | Journalctl output for a given service (query: `service`, `lines`) |
 | `GET` | `/api/schedule` | Read schedule with next start/stop times |
-| `PUT` | `/api/schedule` | Update schedule.json and trigger sync |
+| `PUT` | `/api/schedule` | Update schedule.json and immediately sync to Azure Automation |
+| `POST` | `/api/update/check` | Fetch latest from GitHub and report what would change |
 | `GET` | `/api/storage` | Video file count and total size |
 | `GET` | `/api/system` | VM uptime, memory, and disk stats |
 | `POST` | `/api/update` | Pull latest code from GitHub, redeploy changed scripts/units |
@@ -507,12 +517,20 @@ sudo /usr/local/bin/update.sh
 ```
 
 The update script:
-1. Runs `git pull --ff-only` in `/opt/yt/`
+1. Fetches and resets to `origin/{branch}` in `/opt/yt/`
 2. Compares changed files against the previous commit
 3. Re-installs any changed scripts to `/usr/local/bin/`
 4. Reloads changed systemd units
 5. Restarts affected services (except the streamer — pass `--restart-streamer` to include it)
 6. Never touches `/etc/yt/` configuration files
+7. Self-updates: if `update.sh` itself changed, re-installs and re-execs automatically
+
+The web UI supports two-step updates: **Check for Updates** fetches the latest code and shows a diff summary before applying. After a successful update, the page auto-reloads to pick up frontend changes.
+
+```bash
+sudo /usr/local/bin/yt-update.sh --branch beta    # deploy from a specific branch
+sudo /usr/local/bin/yt-update.sh --restart-streamer  # include streamer restart
+```
 
 > **Upgrading from an older install** (before the `/etc/yt/` config split): Run `sudo bash /opt/yt/scripts/migrate-configs.sh` **once** after pulling the new code. This moves all deployment-specific configs from `/opt/yt/` to `/etc/yt/` so future `git pull`s never conflict with local settings.
 
@@ -581,10 +599,13 @@ journalctl -u mnt-blobfuse2.mount -n 50
 
 ### Schedule sync not updating Azure Automation
 
-Run the sync manually and check for errors:
+The schedule sync is now **diff-based** — it only modifies schedules that actually changed. If the web UI shows "Schedule saved and synced to Azure." but the portal looks unchanged, the schedule might already be correct. To debug:
 
 ```bash
+# Run manually — it will print what it created/updated/deleted (or "No changes needed")
 sudo /usr/local/bin/schedule-sync.sh
+
+# Check recent sync logs
 journalctl -u schedule-sync.service -n 50
 ```
 

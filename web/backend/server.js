@@ -148,7 +148,11 @@ const server = http.createServer(async (req, res) => {
       const keyVault = prefix.toLowerCase() + '-kv';
       let hostname = '';
       try { hostname = require('os').hostname(); } catch {}
-      jsonResponse(res, 200, { prefix, storageAccount: storage, automationAccount: automation, keyVault, hostname });
+      let version = '';
+      try { version = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: '/opt/yt', timeout: 5000 }).toString().trim(); } catch {}
+      let branch = '';
+      try { branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: '/opt/yt', timeout: 5000 }).toString().trim(); } catch {}
+      jsonResponse(res, 200, { prefix, storageAccount: storage, automationAccount: automation, keyVault, hostname, version, branch });
       return;
     }
 
@@ -283,7 +287,8 @@ const server = http.createServer(async (req, res) => {
         const playlist = readPlaylistOrder();
         const state = readPlaybackState();
         const now = active ? readNowPlaying() : null;
-        const result = { active, uptimeSeconds, nowPlaying: null, upNext: [], progress: null };
+        const stopPending = fs.existsSync('/run/streamer-stop-after-current');
+        const result = { active, uptimeSeconds, nowPlaying: null, upNext: [], progress: null, stopPending };
 
         if (state && playlist.length > 0) {
           // The state file records the LAST COMPLETED video's index.
@@ -426,6 +431,27 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // ─── POST /api/streamer/stop-after-current ─────────────────────
+    // Signal the streamer to stop gracefully after the current video ends
+    if (req.method === 'POST' && req.url === '/api/streamer/stop-after-current') {
+      const signal = '/run/streamer-stop-after-current';
+      try {
+        fs.writeFileSync(signal, '');
+        jsonResponse(res, 200, { ok: true, pending: true });
+      } catch (e) {
+        jsonResponse(res, 500, { error: 'Failed to write stop signal' });
+      }
+      return;
+    }
+
+    // ─── DELETE /api/streamer/stop-after-current ────────────────────
+    // Cancel a pending stop-after-current
+    if (req.method === 'DELETE' && req.url === '/api/streamer/stop-after-current') {
+      try { fs.unlinkSync('/run/streamer-stop-after-current'); } catch {}
+      jsonResponse(res, 200, { ok: true, pending: false });
+      return;
+    }
+
     // ─── GET /api/health ───────────────────────────────────────────
     // Returns status of all systemd units at a glance
     if (req.method === 'GET' && req.url === '/api/health') {
@@ -522,8 +548,65 @@ const server = http.createServer(async (req, res) => {
           }));
       }
       writeSchedule(schedule);
-      jsonResponse(res, 200, { ok: true });
+
+      // Trigger immediate sync to Azure Automation Account
+      execFile('/usr/local/bin/schedule-sync.sh', [], { timeout: 60000 }, (err, stdout, stderr) => {
+        if (err) {
+          console.error('schedule-sync failed:', stderr || err.message);
+          return jsonResponse(res, 200, { ok: true, syncError: (stderr || err.message).slice(0, 500) });
+        }
+        jsonResponse(res, 200, { ok: true, synced: true });
+      });
       return;
+    }
+
+    // ─── POST /api/update/check ───────────────────────────────────
+    // Fetch latest and show what would change (without applying)
+    if (req.method === 'POST' && req.url === '/api/update/check') {
+      const body = await readBody(req);
+      let branch = 'main';
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed.branch && /^[a-zA-Z0-9._-]+$/.test(parsed.branch)) {
+          branch = parsed.branch;
+        }
+      } catch { /* default to main */ }
+
+      const repoDir = '/opt/yt';
+      const gitOpts = { cwd: repoDir, timeout: 30000, env: { ...process.env, HOME: '/root', GIT_TERMINAL_PROMPT: '0' } };
+
+      try {
+        execFileSync('git', ['fetch', 'origin', branch], gitOpts);
+      } catch (e) {
+        return jsonResponse(res, 500, { error: 'Fetch failed', output: e.stderr ? e.stderr.toString() : e.message });
+      }
+
+      let localHead, remoteHead;
+      try {
+        localHead = execFileSync('git', ['rev-parse', 'HEAD'], gitOpts).toString().trim();
+        remoteHead = execFileSync('git', ['rev-parse', `origin/${branch}`], gitOpts).toString().trim();
+      } catch (e) {
+        return jsonResponse(res, 500, { error: 'Failed to read refs', output: e.message });
+      }
+
+      if (localHead === remoteHead) {
+        return jsonResponse(res, 200, { upToDate: true, branch, localHead });
+      }
+
+      let commits = '', diffStat = '';
+      try {
+        commits = execFileSync('git', ['log', '--oneline', `${localHead}..origin/${branch}`], gitOpts).toString().trim();
+        diffStat = execFileSync('git', ['diff', '--stat', `${localHead}..origin/${branch}`], gitOpts).toString().trim();
+      } catch { /* non-fatal */ }
+
+      return jsonResponse(res, 200, {
+        upToDate: false,
+        branch,
+        localHead: localHead.slice(0, 7),
+        remoteHead: remoteHead.slice(0, 7),
+        commits,
+        diffStat
+      });
     }
 
     // ─── POST /api/update ─────────────────────────────────────────
@@ -547,8 +630,31 @@ const server = http.createServer(async (req, res) => {
         if (err && !stdout) {
           return jsonResponse(res, 500, { error: 'Update failed', output: output || err.message });
         }
-        jsonResponse(res, 200, { ok: true, output });
+        // Check if streamer-related files were updated (indicates restart needed)
+        const streamerPending = /services\/streamer\/|streamer\.sh|streamer\.service/.test(output);
+        jsonResponse(res, 200, { ok: true, output, streamerPending });
       });
+      return;
+    }
+
+    // ─── POST /api/streamer/restart-after-current ─────────────────
+    // Signal the streamer to restart after the current video finishes
+    if (req.method === 'POST' && req.url === '/api/streamer/restart-after-current') {
+      const signalFile = '/run/streamer-restart-requested';
+      try {
+        fs.writeFileSync(signalFile, new Date().toISOString());
+        jsonResponse(res, 200, { ok: true, message: 'Restart scheduled after current video.' });
+      } catch (e) {
+        jsonResponse(res, 500, { error: 'Failed to write signal file', detail: e.message });
+      }
+      return;
+    }
+
+    // ─── GET /api/streamer/restart-pending ────────────────────────
+    // Check if a restart is already pending
+    if (req.method === 'GET' && req.url === '/api/streamer/restart-pending') {
+      const pending = fs.existsSync('/run/streamer-restart-requested');
+      jsonResponse(res, 200, { pending });
       return;
     }
 
