@@ -622,20 +622,20 @@ let scheduleData = { timezone: 'UTC', events: [] };
 
 function populateTimezoneDropdown(selectedTz) {
   const select = document.getElementById('schedule-tz');
-  if (select.options.length > 0) {
-    select.value = selectedTz;
-    return;
+  if (select.options.length === 0) {
+    const timezones = ['UTC'].concat(Intl.supportedValuesOf('timeZone').filter(t => t !== 'UTC'));
+    for (const tz of timezones) {
+      const opt = document.createElement('option');
+      opt.value = tz;
+      opt.textContent = tz.replace(/_/g, ' ');
+      select.appendChild(opt);
+    }
   }
-  const timezones = Intl.supportedValuesOf('timeZone');
-  timezones.unshift('UTC');
-  for (const tz of timezones) {
-    const opt = document.createElement('option');
-    opt.value = tz;
-    opt.textContent = tz.replace(/_/g, ' ');
-    select.appendChild(opt);
-  }
-  select.value = selectedTz;
+  if (selectedTz) select.value = selectedTz;
 }
+
+// Populate timezone options immediately so the dropdown is never empty
+populateTimezoneDropdown('UTC');
 
 async function loadSchedule() {
   try {
