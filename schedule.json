@@ -8,6 +8,7 @@
       "days": ["Mon", "Wed", "Fri"]
     }
   ],
+  "overrides": [],
   "stream": {
     "max_resolution": "720p",
     "shuffle": false

@@ -40,8 +40,27 @@ except Exception:
     tz = datetime.timezone.utc
 
 now = datetime.datetime.now(tz=tz)
+today_str = now.strftime("%Y-%m-%d")
 day_map = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
 
+# Check overrides first — if today has an override, use it instead of weekly schedule
+for override in schedule.get("overrides", []):
+    if override.get("date") != today_str:
+        continue
+    # Found an override for today
+    o_start = override.get("start")
+    o_stop = override.get("stop")
+    if not o_start or not o_stop:
+        sys.exit(1)  # Override with null times = skip today
+    sh, sm = map(int, o_start.split(":"))
+    eh, em = map(int, o_stop.split(":"))
+    start_t = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
+    stop_t  = now.replace(hour=eh, minute=em, second=0, microsecond=0)
+    if start_t <= now < stop_t:
+        sys.exit(0)
+    sys.exit(1)
+
+# No override — use weekly schedule
 for event in schedule.get("events", []):
     days = [day_map[d] for d in event.get("days", []) if d in day_map]
     if now.weekday() not in days:
