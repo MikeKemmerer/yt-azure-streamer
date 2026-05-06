@@ -160,6 +160,8 @@ button.secondary { background: #e0e0e0; color: #333; }
 button.secondary:hover:not(:disabled) { background: #ccc; }
 button.danger { background: #d32f2f; }
 button.danger:hover:not(:disabled) { background: #b71c1c; }
+.vm-controls { margin-top: 12px; padding-top: 12px; border-top: 1px solid #e0e0e0; }
+body.dark .vm-controls { border-top-color: #444; }
 .restart-btn { background: #e65100; }
 .restart-btn:hover:not(:disabled) { background: #bf360c; }
 #restart-wrapper { margin-top: 10px; display: flex; align-items: center; gap: 8px; }
@@ -647,6 +649,8 @@ body.dark .upload-pct { color: #aaa; }
   gap: 12px;
   margin-bottom: 10px;
 }
+.update-controls label { display: flex; align-items: center; gap: 6px; }
+#refresh-branches { padding: 4px 8px; min-width: auto; font-size: 1rem; }
 .update-actions {
   display: flex;
   gap: 10px;

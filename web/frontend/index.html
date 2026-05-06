@@ -103,6 +103,10 @@
     <div class="card" id="system-card">
       <h2>System</h2>
       <div id="system-stats">Loading...</div>
+      <div class="vm-controls" id="vm-controls" style="display:none">
+        <button id="vm-deallocate" class="danger">Shut Down VM</button>
+        <div id="vm-status" class="status"></div>
+      </div>
     </div>
     <div class="card" id="storage-card">
       <h2>Storage</h2>
@@ -233,9 +237,9 @@
     <h2>Update</h2>
     <p class="hint">Check for new code on GitHub and optionally deploy it.</p>
     <div class="update-controls">
-      <label class="checkbox-label">
-        <input type="checkbox" id="update-beta">
-        Use beta branch
+      <label>Branch
+        <select id="update-branch"></select>
+        <button id="refresh-branches" class="secondary" title="Refresh branch list">↻</button>
       </label>
       <button id="run-update">Check for Updates</button>
     </div>

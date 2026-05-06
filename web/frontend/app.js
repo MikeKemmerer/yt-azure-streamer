@@ -47,6 +47,10 @@ async function loadInfo() {
     if (versionEl && data.version) {
       versionEl.textContent = `${data.branch || 'main'} @ ${data.version}`;
     }
+    // Show VM controls only in Azure mode
+    if (data.mode === 'azure') {
+      document.getElementById('vm-controls').style.display = '';
+    }
   } catch {
     document.getElementById('info').textContent = 'Error loading info';
   }
@@ -840,6 +844,27 @@ async function loadStorage() {
   }
 }
 
+/* ── VM Deallocate ───────────────────────────────────────────────── */
+
+document.getElementById('vm-deallocate').addEventListener('click', async () => {
+  const confirmed = confirm(
+    'Are you sure you want to shut down and deallocate this VM?\n\n' +
+    'This will stop the stream, terminate all services, and deallocate the VM ' +
+    '(stopping billing). The VM will not restart until the next scheduled time ' +
+    'or manual intervention.'
+  );
+  if (!confirmed) return;
+
+  const status = document.getElementById('vm-status');
+  showStatus(status, 'Triggering VM deallocate…', true, true);
+  try {
+    const result = await api('/api/vm/deallocate', { method: 'POST' });
+    showStatus(status, result.message || 'Deallocate triggered.', true);
+  } catch (e) {
+    showStatus(status, e.message, false);
+  }
+});
+
 /* ── Logs ────────────────────────────────────────────────────────── */
 
 document.getElementById('refresh-logs').addEventListener('click', async () => {
@@ -940,9 +965,69 @@ async function uploadFile(file) {
   const cancelBtn = document.getElementById('cancel-update');
   const restartBtn = document.getElementById('restart-streamer-btn');
   const restartBanner = document.getElementById('streamer-restart-banner');
+  const branchSelect = document.getElementById('update-branch');
+  const refreshBtn = document.getElementById('refresh-branches');
+
+  let cachedBranches = null;
+  let currentBranch = 'main';
+
+  function populateBranchDropdown(branches, current) {
+    branchSelect.innerHTML = '';
+    for (const b of branches) {
+      const opt = document.createElement('option');
+      opt.value = b;
+      opt.textContent = b;
+      if (b === current) opt.selected = true;
+      branchSelect.appendChild(opt);
+    }
+  }
+
+  // Initial populate: use cached list from localStorage, or default to main + current branch
+  function initBranches() {
+    const stored = localStorage.getItem('cachedBranches');
+    if (stored) {
+      try {
+        const data = JSON.parse(stored);
+        cachedBranches = data.branches;
+        currentBranch = data.currentBranch || 'main';
+        populateBranchDropdown(cachedBranches, currentBranch);
+        return;
+      } catch {}
+    }
+    // No cache — get current branch from /api/info (already loaded)
+    fetch('/api/info').then(r => r.json()).then(data => {
+      currentBranch = data.branch || 'main';
+      const defaultList = ['main'];
+      if (currentBranch !== 'main') defaultList.push(currentBranch);
+      populateBranchDropdown(defaultList, currentBranch);
+    }).catch(() => {
+      populateBranchDropdown(['main'], 'main');
+    });
+  }
+
+  async function refreshBranches() {
+    refreshBtn.disabled = true;
+    refreshBtn.textContent = '…';
+    try {
+      const data = await api('/api/branches');
+      cachedBranches = data.branches;
+      currentBranch = data.currentBranch || 'main';
+      localStorage.setItem('cachedBranches', JSON.stringify({ branches: cachedBranches, currentBranch }));
+      populateBranchDropdown(cachedBranches, currentBranch);
+      showStatus(status, `${cachedBranches.length} branches loaded.`, true);
+    } catch (e) {
+      showStatus(status, 'Failed to refresh branches: ' + e.message, false);
+    } finally {
+      refreshBtn.disabled = false;
+      refreshBtn.textContent = '↻';
+    }
+  }
+
+  initBranches();
+  refreshBtn.addEventListener('click', refreshBranches);
 
   function getBranch() {
-    return document.getElementById('update-beta').checked ? 'beta' : 'main';
+    return branchSelect.value || 'main';
   }
 
   function resetUI() {
