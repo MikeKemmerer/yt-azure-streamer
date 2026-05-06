@@ -780,7 +780,9 @@ document.getElementById('save-override').addEventListener('click', async () => {
   const stop  = skip ? null : document.getElementById('override-stop').value;
 
   if (!date) return showStatus(status, 'Please select a date.', false);
+  if (!skip && (!start || !stop)) return showStatus(status, 'Please provide both Start and Stop times.', false);
 
+  // null start/stop signals "skip this day entirely" to the backend
   const payload = { date, start, stop };
   if (name) payload.name = name;
 
