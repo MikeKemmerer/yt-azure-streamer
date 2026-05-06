@@ -91,6 +91,13 @@ body.dark .schedule-table th { color: #aaa; }
 body.dark .schedule-table td,
 body.dark .schedule-table th { border-bottom-color: #444; }
 body.dark .event-editor { border-bottom-color: #444; }
+body.dark .override-form input[type="text"],
+body.dark .override-form input[type="date"],
+body.dark .override-form input[type="time"] {
+  background: #333;
+  color: #e0e0e0;
+  border-color: #555;
+}
 body.dark .health-state { color: #999; }
 body.dark .sort-label { color: #999; }
 body.dark .countdown { color: #999; }
@@ -484,6 +491,50 @@ details summary {
   font-size: 0.9rem;
   color: #0078d4;
   margin-top: 8px;
+}
+
+.section-subheading {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #555;
+  margin-top: 14px;
+  margin-bottom: 4px;
+}
+body.dark .section-subheading { color: #aaa; }
+
+.override-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+  padding: 10px 0 4px;
+}
+.override-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.85rem;
+}
+.override-form input[type="text"],
+.override-form input[type="date"],
+.override-form input[type="time"] {
+  padding: 6px 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+.override-form .checkbox-label {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  align-self: flex-end;
+  padding-bottom: 2px;
+}
+#override-times {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 /* ── Stats ────────────────────────────────────────────────────────── */

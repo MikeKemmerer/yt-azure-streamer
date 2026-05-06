@@ -545,14 +545,38 @@ const server = http.createServer(async (req, res) => {
     // Returns the full schedule with computed next start/stop times
     if (req.method === 'GET' && req.url === '/api/schedule') {
       const schedule = readSchedule();
-      // Compute next event from schedule
+      // Compute next event from schedule (considering overrides)
       const now = new Date();
       const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
       let nextStart = null, nextStop = null;
 
+      // Build a set of override dates for quick lookup
+      const overrideMap = {};
+      for (const o of (schedule.overrides || [])) {
+        overrideMap[o.date] = o;
+      }
+
       for (let dayOffset = 0; dayOffset < 8; dayOffset++) {
         const d = new Date(now.getTime() + dayOffset * 86400000);
+        const dateStr = d.toISOString().slice(0, 10);
         const dayName = dayNames[d.getDay()];
+
+        // Check if this date has an override
+        if (overrideMap[dateStr]) {
+          const o = overrideMap[dateStr];
+          if (o.start && o.stop) {
+            const [sh, sm] = o.start.split(':').map(Number);
+            const [eh, em] = o.stop.split(':').map(Number);
+            const startTime = new Date(d); startTime.setHours(sh, sm, 0, 0);
+            const stopTime = new Date(d); stopTime.setHours(eh, em, 0, 0);
+            if (!nextStart && startTime > now) nextStart = startTime.toISOString();
+            if (!nextStop && stopTime > now) nextStop = stopTime.toISOString();
+          }
+          // Override replaces weekly schedule for this date — skip events
+          if (nextStart && nextStop) break;
+          continue;
+        }
+
         for (const evt of (schedule.events || [])) {
           if (!evt.days || !evt.days.includes(dayName)) continue;
           const [sh, sm] = (evt.start || '00:00').split(':').map(Number);
@@ -569,6 +593,7 @@ const server = http.createServer(async (req, res) => {
       jsonResponse(res, 200, {
         timezone: schedule.timezone || 'UTC',
         events: schedule.events || [],
+        overrides: (schedule.overrides || []).filter(o => o.date >= now.toISOString().slice(0, 10)),
         stream: schedule.stream || {},
         nextStart,
         nextStop
@@ -607,6 +632,112 @@ const server = http.createServer(async (req, res) => {
       }
 
       // Trigger immediate sync to Azure Automation Account
+      execFile('/usr/local/bin/schedule-sync.sh', [], { timeout: 60000 }, (err, stdout, stderr) => {
+        if (err) {
+          console.error('schedule-sync failed:', stderr || err.message);
+          return jsonResponse(res, 200, { ok: true, syncError: (stderr || err.message).slice(0, 500) });
+        }
+        jsonResponse(res, 200, { ok: true, synced: true });
+      });
+      return;
+    }
+
+    // ─── GET /api/overrides ───────────────────────────────────────
+    // Returns the list of schedule overrides (future only)
+    if (req.method === 'GET' && req.url === '/api/overrides') {
+      const schedule = readSchedule();
+      const today = new Date().toISOString().slice(0, 10);
+      const overrides = (schedule.overrides || []).filter(o => o.date >= today);
+      jsonResponse(res, 200, { overrides });
+      return;
+    }
+
+    // ─── PUT /api/overrides ───────────────────────────────────────
+    // Add or update a one-time schedule override for a specific date
+    if (req.method === 'PUT' && req.url === '/api/overrides') {
+      const body = await readBody(req);
+      let parsed;
+      try { parsed = JSON.parse(body); } catch {
+        return jsonResponse(res, 400, { error: 'Invalid JSON' });
+      }
+      if (!parsed.date || !/^\d{4}-\d{2}-\d{2}$/.test(parsed.date)) {
+        return jsonResponse(res, 400, { error: 'date is required (YYYY-MM-DD)' });
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      if (parsed.date < today) {
+        return jsonResponse(res, 400, { error: 'Cannot create override in the past' });
+      }
+      // Validate start/stop if provided (both or neither)
+      const hasStart = parsed.start !== undefined && parsed.start !== null;
+      const hasStop = parsed.stop !== undefined && parsed.stop !== null;
+      if (hasStart !== hasStop) {
+        return jsonResponse(res, 400, { error: 'Provide both start and stop, or neither (to skip the day)' });
+      }
+      if (hasStart && !/^\d{2}:\d{2}$/.test(parsed.start)) {
+        return jsonResponse(res, 400, { error: 'start must be HH:MM format' });
+      }
+      if (hasStop && !/^\d{2}:\d{2}$/.test(parsed.stop)) {
+        return jsonResponse(res, 400, { error: 'stop must be HH:MM format' });
+      }
+
+      const schedule = readSchedule();
+      if (!Array.isArray(schedule.overrides)) schedule.overrides = [];
+
+      // Prune past overrides
+      schedule.overrides = schedule.overrides.filter(o => o.date >= today);
+
+      // Upsert by date
+      const idx = schedule.overrides.findIndex(o => o.date === parsed.date);
+      const entry = {
+        date: parsed.date,
+        start: hasStart ? String(parsed.start).slice(0, 5) : null,
+        stop: hasStop ? String(parsed.stop).slice(0, 5) : null,
+        name: parsed.name ? String(parsed.name).slice(0, 100) : undefined
+      };
+      if (idx >= 0) {
+        schedule.overrides[idx] = entry;
+      } else {
+        schedule.overrides.push(entry);
+      }
+      // Sort by date
+      schedule.overrides.sort((a, b) => a.date.localeCompare(b.date));
+      writeSchedule(schedule);
+
+      // Trigger sync in Azure mode
+      if (readMode() === 'local') {
+        return jsonResponse(res, 200, { ok: true, synced: true });
+      }
+      execFile('/usr/local/bin/schedule-sync.sh', [], { timeout: 60000 }, (err, stdout, stderr) => {
+        if (err) {
+          console.error('schedule-sync failed:', stderr || err.message);
+          return jsonResponse(res, 200, { ok: true, syncError: (stderr || err.message).slice(0, 500) });
+        }
+        jsonResponse(res, 200, { ok: true, synced: true });
+      });
+      return;
+    }
+
+    // ─── DELETE /api/overrides ────────────────────────────────────
+    // Remove an override by date (query param: ?date=YYYY-MM-DD)
+    if (req.method === 'DELETE' && req.url.startsWith('/api/overrides')) {
+      const urlObj = new URL(req.url, `http://${req.headers.host}`);
+      const date = urlObj.searchParams.get('date');
+      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return jsonResponse(res, 400, { error: 'date query param required (YYYY-MM-DD)' });
+      }
+      const schedule = readSchedule();
+      if (!Array.isArray(schedule.overrides)) schedule.overrides = [];
+      const before = schedule.overrides.length;
+      schedule.overrides = schedule.overrides.filter(o => o.date !== date);
+      if (schedule.overrides.length === before) {
+        return jsonResponse(res, 404, { error: 'No override found for that date' });
+      }
+      writeSchedule(schedule);
+
+      // Trigger sync in Azure mode
+      if (readMode() === 'local') {
+        return jsonResponse(res, 200, { ok: true, synced: true });
+      }
       execFile('/usr/local/bin/schedule-sync.sh', [], { timeout: 60000 }, (err, stdout, stderr) => {
         if (err) {
           console.error('schedule-sync failed:', stderr || err.message);

@@ -64,6 +64,27 @@
       <span><strong>Next stop:</strong> <span id="next-stop">—</span></span>
     </div>
     <div id="schedule-events"></div>
+
+    <!-- Overrides -->
+    <h3 class="section-subheading">One-Time Overrides</h3>
+    <div id="override-list"></div>
+    <details id="override-add-details">
+      <summary>Add Override</summary>
+      <div class="schedule-editor override-form">
+        <label>Date <input type="date" id="override-date"></label>
+        <label>Name <input type="text" id="override-name" placeholder="e.g. Special Vespers" size="22"></label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="override-skip"> Skip this day entirely (no stream)
+        </label>
+        <div id="override-times">
+          <label>Start <input type="time" id="override-start" value="18:00"></label>
+          <label>Stop <input type="time" id="override-stop" value="20:00"></label>
+        </div>
+        <button id="save-override">Save Override</button>
+      </div>
+    </details>
+    <div id="override-status" class="status"></div>
+
     <details>
       <summary>Edit Schedule</summary>
       <div class="schedule-editor">

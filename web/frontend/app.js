@@ -646,6 +646,7 @@ async function loadSchedule() {
     populateTimezoneDropdown(data.timezone);
     renderScheduleEvents();
     renderScheduleEditor();
+    renderOverrides(data.overrides || []);
   } catch {}
 }
 
@@ -727,6 +728,79 @@ document.getElementById('save-schedule').addEventListener('click', async () => {
     loadSchedule();
   } catch (e) { showStatus(status, e.message, false); }
   finally { btn.disabled = false; }
+});
+
+/* ── Schedule Overrides ──────────────────────────────────────────── */
+
+function renderOverrides(overrides) {
+  const el = document.getElementById('override-list');
+  if (!overrides.length) {
+    el.innerHTML = '<p class="hint">No upcoming overrides.</p>';
+    return;
+  }
+  let html = '<table class="schedule-table"><tr><th>Date</th><th>Name</th><th>Start</th><th>Stop</th><th></th></tr>';
+  for (const o of overrides) {
+    const startCell = o.start ? esc(o.start) : '<em>skip</em>';
+    const stopCell  = o.stop  ? esc(o.stop)  : '<em>skip</em>';
+    html += `<tr>
+      <td>${esc(o.date)}</td>
+      <td>${esc(o.name || '')}</td>
+      <td>${startCell}</td>
+      <td>${stopCell}</td>
+      <td><button class="secondary override-delete-btn" data-date="${esc(o.date)}">Remove</button></td>
+    </tr>`;
+  }
+  html += '</table>';
+  el.innerHTML = html;
+  el.querySelectorAll('.override-delete-btn').forEach(btn => {
+    btn.addEventListener('click', () => deleteOverride(btn.dataset.date));
+  });
+}
+
+async function deleteOverride(date) {
+  const status = document.getElementById('override-status');
+  try {
+    await api(`/api/overrides?date=${encodeURIComponent(date)}`, { method: 'DELETE' });
+    showStatus(status, 'Override removed.', true);
+    loadSchedule();
+  } catch (e) { showStatus(status, e.message, false); }
+}
+
+document.getElementById('override-skip').addEventListener('change', () => {
+  document.getElementById('override-times').style.display =
+    document.getElementById('override-skip').checked ? 'none' : '';
+});
+
+document.getElementById('save-override').addEventListener('click', async () => {
+  const status = document.getElementById('override-status');
+  const date  = document.getElementById('override-date').value;
+  const name  = document.getElementById('override-name').value.trim();
+  const skip  = document.getElementById('override-skip').checked;
+  const start = skip ? null : document.getElementById('override-start').value;
+  const stop  = skip ? null : document.getElementById('override-stop').value;
+
+  if (!date) return showStatus(status, 'Please select a date.', false);
+  if (!skip && (!start || !stop)) return showStatus(status, 'Please provide both Start and Stop times.', false);
+
+  // null start/stop signals "skip this day entirely" to the backend
+  const payload = { date, start, stop };
+  if (name) payload.name = name;
+
+  showStatus(status, 'Saving and syncing to Azure\u2026', true, true);
+  try {
+    const result = await api('/api/overrides', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (result.syncError) {
+      showStatus(status, `Override saved, but Azure sync failed: ${result.syncError}`, false);
+    } else {
+      showStatus(status, 'Override saved and synced.', true);
+    }
+    document.getElementById('override-add-details').removeAttribute('open');
+    loadSchedule();
+  } catch (e) { showStatus(status, e.message, false); }
 });
 
 /* ── System / Storage ────────────────────────────────────────────── */
