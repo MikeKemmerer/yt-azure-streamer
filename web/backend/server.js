@@ -541,6 +541,38 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // ─── POST /api/vm/deallocate ──────────────────────────────────
+    // Deallocate the VM via Azure Automation (stops billing)
+    if (req.method === 'POST' && req.url === '/api/vm/deallocate') {
+      if (readMode() !== 'azure') {
+        return jsonResponse(res, 400, { error: 'VM deallocate is only available in Azure mode' });
+      }
+      let prefix, rg;
+      try {
+        prefix = fs.readFileSync('/etc/yt/nameprefix', 'utf8').trim();
+        rg = fs.readFileSync('/etc/yt/resourcegroup', 'utf8').trim();
+      } catch (e) {
+        return jsonResponse(res, 500, { error: 'Cannot read VM config: ' + e.message });
+      }
+      const aa = prefix + '-automation';
+      const vm = prefix + '-vm';
+      // Trigger the Stop-StreamerVM runbook via Azure Automation
+      execFile('az', [
+        'automation', 'runbook', 'start',
+        '--automation-account-name', aa,
+        '--resource-group', rg,
+        '--name', 'Stop-StreamerVM',
+        '--parameters', `ResourceGroupName=${rg}`, `VMName=${vm}`
+      ], { timeout: 30000 }, (err, stdout, stderr) => {
+        if (err) {
+          console.error('VM deallocate failed:', stderr || err.message);
+          return jsonResponse(res, 500, { error: 'Failed to trigger VM deallocate: ' + (stderr || err.message).slice(0, 500) });
+        }
+        jsonResponse(res, 200, { ok: true, message: 'VM deallocate triggered. The VM will shut down and stop billing shortly.' });
+      });
+      return;
+    }
+
     // ─── GET /api/schedule ─────────────────────────────────────────
     // Returns the full schedule with computed next start/stop times
     if (req.method === 'GET' && req.url === '/api/schedule') {
@@ -746,6 +778,32 @@ const server = http.createServer(async (req, res) => {
         jsonResponse(res, 200, { ok: true, synced: true });
       });
       return;
+    }
+
+    // ─── GET /api/branches ──────────────────────────────────────────
+    // List remote branches from origin
+    if (req.method === 'GET' && req.url === '/api/branches') {
+      const repoDir = '/opt/yt';
+      const gitOpts = { cwd: repoDir, timeout: 30000, env: { ...process.env, HOME: '/root', GIT_TERMINAL_PROMPT: '0' } };
+      try {
+        execFileSync('git', ['fetch', '--prune', 'origin'], gitOpts);
+      } catch (e) {
+        return jsonResponse(res, 500, { error: 'Fetch failed', output: e.stderr ? e.stderr.toString() : e.message });
+      }
+      let branches = [];
+      try {
+        const raw = execFileSync('git', ['branch', '-r', '--format=%(refname:short)'], gitOpts).toString().trim();
+        branches = raw.split('\n')
+          .map(b => b.replace(/^origin\//, ''))
+          .filter(b => b && b !== 'HEAD');
+      } catch (e) {
+        return jsonResponse(res, 500, { error: 'Failed to list branches', output: e.message });
+      }
+      let currentBranch = 'main';
+      try {
+        currentBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], gitOpts).toString().trim();
+      } catch {}
+      return jsonResponse(res, 200, { branches, currentBranch });
     }
 
     // ─── POST /api/update/check ───────────────────────────────────
