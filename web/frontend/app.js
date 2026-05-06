@@ -620,8 +620,8 @@ async function loadHealth() {
 
 let scheduleData = { timezone: 'UTC', events: [] };
 
-function populateTimezoneDropdown(selectedTz) {
-  const select = document.getElementById('schedule-tz');
+function populateTimezoneDropdown(selectId, selectedTz) {
+  const select = document.getElementById(selectId);
   if (select.options.length === 0) {
     const timezones = ['UTC'].concat(Intl.supportedValuesOf('timeZone').filter(t => t !== 'UTC'));
     for (const tz of timezones) {
@@ -634,8 +634,9 @@ function populateTimezoneDropdown(selectedTz) {
   if (selectedTz) select.value = selectedTz;
 }
 
-// Populate timezone options immediately so the dropdown is never empty
-populateTimezoneDropdown('UTC');
+// Populate timezone options immediately so the dropdowns are never empty
+populateTimezoneDropdown('schedule-tz', 'UTC');
+populateTimezoneDropdown('override-tz', 'UTC');
 
 async function loadSchedule() {
   try {
@@ -643,7 +644,8 @@ async function loadSchedule() {
     scheduleData = { timezone: data.timezone, events: data.events };
     document.getElementById('next-start').textContent = fmtDate(data.nextStart);
     document.getElementById('next-stop').textContent = fmtDate(data.nextStop);
-    populateTimezoneDropdown(data.timezone);
+    populateTimezoneDropdown('schedule-tz', data.timezone);
+    populateTimezoneDropdown('override-tz', data.timezone);
     renderScheduleEvents();
     renderScheduleEditor();
     renderOverrides(data.overrides || []);
@@ -738,15 +740,17 @@ function renderOverrides(overrides) {
     el.innerHTML = '<p class="hint">No upcoming overrides.</p>';
     return;
   }
-  let html = '<table class="schedule-table"><tr><th>Date</th><th>Name</th><th>Start</th><th>Stop</th><th></th></tr>';
+  let html = '<table class="schedule-table"><tr><th>Date</th><th>Name</th><th>Start</th><th>Stop</th><th>TZ</th><th></th></tr>';
   for (const o of overrides) {
     const startCell = o.start ? esc(o.start) : '<em>skip</em>';
     const stopCell  = o.stop  ? esc(o.stop)  : '<em>skip</em>';
+    const tzCell    = o.timezone ? esc(o.timezone) : '<em>default</em>';
     html += `<tr>
       <td>${esc(o.date)}</td>
       <td>${esc(o.name || '')}</td>
       <td>${startCell}</td>
       <td>${stopCell}</td>
+      <td>${tzCell}</td>
       <td><button class="secondary override-delete-btn" data-date="${esc(o.date)}">Remove</button></td>
     </tr>`;
   }
@@ -785,6 +789,8 @@ document.getElementById('save-override').addEventListener('click', async () => {
   // null start/stop signals "skip this day entirely" to the backend
   const payload = { date, start, stop };
   if (name) payload.name = name;
+  const overrideTz = document.getElementById('override-tz').value;
+  if (overrideTz && overrideTz !== scheduleData.timezone) payload.timezone = overrideTz;
 
   showStatus(status, 'Saving and syncing to Azure\u2026', true, true);
   try {

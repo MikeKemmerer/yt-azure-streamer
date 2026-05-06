@@ -193,12 +193,16 @@ for override in schedule.get("overrides", []):
     o_start_h, o_start_m = map(int, o_start.split(":"))
     o_stop_h, o_stop_m = map(int, o_stop.split(":"))
 
+    # Use per-override timezone if specified, otherwise fall back to schedule timezone
+    o_tz_name = override.get("timezone")
+    o_tz = ZoneInfo(o_tz_name) if o_tz_name else tz
+
     # Apply padding
     start_dt = datetime.datetime(o_date.year, o_date.month, o_date.day,
-                                  o_start_h, o_start_m, tzinfo=tz)
+                                  o_start_h, o_start_m, tzinfo=o_tz)
     start_dt -= datetime.timedelta(minutes=padding_min)
     stop_dt = datetime.datetime(o_date.year, o_date.month, o_date.day,
-                                 o_stop_h, o_stop_m, tzinfo=tz)
+                                 o_stop_h, o_stop_m, tzinfo=o_tz)
     stop_dt += datetime.timedelta(minutes=padding_min)
 
     # Convert to UTC for Azure
