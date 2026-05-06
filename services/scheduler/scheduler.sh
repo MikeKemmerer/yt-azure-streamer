@@ -52,6 +52,14 @@ for override in schedule.get("overrides", []):
     o_stop = override.get("stop")
     if not o_start or not o_stop:
         sys.exit(1)  # Override with null times = skip today
+    # Use per-override timezone if specified
+    o_tz_name = override.get("timezone")
+    if o_tz_name:
+        try:
+            o_tz = ZoneInfo(o_tz_name)
+            now = datetime.datetime.now(tz=o_tz)
+        except Exception:
+            pass
     sh, sm = map(int, o_start.split(":"))
     eh, em = map(int, o_stop.split(":"))
     start_t = now.replace(hour=sh, minute=sm, second=0, microsecond=0)

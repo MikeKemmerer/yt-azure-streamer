@@ -692,7 +692,8 @@ const server = http.createServer(async (req, res) => {
         date: parsed.date,
         start: hasStart ? String(parsed.start).slice(0, 5) : null,
         stop: hasStop ? String(parsed.stop).slice(0, 5) : null,
-        name: parsed.name ? String(parsed.name).slice(0, 100) : undefined
+        name: parsed.name ? String(parsed.name).slice(0, 100) : undefined,
+        timezone: parsed.timezone ? String(parsed.timezone).slice(0, 50) : undefined
       };
       if (idx >= 0) {
         schedule.overrides[idx] = entry;
