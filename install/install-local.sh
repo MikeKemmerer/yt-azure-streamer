@@ -75,7 +75,7 @@ if [[ "$DISTRO_FAMILY" == "unknown" ]]; then
   warn "Unrecognized distro. Assuming Debian/Ubuntu-compatible package management."
   DISTRO_FAMILY="debian"
 fi
-ok "Detected: $PRETTY_NAME ($DISTRO_FAMILY family)"
+ok "Detected: ${PRETTY_NAME:-Unknown} ($DISTRO_FAMILY family)"
 
 # ─── Video storage configuration ───────────────────────────────────
 

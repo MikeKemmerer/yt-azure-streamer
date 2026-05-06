@@ -48,6 +48,23 @@ function getVideoDir() {
   return '/mnt/blobfuse2';
 }
 
+// Returns mode-appropriate service lists.
+// healthUnits: systemd units checked for active state in /api/health.
+// logServices: units whose journal logs are exposed via /api/logs.
+// The schedule-sync timer and service are intentionally separated:
+// the .timer unit reflects scheduling health; the .service unit carries the log output.
+function getServiceConfig() {
+  const mode = readMode();
+  if (mode === 'local') {
+    const services = ['streamer.service', 'scheduler.service', 'caddy.service', 'web-backend.service'];
+    return { healthUnits: services, logServices: services };
+  }
+  return {
+    healthUnits: ['streamer.service', 'scheduler.service', 'schedule-sync.timer', 'caddy.service', 'web-backend.service', 'mnt-blobfuse2.mount'],
+    logServices:  ['streamer.service', 'scheduler.service', 'schedule-sync.service', 'caddy.service', 'web-backend.service', 'mnt-blobfuse2.mount']
+  };
+}
+
 const VIDEO_DIR = getVideoDir();
 const VIDEO_EXTENSIONS = ['.mp4', '.mkv', '.mov', '.avi', '.ts', '.flv'];
 
@@ -496,10 +513,7 @@ const server = http.createServer(async (req, res) => {
     // ─── GET /api/health ───────────────────────────────────────────
     // Returns status of all systemd units at a glance
     if (req.method === 'GET' && req.url === '/api/health') {
-      const units = [
-        'streamer.service', 'scheduler.service', 'schedule-sync.timer',
-        'caddy.service', 'web-backend.service', 'mnt-blobfuse2.mount'
-      ];
+      const { healthUnits: units } = getServiceConfig();
       execFile('systemctl', ['is-active', ...units], { timeout: 5000 }, (err, stdout) => {
         const states = stdout.trim().split('\n');
         const result = {};
@@ -516,10 +530,7 @@ const server = http.createServer(async (req, res) => {
       const service = params.get('service') || 'streamer.service';
       const lines = Math.min(Math.max(parseInt(params.get('lines')) || 100, 10), 500);
       // Whitelist allowed services
-      const allowed = [
-        'streamer.service', 'scheduler.service', 'schedule-sync.service',
-        'caddy.service', 'web-backend.service', 'mnt-blobfuse2.mount'
-      ];
+      const { logServices: allowed } = getServiceConfig();
       if (!allowed.includes(service)) {
         return jsonResponse(res, 400, { error: 'Invalid service. Allowed: ' + allowed.join(', ') });
       }
@@ -705,7 +716,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ─── POST /api/videos/upload ─────────────────────────────────
-    // Stream-upload a video file to the blobfuse2 mount
+    // Stream-upload a video file to the video directory
     if (req.method === 'POST' && req.url.startsWith('/api/videos/upload')) {
       const filename = decodeURIComponent(req.headers['x-filename'] || '').replace(/[/\\]/g, '');
       if (!filename) return jsonResponse(res, 400, { error: 'Missing X-Filename header' });
