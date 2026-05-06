@@ -21,7 +21,34 @@ const PLAYLIST_FILE = '/etc/yt/playlist.txt';
 const STATE_FILE = '/etc/yt/playlist-state.json';
 const NOW_FILE = '/run/streamer-now.json';
 const PREVIEW_FILE = '/opt/yt/web/frontend/stream-preview.jpg';
-const VIDEO_DIR = '/mnt/blobfuse2';
+const MODE_FILE = '/etc/yt/mode';
+const LOCAL_CONF = '/etc/yt/local.conf';
+const STREAM_KEY_FILE = '/etc/yt/secrets/stream-key';
+
+function readMode() {
+  try { return fs.readFileSync(MODE_FILE, 'utf8').trim(); } catch { return 'azure'; }
+}
+
+function readLocalConf() {
+  try {
+    const lines = fs.readFileSync(LOCAL_CONF, 'utf8').split('\n');
+    const conf = {};
+    for (const line of lines) {
+      const m = line.match(/^([A-Z_]+)=(.*)$/);
+      if (m) conf[m[1]] = m[2];
+    }
+    return conf;
+  } catch { return {}; }
+}
+
+function getVideoDir() {
+  if (readMode() === 'local') {
+    return readLocalConf().VIDEO_DIR || '/mnt/videos';
+  }
+  return '/mnt/blobfuse2';
+}
+
+const VIDEO_DIR = getVideoDir();
 const VIDEO_EXTENSIONS = ['.mp4', '.mkv', '.mov', '.avi', '.ts', '.flv'];
 
 // Duration cache: filename → seconds (avoids repeated ffprobe calls)
@@ -143,16 +170,22 @@ const server = http.createServer(async (req, res) => {
     // ─── GET /api/info ─────────────────────────────────────────────
     if (req.method === 'GET' && req.url === '/api/info') {
       const prefix = readPrefix();
-      const storage = config.storageAccountTemplate.replace("STORAGE_ACCOUNT", prefix.toLowerCase());
-      const automation = config.automationAccountTemplate.replace("AUTOMATION_ACCOUNT", prefix + "-automation");
-      const keyVault = prefix.toLowerCase() + '-kv';
+      const mode = readMode();
       let hostname = '';
       try { hostname = require('os').hostname(); } catch {}
       let version = '';
       try { version = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: '/opt/yt', timeout: 5000 }).toString().trim(); } catch {}
       let branch = '';
       try { branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: '/opt/yt', timeout: 5000 }).toString().trim(); } catch {}
-      jsonResponse(res, 200, { prefix, storageAccount: storage, automationAccount: automation, keyVault, hostname, version, branch });
+      const info = { prefix, mode, hostname, version, branch };
+      if (mode === 'azure') {
+        info.storageAccount = config.storageAccountTemplate.replace("STORAGE_ACCOUNT", prefix.toLowerCase());
+        info.automationAccount = config.automationAccountTemplate.replace("AUTOMATION_ACCOUNT", prefix + "-automation");
+        info.keyVault = prefix.toLowerCase() + '-kv';
+      } else {
+        info.videoDir = getVideoDir();
+      }
+      jsonResponse(res, 200, info);
       return;
     }
 
@@ -166,6 +199,14 @@ const server = http.createServer(async (req, res) => {
       const key = parsed.streamKey;
       if (!key || typeof key !== 'string' || key.length < 4 || key.length > 256) {
         return jsonResponse(res, 400, { error: 'streamKey must be 4-256 characters' });
+      }
+      if (readMode() === 'local') {
+        try {
+          fs.writeFileSync(STREAM_KEY_FILE, key + '\n', { mode: 0o600 });
+          return jsonResponse(res, 200, { ok: true });
+        } catch (e) {
+          return jsonResponse(res, 500, { error: 'Failed to write stream key: ' + e.message });
+        }
       }
       const vault = kvName();
       execFile('az', [
@@ -548,6 +589,11 @@ const server = http.createServer(async (req, res) => {
           }));
       }
       writeSchedule(schedule);
+
+      // In local mode, scheduler.service reads schedule.json directly — no sync needed
+      if (readMode() === 'local') {
+        return jsonResponse(res, 200, { ok: true, synced: true });
+      }
 
       // Trigger immediate sync to Azure Automation Account
       execFile('/usr/local/bin/schedule-sync.sh', [], { timeout: 60000 }, (err, stdout, stderr) => {

@@ -11,9 +11,17 @@ set -euo pipefail
 # Videos below max_resolution are NOT upsampled.
 
 PREFIX=$(cat /etc/yt/nameprefix 2>/dev/null || echo "unknown")
-KV_NAME="${PREFIX,,}-kv"
+MODE=$(cat /etc/yt/mode 2>/dev/null || echo "azure")
 
-VIDEO_DIR="/mnt/blobfuse2"
+# --- Determine video directory ---
+if [[ "$MODE" == "local" ]]; then
+  VIDEO_DIR=$(grep '^VIDEO_DIR=' /etc/yt/local.conf 2>/dev/null | cut -d= -f2-)
+  VIDEO_DIR="${VIDEO_DIR:-/mnt/videos}"
+else
+  KV_NAME="${PREFIX,,}-kv"
+  VIDEO_DIR="/mnt/blobfuse2"
+fi
+
 PLAYLIST="/etc/yt/playlist.txt"
 STATE_FILE="/etc/yt/playlist-state.json"
 CONFIG_FILE="/etc/yt/schedule.json"
@@ -59,20 +67,30 @@ AUDIO_BR="${RES_AUDIO[$MAX_RES]}"
 echo "Max resolution: $MAX_RES (${MAX_H}p, maxrate=$MAXRATE)"
 
 # --- Fetch YouTube stream key ---
-echo "Fetching stream key from Key Vault '$KV_NAME'..."
-az login --identity >/dev/null 2>&1
+if [[ "$MODE" == "local" ]]; then
+  echo "Reading stream key from /etc/yt/secrets/stream-key..."
+  STREAM_KEY=$(cat /etc/yt/secrets/stream-key 2>/dev/null | tr -d '[:space:]')
+  if [[ -z "$STREAM_KEY" ]]; then
+    echo "ERROR: Stream key not found at /etc/yt/secrets/stream-key"
+    echo "       Set it with: echo 'YOUR_KEY' | sudo tee /etc/yt/secrets/stream-key"
+    exit 1
+  fi
+else
+  echo "Fetching stream key from Key Vault '$KV_NAME'..."
+  az login --identity >/dev/null 2>&1
 
-STREAM_KEY=$(az keyvault secret show \
-  --vault-name "$KV_NAME" \
-  --name "youtube-stream-key" \
-  --query value \
-  -o tsv 2>/dev/null || true)
+  STREAM_KEY=$(az keyvault secret show \
+    --vault-name "$KV_NAME" \
+    --name "youtube-stream-key" \
+    --query value \
+    -o tsv 2>/dev/null || true)
 
-if [[ -z "$STREAM_KEY" ]]; then
-  echo "ERROR: 'youtube-stream-key' secret not found in Key Vault '$KV_NAME'."
-  echo "       Set it with:"
-  echo "         az keyvault secret set --vault-name $KV_NAME --name youtube-stream-key --value <YOUR_KEY>"
-  exit 1
+  if [[ -z "$STREAM_KEY" ]]; then
+    echo "ERROR: 'youtube-stream-key' secret not found in Key Vault '$KV_NAME'."
+    echo "       Set it with:"
+    echo "         az keyvault secret set --vault-name $KV_NAME --name youtube-stream-key --value <YOUR_KEY>"
+    exit 1
+  fi
 fi
 
 RTMP_URL="rtmp://a.rtmp.youtube.com/live2/${STREAM_KEY}"
