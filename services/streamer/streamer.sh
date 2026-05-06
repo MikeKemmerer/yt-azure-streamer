@@ -11,9 +11,17 @@ set -euo pipefail
 # Videos below max_resolution are NOT upsampled.
 
 PREFIX=$(cat /etc/yt/nameprefix 2>/dev/null || echo "unknown")
-KV_NAME="${PREFIX,,}-kv"
+MODE=$(cat /etc/yt/mode 2>/dev/null || echo "azure")
 
-VIDEO_DIR="/mnt/blobfuse2"
+# --- Determine video directory ---
+if [[ "$MODE" == "local" ]]; then
+  VIDEO_DIR=$(grep '^VIDEO_DIR=' /etc/yt/local.conf 2>/dev/null | cut -d= -f2-)
+  VIDEO_DIR="${VIDEO_DIR:-/mnt/videos}"
+else
+  KV_NAME="${PREFIX,,}-kv"
+  VIDEO_DIR="/mnt/blobfuse2"
+fi
+
 PLAYLIST="/etc/yt/playlist.txt"
 STATE_FILE="/etc/yt/playlist-state.json"
 CONFIG_FILE="/etc/yt/schedule.json"
@@ -59,20 +67,30 @@ AUDIO_BR="${RES_AUDIO[$MAX_RES]}"
 echo "Max resolution: $MAX_RES (${MAX_H}p, maxrate=$MAXRATE)"
 
 # --- Fetch YouTube stream key ---
-echo "Fetching stream key from Key Vault '$KV_NAME'..."
-az login --identity >/dev/null 2>&1
+if [[ "$MODE" == "local" ]]; then
+  echo "Reading stream key from /etc/yt/secrets/stream-key..."
+  STREAM_KEY=$(cat /etc/yt/secrets/stream-key 2>/dev/null | tr -d '[:space:]')
+  if [[ -z "$STREAM_KEY" ]]; then
+    echo "ERROR: Stream key not found at /etc/yt/secrets/stream-key"
+    echo "       Set it with: echo 'YOUR_KEY' | sudo tee /etc/yt/secrets/stream-key"
+    exit 1
+  fi
+else
+  echo "Fetching stream key from Key Vault '$KV_NAME'..."
+  az login --identity >/dev/null 2>&1
 
-STREAM_KEY=$(az keyvault secret show \
-  --vault-name "$KV_NAME" \
-  --name "youtube-stream-key" \
-  --query value \
-  -o tsv 2>/dev/null || true)
+  STREAM_KEY=$(az keyvault secret show \
+    --vault-name "$KV_NAME" \
+    --name "youtube-stream-key" \
+    --query value \
+    -o tsv 2>/dev/null || true)
 
-if [[ -z "$STREAM_KEY" ]]; then
-  echo "ERROR: 'youtube-stream-key' secret not found in Key Vault '$KV_NAME'."
-  echo "       Set it with:"
-  echo "         az keyvault secret set --vault-name $KV_NAME --name youtube-stream-key --value <YOUR_KEY>"
-  exit 1
+  if [[ -z "$STREAM_KEY" ]]; then
+    echo "ERROR: 'youtube-stream-key' secret not found in Key Vault '$KV_NAME'."
+    echo "       Set it with:"
+    echo "         az keyvault secret set --vault-name $KV_NAME --name youtube-stream-key --value <YOUR_KEY>"
+    exit 1
+  fi
 fi
 
 RTMP_URL="rtmp://a.rtmp.youtube.com/live2/${STREAM_KEY}"
@@ -223,7 +241,7 @@ except: pass
 
   if [[ "$WATERMARK" == true && -f "$WM_FONT_SANS" ]]; then
     # Split title into max 2 lines; shrink font if title is very long
-    MAX_LINE=60
+    MAX_LINE=55
     TITLE_FILE="/tmp/streamer-title.txt"
     TITLE_FONTSIZE="h/22"
     # Force max 2 lines — if title is too long for 2 lines, shrink font
@@ -323,6 +341,32 @@ except: pass
   DURATION=$(ffprobe -v error -show_entries format=duration \
     -of csv=p=0 "$VIDEO" 2>/dev/null || echo "0")
   DURATION=${DURATION%%.*}  # truncate to integer seconds
+
+  # Elapsed/duration time display (bottom right)
+  if [[ "${DURATION:-0}" -gt 0 ]]; then
+    # Build time display: MM:SS if duration < 1h, else H:MM:SS
+    # Use textfile= instead of text= to avoid filter graph escaping issues entirely.
+    # File content is read directly by drawtext — colons/commas are literal.
+    TIME_FILE="/tmp/streamer-time.txt"
+    if [[ -f "$WM_FONT_SANS" ]]; then
+      if [[ "$DURATION" -ge 3600 ]]; then
+        DUR_H=$((DURATION/3600))
+        DUR_M=$(( (DURATION%3600)/60 ))
+        DUR_S=$((DURATION%60))
+        DUR_FMT=$(printf '%d:%02d:%02d' "$DUR_H" "$DUR_M" "$DUR_S")
+        printf '%%{eif:trunc(min(t,%d)/3600):d}:%%{eif:mod(trunc(min(t,%d)/60),60):d:2}:%%{eif:mod(trunc(min(t,%d)),60):d:2} / %s' \
+          "$DURATION" "$DURATION" "$DURATION" "$DUR_FMT" > "$TIME_FILE"
+      else
+        DUR_M=$((DURATION/60))
+        DUR_S=$((DURATION%60))
+        DUR_FMT=$(printf '%d:%02d' "$DUR_M" "$DUR_S")
+        printf '%%{eif:trunc(min(t,%d)/60):d}:%%{eif:mod(trunc(min(t,%d)),60):d:2} / %s' \
+          "$DURATION" "$DURATION" "$DUR_FMT" > "$TIME_FILE"
+      fi
+      VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TIME_FILE}:fontsize=h/40:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-w/30:y=h-h/20")
+    fi
+  fi
+
   NOW_FILE="/run/streamer-now.json"
   python3 -c "
 import json, sys
@@ -336,13 +380,28 @@ with open('$NOW_FILE', 'w') as f:
   if [[ ${#VF_PARTS[@]} -gt 0 ]]; then
     VF_STRING="$(IFS=,; echo "${VF_PARTS[*]}"),"
   fi
-  FILTER_COMPLEX="[0:v]${VF_STRING}split=2[stream][prev];[prev]fps=1/10,scale=640:-2[preview]"
+
+  # Check if input has an audio stream
+  HAS_AUDIO=$(ffprobe -v error -select_streams a:0 \
+    -show_entries stream=codec_type -of csv=p=0 "$VIDEO" 2>/dev/null || echo "")
+
+  EXTRA_INPUTS=()
+  if [[ -z "$HAS_AUDIO" ]]; then
+    echo "  No audio stream — generating silence"
+    EXTRA_INPUTS=("-f" "lavfi" "-t" "${DURATION:-0}" "-i" "anullsrc=r=44100:cl=stereo")
+    AUDIO_FILTER="[1:a]anull[audio]"
+  else
+    # Normalize audio loudness to -14 LUFS (YouTube standard) with -1 dBTP true peak
+    AUDIO_FILTER="[0:a:0]loudnorm=I=-14:TP=-1:LRA=11[audio]"
+  fi
+
+  FILTER_COMPLEX="[0:v]${VF_STRING}split=2[stream][prev];[prev]fps=1/10,scale=640:-2[preview];${AUDIO_FILTER}"
 
   # Always re-encode to guarantee keyframes every 2 seconds (YouTube requires ≤4s)
   # The split sends the same filtered video to both RTMP and a periodic JPEG preview
-  ffmpeg -y -re -i "$VIDEO" \
+  ffmpeg -y -re -i "$VIDEO" "${EXTRA_INPUTS[@]}" \
     -filter_complex "$FILTER_COMPLEX" \
-    -map "[stream]" -map 0:a \
+    -map "[stream]" -map "[audio]" \
     -c:v libx264 -preset veryfast -maxrate "$MAXRATE" -bufsize "$BUFSIZE" \
     -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)" \
     -c:a aac -b:a "$AUDIO_BR" -ar 44100 \
@@ -357,6 +416,22 @@ with open('$STATE_FILE', 'w') as f:
     json.dump({'index': int(sys.argv[1]), 'file': sys.argv[2]}, f)
 " "$INDEX" "$VIDEO"
   echo "  Bookmark saved: index $INDEX"
+
+  # Check for graceful restart signal (set by web UI after an update)
+  RESTART_SIGNAL="/run/streamer-restart-requested"
+  if [[ -f "$RESTART_SIGNAL" ]]; then
+    rm -f "$RESTART_SIGNAL"
+    echo "Restart signal detected — exiting for service restart."
+    exit 0
+  fi
+
+  # Check for stop-after-current signal (set by web UI)
+  STOP_SIGNAL="/run/streamer-stop-after-current"
+  if [[ -f "$STOP_SIGNAL" ]]; then
+    rm -f "$STOP_SIGNAL"
+    echo "Stop-after-current signal detected — stopping streamer."
+    exit 0
+  fi
 
   # Advance to next video (wrap around)
   INDEX=$(( (INDEX + 1) % NUM_VIDEOS ))

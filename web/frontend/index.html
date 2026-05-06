@@ -44,6 +44,7 @@
     <div class="streamer-controls">
       <button id="streamer-start" disabled>Start</button>
       <button id="streamer-stop" disabled>Stop</button>
+      <button id="streamer-stop-after" disabled>Stop After Current</button>
       <button id="streamer-skip" disabled>Skip ⏭</button>
     </div>
     <div id="streamer-action-status" class="status"></div>
@@ -66,7 +67,7 @@
     <details>
       <summary>Edit Schedule</summary>
       <div class="schedule-editor">
-        <label>Timezone <input type="text" id="schedule-tz" placeholder="America/New_York" size="24"></label>
+        <label>Timezone <select id="schedule-tz"></select></label>
         <div id="schedule-event-list"></div>
         <button id="add-event" class="secondary">+ Add Event</button>
         <button id="save-schedule">Save Schedule</button>
@@ -142,6 +143,7 @@
       <button id="sort-date" class="secondary">By Date</button>
       <button id="sort-shuffle" class="secondary">Shuffle</button>
     </div>
+    <input type="text" id="playlist-search" class="playlist-search" placeholder="Search videos...">
     <div id="video-list-loading">Loading videos...</div>
     <ul id="video-list"></ul>
     <div class="playlist-actions">
@@ -207,7 +209,7 @@
   <!-- ── Update ──────────────────────────────────────────────────── -->
   <div class="card">
     <h2>Update</h2>
-    <p class="hint">Pull the latest code from GitHub and re-deploy changed scripts, units, and frontend files.</p>
+    <p class="hint">Check for new code on GitHub and optionally deploy it.</p>
     <div class="update-controls">
       <label class="checkbox-label">
         <input type="checkbox" id="update-beta">
@@ -216,6 +218,15 @@
       <button id="run-update">Check for Updates</button>
     </div>
     <pre id="update-output" class="update-output" style="display:none"></pre>
+    <div id="update-actions" class="update-actions" style="display:none">
+      <button id="apply-update" class="btn-primary">Apply Update</button>
+      <button id="cancel-update" class="btn-secondary">Cancel</button>
+    </div>
+    <div id="streamer-restart-banner" class="restart-banner" style="display:none">
+      <span class="restart-indicator"></span>
+      Streamer restart pending — will restart after the current video finishes.
+    </div>
+    <button id="restart-streamer-btn" class="btn-warning" style="display:none">Restart Streamer After Current Video</button>
     <div id="update-status" class="status"></div>
   </div>
 
@@ -225,6 +236,12 @@
     <pre id="info">Loading...</pre>
   </div>
 
+  <footer class="app-footer">
+    <span>&copy; 2026 Kemmerer Automations</span>
+    <span id="app-version"></span>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

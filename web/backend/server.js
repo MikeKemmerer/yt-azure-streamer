@@ -21,7 +21,51 @@ const PLAYLIST_FILE = '/etc/yt/playlist.txt';
 const STATE_FILE = '/etc/yt/playlist-state.json';
 const NOW_FILE = '/run/streamer-now.json';
 const PREVIEW_FILE = '/opt/yt/web/frontend/stream-preview.jpg';
-const VIDEO_DIR = '/mnt/blobfuse2';
+const MODE_FILE = '/etc/yt/mode';
+const LOCAL_CONF = '/etc/yt/local.conf';
+const STREAM_KEY_FILE = '/etc/yt/secrets/stream-key';
+
+function readMode() {
+  try { return fs.readFileSync(MODE_FILE, 'utf8').trim(); } catch { return 'azure'; }
+}
+
+function readLocalConf() {
+  try {
+    const lines = fs.readFileSync(LOCAL_CONF, 'utf8').split('\n');
+    const conf = {};
+    for (const line of lines) {
+      const m = line.match(/^([A-Z_]+)=(.*)$/);
+      if (m) conf[m[1]] = m[2];
+    }
+    return conf;
+  } catch { return {}; }
+}
+
+function getVideoDir() {
+  if (readMode() === 'local') {
+    return readLocalConf().VIDEO_DIR || '/mnt/videos';
+  }
+  return '/mnt/blobfuse2';
+}
+
+// Returns mode-appropriate service lists.
+// healthUnits: systemd units checked for active state in /api/health.
+// logServices: units whose journal logs are exposed via /api/logs.
+// The schedule-sync timer and service are intentionally separated:
+// the .timer unit reflects scheduling health; the .service unit carries the log output.
+function getServiceConfig() {
+  const mode = readMode();
+  if (mode === 'local') {
+    const services = ['streamer.service', 'scheduler.service', 'caddy.service', 'web-backend.service'];
+    return { healthUnits: services, logServices: services };
+  }
+  return {
+    healthUnits: ['streamer.service', 'scheduler.service', 'schedule-sync.timer', 'caddy.service', 'web-backend.service', 'mnt-blobfuse2.mount'],
+    logServices:  ['streamer.service', 'scheduler.service', 'schedule-sync.service', 'caddy.service', 'web-backend.service', 'mnt-blobfuse2.mount']
+  };
+}
+
+const VIDEO_DIR = getVideoDir();
 const VIDEO_EXTENSIONS = ['.mp4', '.mkv', '.mov', '.avi', '.ts', '.flv'];
 
 // Duration cache: filename → seconds (avoids repeated ffprobe calls)
@@ -143,12 +187,22 @@ const server = http.createServer(async (req, res) => {
     // ─── GET /api/info ─────────────────────────────────────────────
     if (req.method === 'GET' && req.url === '/api/info') {
       const prefix = readPrefix();
-      const storage = config.storageAccountTemplate.replace("STORAGE_ACCOUNT", prefix.toLowerCase());
-      const automation = config.automationAccountTemplate.replace("AUTOMATION_ACCOUNT", prefix + "-automation");
-      const keyVault = prefix.toLowerCase() + '-kv';
+      const mode = readMode();
       let hostname = '';
       try { hostname = require('os').hostname(); } catch {}
-      jsonResponse(res, 200, { prefix, storageAccount: storage, automationAccount: automation, keyVault, hostname });
+      let version = '';
+      try { version = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: '/opt/yt', timeout: 5000 }).toString().trim(); } catch {}
+      let branch = '';
+      try { branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: '/opt/yt', timeout: 5000 }).toString().trim(); } catch {}
+      const info = { prefix, mode, hostname, version, branch };
+      if (mode === 'azure') {
+        info.storageAccount = config.storageAccountTemplate.replace("STORAGE_ACCOUNT", prefix.toLowerCase());
+        info.automationAccount = config.automationAccountTemplate.replace("AUTOMATION_ACCOUNT", prefix + "-automation");
+        info.keyVault = prefix.toLowerCase() + '-kv';
+      } else {
+        info.videoDir = getVideoDir();
+      }
+      jsonResponse(res, 200, info);
       return;
     }
 
@@ -162,6 +216,14 @@ const server = http.createServer(async (req, res) => {
       const key = parsed.streamKey;
       if (!key || typeof key !== 'string' || key.length < 4 || key.length > 256) {
         return jsonResponse(res, 400, { error: 'streamKey must be 4-256 characters' });
+      }
+      if (readMode() === 'local') {
+        try {
+          fs.writeFileSync(STREAM_KEY_FILE, key + '\n', { mode: 0o600 });
+          return jsonResponse(res, 200, { ok: true });
+        } catch (e) {
+          return jsonResponse(res, 500, { error: 'Failed to write stream key: ' + e.message });
+        }
       }
       const vault = kvName();
       execFile('az', [
@@ -283,7 +345,8 @@ const server = http.createServer(async (req, res) => {
         const playlist = readPlaylistOrder();
         const state = readPlaybackState();
         const now = active ? readNowPlaying() : null;
-        const result = { active, uptimeSeconds, nowPlaying: null, upNext: [], progress: null };
+        const stopPending = fs.existsSync('/run/streamer-stop-after-current');
+        const result = { active, uptimeSeconds, nowPlaying: null, upNext: [], progress: null, stopPending };
 
         if (state && playlist.length > 0) {
           // The state file records the LAST COMPLETED video's index.
@@ -426,13 +489,31 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // ─── POST /api/streamer/stop-after-current ─────────────────────
+    // Signal the streamer to stop gracefully after the current video ends
+    if (req.method === 'POST' && req.url === '/api/streamer/stop-after-current') {
+      const signal = '/run/streamer-stop-after-current';
+      try {
+        fs.writeFileSync(signal, '');
+        jsonResponse(res, 200, { ok: true, pending: true });
+      } catch (e) {
+        jsonResponse(res, 500, { error: 'Failed to write stop signal' });
+      }
+      return;
+    }
+
+    // ─── DELETE /api/streamer/stop-after-current ────────────────────
+    // Cancel a pending stop-after-current
+    if (req.method === 'DELETE' && req.url === '/api/streamer/stop-after-current') {
+      try { fs.unlinkSync('/run/streamer-stop-after-current'); } catch {}
+      jsonResponse(res, 200, { ok: true, pending: false });
+      return;
+    }
+
     // ─── GET /api/health ───────────────────────────────────────────
     // Returns status of all systemd units at a glance
     if (req.method === 'GET' && req.url === '/api/health') {
-      const units = [
-        'streamer.service', 'scheduler.service', 'schedule-sync.timer',
-        'caddy.service', 'web-backend.service', 'mnt-blobfuse2.mount'
-      ];
+      const { healthUnits: units } = getServiceConfig();
       execFile('systemctl', ['is-active', ...units], { timeout: 5000 }, (err, stdout) => {
         const states = stdout.trim().split('\n');
         const result = {};
@@ -449,10 +530,7 @@ const server = http.createServer(async (req, res) => {
       const service = params.get('service') || 'streamer.service';
       const lines = Math.min(Math.max(parseInt(params.get('lines')) || 100, 10), 500);
       // Whitelist allowed services
-      const allowed = [
-        'streamer.service', 'scheduler.service', 'schedule-sync.service',
-        'caddy.service', 'web-backend.service', 'mnt-blobfuse2.mount'
-      ];
+      const { logServices: allowed } = getServiceConfig();
       if (!allowed.includes(service)) {
         return jsonResponse(res, 400, { error: 'Invalid service. Allowed: ' + allowed.join(', ') });
       }
@@ -522,8 +600,70 @@ const server = http.createServer(async (req, res) => {
           }));
       }
       writeSchedule(schedule);
-      jsonResponse(res, 200, { ok: true });
+
+      // In local mode, scheduler.service reads schedule.json directly — no sync needed
+      if (readMode() === 'local') {
+        return jsonResponse(res, 200, { ok: true, synced: true });
+      }
+
+      // Trigger immediate sync to Azure Automation Account
+      execFile('/usr/local/bin/schedule-sync.sh', [], { timeout: 60000 }, (err, stdout, stderr) => {
+        if (err) {
+          console.error('schedule-sync failed:', stderr || err.message);
+          return jsonResponse(res, 200, { ok: true, syncError: (stderr || err.message).slice(0, 500) });
+        }
+        jsonResponse(res, 200, { ok: true, synced: true });
+      });
       return;
+    }
+
+    // ─── POST /api/update/check ───────────────────────────────────
+    // Fetch latest and show what would change (without applying)
+    if (req.method === 'POST' && req.url === '/api/update/check') {
+      const body = await readBody(req);
+      let branch = 'main';
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed.branch && /^[a-zA-Z0-9._-]+$/.test(parsed.branch)) {
+          branch = parsed.branch;
+        }
+      } catch { /* default to main */ }
+
+      const repoDir = '/opt/yt';
+      const gitOpts = { cwd: repoDir, timeout: 30000, env: { ...process.env, HOME: '/root', GIT_TERMINAL_PROMPT: '0' } };
+
+      try {
+        execFileSync('git', ['fetch', 'origin', branch], gitOpts);
+      } catch (e) {
+        return jsonResponse(res, 500, { error: 'Fetch failed', output: e.stderr ? e.stderr.toString() : e.message });
+      }
+
+      let localHead, remoteHead;
+      try {
+        localHead = execFileSync('git', ['rev-parse', 'HEAD'], gitOpts).toString().trim();
+        remoteHead = execFileSync('git', ['rev-parse', `origin/${branch}`], gitOpts).toString().trim();
+      } catch (e) {
+        return jsonResponse(res, 500, { error: 'Failed to read refs', output: e.message });
+      }
+
+      if (localHead === remoteHead) {
+        return jsonResponse(res, 200, { upToDate: true, branch, localHead });
+      }
+
+      let commits = '', diffStat = '';
+      try {
+        commits = execFileSync('git', ['log', '--oneline', `${localHead}..origin/${branch}`], gitOpts).toString().trim();
+        diffStat = execFileSync('git', ['diff', '--stat', `${localHead}..origin/${branch}`], gitOpts).toString().trim();
+      } catch { /* non-fatal */ }
+
+      return jsonResponse(res, 200, {
+        upToDate: false,
+        branch,
+        localHead: localHead.slice(0, 7),
+        remoteHead: remoteHead.slice(0, 7),
+        commits,
+        diffStat
+      });
     }
 
     // ─── POST /api/update ─────────────────────────────────────────
@@ -547,13 +687,36 @@ const server = http.createServer(async (req, res) => {
         if (err && !stdout) {
           return jsonResponse(res, 500, { error: 'Update failed', output: output || err.message });
         }
-        jsonResponse(res, 200, { ok: true, output });
+        // Check if streamer-related files were updated (indicates restart needed)
+        const streamerPending = /services\/streamer\/|streamer\.sh|streamer\.service/.test(output);
+        jsonResponse(res, 200, { ok: true, output, streamerPending });
       });
       return;
     }
 
+    // ─── POST /api/streamer/restart-after-current ─────────────────
+    // Signal the streamer to restart after the current video finishes
+    if (req.method === 'POST' && req.url === '/api/streamer/restart-after-current') {
+      const signalFile = '/run/streamer-restart-requested';
+      try {
+        fs.writeFileSync(signalFile, new Date().toISOString());
+        jsonResponse(res, 200, { ok: true, message: 'Restart scheduled after current video.' });
+      } catch (e) {
+        jsonResponse(res, 500, { error: 'Failed to write signal file', detail: e.message });
+      }
+      return;
+    }
+
+    // ─── GET /api/streamer/restart-pending ────────────────────────
+    // Check if a restart is already pending
+    if (req.method === 'GET' && req.url === '/api/streamer/restart-pending') {
+      const pending = fs.existsSync('/run/streamer-restart-requested');
+      jsonResponse(res, 200, { pending });
+      return;
+    }
+
     // ─── POST /api/videos/upload ─────────────────────────────────
-    // Stream-upload a video file to the blobfuse2 mount
+    // Stream-upload a video file to the video directory
     if (req.method === 'POST' && req.url.startsWith('/api/videos/upload')) {
       const filename = decodeURIComponent(req.headers['x-filename'] || '').replace(/[/\\]/g, '');
       if (!filename) return jsonResponse(res, 400, { error: 'Missing X-Filename header' });

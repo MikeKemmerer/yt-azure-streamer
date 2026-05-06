@@ -1,10 +1,12 @@
 /* ── Helpers ─────────────────────────────────────────────────────── */
 
-function showStatus(el, msg, ok) {
+function showStatus(el, msg, ok, persist) {
   el.textContent = msg;
   el.className = 'status ' + (ok ? 'ok' : 'err');
   clearTimeout(el._t);
-  el._t = setTimeout(() => { el.textContent = ''; el.className = 'status'; }, 6000);
+  if (!persist) {
+    el._t = setTimeout(() => { el.textContent = ''; el.className = 'status'; }, 6000);
+  }
 }
 
 async function api(url, opts) {
@@ -40,6 +42,11 @@ async function loadInfo() {
   try {
     const data = await api('/api/info');
     document.getElementById('info').textContent = JSON.stringify(data, null, 2);
+    // Populate footer version
+    const versionEl = document.getElementById('app-version');
+    if (versionEl && data.version) {
+      versionEl.textContent = `${data.branch || 'main'} @ ${data.version}`;
+    }
   } catch {
     document.getElementById('info').textContent = 'Error loading info';
   }
@@ -49,6 +56,7 @@ async function loadInfo() {
 
 let progressState = { elapsed: 0, duration: 0, lastSync: 0 };
 let progressInterval = null;
+let lastVideoEndRefresh = 0;
 
 function startProgressTicker() {
   if (progressInterval) return;
@@ -60,6 +68,11 @@ function startProgressTicker() {
     const pct = Math.min(100, (clamped / progressState.duration) * 100);
     document.getElementById('progress-bar').style.width = pct + '%';
     document.getElementById('progress-elapsed').textContent = fmtDuration(clamped);
+    // When video should have ended, refresh to get new video info (max once per 5s)
+    if (elapsed >= progressState.duration + 2 && now - lastVideoEndRefresh > 5000) {
+      lastVideoEndRefresh = now;
+      refreshStreamerStatus();
+    }
   }, 1000);
 }
 
@@ -94,6 +107,15 @@ async function refreshStreamerStatus() {
     startBtn.disabled = data.active;
     stopBtn.disabled = !data.active;
     document.getElementById('streamer-skip').disabled = !data.active;
+    const stopAfterBtn = document.getElementById('streamer-stop-after');
+    stopAfterBtn.disabled = !data.active;
+    if (data.active && data.stopPending) {
+      stopAfterBtn.textContent = 'Cancel Stop After Current';
+      stopAfterBtn.classList.add('pending');
+    } else {
+      stopAfterBtn.textContent = 'Stop After Current';
+      stopAfterBtn.classList.remove('pending');
+    }
     if (data.active && data.nowPlaying) {
       nowTitle.textContent = data.nowPlaying;
       nowPlaying.style.display = '';
@@ -170,6 +192,23 @@ document.getElementById('streamer-skip').addEventListener('click', async () => {
     await api('/api/streamer/skip', { method: 'POST' });
     showStatus(status, 'Skipping to next video...', true);
     setTimeout(refreshStreamerStatus, 3000);
+  } catch (e) { showStatus(status, e.message, false); }
+});
+
+document.getElementById('streamer-stop-after').addEventListener('click', async () => {
+  const status = document.getElementById('streamer-action-status');
+  const btn = document.getElementById('streamer-stop-after');
+  const isPending = btn.classList.contains('pending');
+  try {
+    btn.disabled = true;
+    if (isPending) {
+      await api('/api/streamer/stop-after-current', { method: 'DELETE' });
+      showStatus(status, 'Stop after current cancelled.', true);
+    } else {
+      await api('/api/streamer/stop-after-current', { method: 'POST' });
+      showStatus(status, 'Will stop after current video.', true);
+    }
+    await refreshStreamerStatus();
   } catch (e) { showStatus(status, e.message, false); }
 });
 
@@ -258,7 +297,7 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
 /* ── Playlist / Videos ───────────────────────────────────────────── */
 
 let videoData = [];
-let dragSrcIdx = null;
+let sortableInstance = null;
 
 async function loadVideos() {
   const list = document.getElementById('video-list');
@@ -274,12 +313,17 @@ async function loadVideos() {
   }
 }
 
-function renderVideoList() {
+function renderVideoList(filter) {
   const list = document.getElementById('video-list');
   list.innerHTML = '';
+  const query = (filter || '').toLowerCase();
   videoData.forEach((v, i) => {
+    const displayTitle = v.title || v.file.replace(/\.[^.]+$/, '');
+    if (query && !displayTitle.toLowerCase().includes(query) && !v.file.toLowerCase().includes(query)) {
+      return; // skip items that don't match search
+    }
+
     const li = document.createElement('li');
-    li.draggable = true;
     li.dataset.idx = i;
     li.className = v.enabled ? '' : 'disabled';
 
@@ -298,21 +342,68 @@ function renderVideoList() {
     const nameBlock = document.createElement('div');
     nameBlock.className = 'video-name-block';
 
-    const label = document.createElement('span');
-    label.className = 'video-name';
-    label.textContent = v.file;
+    // Title row: title text + pencil edit icon
+    const titleRow = document.createElement('div');
+    titleRow.className = 'video-title-row';
 
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'video-title-display';
+    titleSpan.textContent = displayTitle;
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'video-edit-btn';
+    editBtn.textContent = '✏️';
+    editBtn.title = 'Edit title';
+
+    // Hidden inline edit input
     const titleInput = document.createElement('input');
     titleInput.type = 'text';
     titleInput.className = 'video-title-input';
-    titleInput.placeholder = 'Display title (leave blank to use filename)';
-    titleInput.value = v.title || '';
-    titleInput.addEventListener('input', () => {
-      videoData[i].title = titleInput.value;
+    titleInput.value = v.title || displayTitle;
+    titleInput.style.display = 'none';
+
+    editBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      titleSpan.style.display = 'none';
+      editBtn.style.display = 'none';
+      titleInput.style.display = '';
+      titleInput.focus();
+      titleInput.select();
     });
 
-    nameBlock.appendChild(label);
-    nameBlock.appendChild(titleInput);
+    function commitEdit() {
+      const newTitle = titleInput.value.trim();
+      // If input matches derived filename title, store as empty (use default)
+      const derived = v.file.replace(/\.[^.]+$/, '');
+      videoData[i].title = (newTitle === derived) ? '' : newTitle;
+      titleSpan.textContent = newTitle || derived;
+      titleInput.style.display = 'none';
+      titleSpan.style.display = '';
+      editBtn.style.display = '';
+    }
+
+    titleInput.addEventListener('blur', commitEdit);
+    titleInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commitEdit(); }
+      if (e.key === 'Escape') {
+        titleInput.value = v.title || displayTitle;
+        titleInput.style.display = 'none';
+        titleSpan.style.display = '';
+        editBtn.style.display = '';
+      }
+    });
+
+    titleRow.appendChild(titleSpan);
+    titleRow.appendChild(editBtn);
+    titleRow.appendChild(titleInput);
+
+    // Filename row (muted, smaller)
+    const fileRow = document.createElement('div');
+    fileRow.className = 'video-filename';
+    fileRow.textContent = v.file;
+
+    nameBlock.appendChild(titleRow);
+    nameBlock.appendChild(fileRow);
 
     const num = document.createElement('span');
     num.className = 'video-num';
@@ -323,37 +414,38 @@ function renderVideoList() {
     li.appendChild(nameBlock);
     li.appendChild(num);
 
-    li.addEventListener('dragstart', onDragStart);
-    li.addEventListener('dragover', onDragOver);
-    li.addEventListener('drop', onDrop);
-    li.addEventListener('dragend', onDragEnd);
-
     list.appendChild(li);
   });
-}
 
-function onDragStart(e) {
-  dragSrcIdx = +e.currentTarget.dataset.idx;
-  e.currentTarget.classList.add('dragging');
-  e.dataTransfer.effectAllowed = 'move';
-}
-function onDragOver(e) {
-  e.preventDefault();
-  e.dataTransfer.dropEffect = 'move';
-  e.currentTarget.classList.add('drag-over');
-}
-function onDrop(e) {
-  e.preventDefault();
-  e.currentTarget.classList.remove('drag-over');
-  const targetIdx = +e.currentTarget.dataset.idx;
-  if (dragSrcIdx === null || dragSrcIdx === targetIdx) return;
-  const [moved] = videoData.splice(dragSrcIdx, 1);
-  videoData.splice(targetIdx, 0, moved);
-  renderVideoList();
-}
-function onDragEnd(e) {
-  e.currentTarget.classList.remove('dragging');
-  document.querySelectorAll('#video-list li').forEach(li => li.classList.remove('drag-over'));
+  // (Re-)initialize SortableJS for mouse + touch drag support
+  if (sortableInstance) sortableInstance.destroy();
+  sortableInstance = new Sortable(list, {
+    handle: '.grip',
+    animation: 150,
+    ghostClass: 'sortable-ghost',
+    chosenClass: 'sortable-chosen',
+    dragClass: 'sortable-drag',
+    onEnd: function (evt) {
+      if (evt.oldIndex === evt.newIndex) return;
+      if (query) {
+        // Filter is active: DOM indices ≠ videoData indices.
+        // Read the new visual order via data-idx (set by renderVideoList, unchanged by SortableJS).
+        const newVisibleIdxs = [...list.querySelectorAll('li')].map(li => parseInt(li.dataset.idx, 10));
+        // Sorted positions in videoData that the visible items occupy
+        const visiblePositions = newVisibleIdxs.slice().sort((a, b) => a - b);
+        const newVideoData = [...videoData];
+        for (let i = 0; i < visiblePositions.length; i++) {
+          newVideoData[visiblePositions[i]] = videoData[newVisibleIdxs[i]];
+        }
+        videoData.length = 0;
+        videoData.push(...newVideoData);
+      } else {
+        const [moved] = videoData.splice(evt.oldIndex, 1);
+        videoData.splice(evt.newIndex, 0, moved);
+      }
+      renderVideoList(query);
+    }
+  });
 }
 
 document.getElementById('save-playlist').addEventListener('click', async () => {
@@ -380,12 +472,12 @@ document.getElementById('deselect-all').addEventListener('click', () => {
 /* ── Title Suggestions Modal ─────────────────────────────────────── */
 
 function needsTitleSuggestion(v) {
+  // If the user has already set a custom title, no suggestion needed
+  if (v.title && v.title.trim()) return false;
   const name = v.file.replace(/\.[^.]+$/, '');
-  const hasTitle = v.title && v.title.trim();
-  const displayName = hasTitle ? v.title : name;
-  if (displayName.includes('_')) return true;
-  if (/version/i.test(displayName)) return true;
-  if (/\.(mp4|mkv|mov|avi|ts|flv)/i.test(displayName)) return true;
+  if (name.includes('_')) return true;
+  if (/version/i.test(name)) return true;
+  if (/\.(mp4|mkv|mov|avi|ts|flv)/i.test(name)) return true;
   if (!/^[A-Za-z]+ \d{1,2},\s*\d{4}/.test(name)) return true;
   return false;
 }
@@ -492,6 +584,11 @@ document.getElementById('sort-shuffle').addEventListener('click', () => {
   renderVideoList();
 });
 
+// Playlist search filter
+document.getElementById('playlist-search').addEventListener('input', (e) => {
+  renderVideoList(e.target.value);
+});
+
 /* ── Service Health ──────────────────────────────────────────────── */
 
 async function loadHealth() {
@@ -523,11 +620,22 @@ async function loadHealth() {
 
 let scheduleData = { timezone: 'UTC', events: [] };
 
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
+function populateTimezoneDropdown(selectedTz) {
+  const select = document.getElementById('schedule-tz');
+  if (select.options.length === 0) {
+    const timezones = ['UTC'].concat(Intl.supportedValuesOf('timeZone').filter(t => t !== 'UTC'));
+    for (const tz of timezones) {
+      const opt = document.createElement('option');
+      opt.value = tz;
+      opt.textContent = tz.replace(/_/g, ' ');
+      select.appendChild(opt);
+    }
+  }
+  if (selectedTz) select.value = selectedTz;
 }
+
+// Populate timezone options immediately so the dropdown is never empty
+populateTimezoneDropdown('UTC');
 
 async function loadSchedule() {
   try {
@@ -535,7 +643,7 @@ async function loadSchedule() {
     scheduleData = { timezone: data.timezone, events: data.events };
     document.getElementById('next-start').textContent = fmtDate(data.nextStart);
     document.getElementById('next-stop').textContent = fmtDate(data.nextStop);
-    document.getElementById('schedule-tz').value = data.timezone;
+    populateTimezoneDropdown(data.timezone);
     renderScheduleEvents();
     renderScheduleEditor();
   } catch {}
@@ -601,16 +709,24 @@ document.getElementById('add-event').addEventListener('click', () => {
 
 document.getElementById('save-schedule').addEventListener('click', async () => {
   const status = document.getElementById('schedule-status');
+  const btn = document.getElementById('save-schedule');
   collectScheduleEdits();
+  btn.disabled = true;
+  showStatus(status, 'Saving and syncing to Azure\u2026', true, true);
   try {
-    await api('/api/schedule', {
+    const result = await api('/api/schedule', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(scheduleData)
     });
-    showStatus(status, 'Schedule saved.', true);
+    if (result.syncError) {
+      showStatus(status, `Schedule saved, but Azure sync failed: ${result.syncError}`, false);
+    } else {
+      showStatus(status, 'Schedule saved and synced to Azure.', true);
+    }
     loadSchedule();
   } catch (e) { showStatus(status, e.message, false); }
+  finally { btn.disabled = false; }
 });
 
 /* ── System / Storage ────────────────────────────────────────────── */
@@ -735,38 +851,159 @@ async function uploadFile(file) {
 
 /* ── Update ───────────────────────────────────────────────────────── */
 
-document.getElementById('run-update').addEventListener('click', async () => {
+(function () {
   const btn = document.getElementById('run-update');
   const output = document.getElementById('update-output');
   const status = document.getElementById('update-status');
-  const useBeta = document.getElementById('update-beta').checked;
-  const branch = useBeta ? 'beta' : 'main';
-  btn.disabled = true;
-  btn.textContent = `Updating (${branch})...`;
-  output.style.display = 'none';
-  try {
-    const res = await fetch('/api/update', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ branch })
-    });
-    const data = await res.json();
-    output.textContent = data.output || data.error || 'No output';
-    output.style.display = '';
-    if (!res.ok) {
-      showStatus(status, data.error || 'Update failed', false);
-    } else {
-      showStatus(status, 'Update complete.', true);
-    }
-  } catch (e) {
-    showStatus(status, e.message, false);
-    output.textContent = e.message;
-    output.style.display = '';
-  } finally {
+  const actions = document.getElementById('update-actions');
+  const applyBtn = document.getElementById('apply-update');
+  const cancelBtn = document.getElementById('cancel-update');
+  const restartBtn = document.getElementById('restart-streamer-btn');
+  const restartBanner = document.getElementById('streamer-restart-banner');
+
+  function getBranch() {
+    return document.getElementById('update-beta').checked ? 'beta' : 'main';
+  }
+
+  function resetUI() {
+    actions.style.display = 'none';
     btn.disabled = false;
     btn.textContent = 'Check for Updates';
   }
-});
+
+  function showRestartBtn() {
+    if (restartBtn) restartBtn.style.display = '';
+  }
+  function hideRestartBtn() {
+    if (restartBtn) restartBtn.style.display = 'none';
+  }
+  function showRestartPending() {
+    if (restartBanner) restartBanner.style.display = '';
+    hideRestartBtn();
+  }
+
+  // Check on load if a restart is already pending
+  fetch('/api/streamer/restart-pending').then(r => r.json()).then(d => {
+    if (d.pending) showRestartPending();
+  }).catch(() => {});
+
+  // Step 1: Check for updates (fetch only, no apply)
+  btn.addEventListener('click', async () => {
+    const branch = getBranch();
+    btn.disabled = true;
+    btn.textContent = `Checking (${branch})...`;
+    output.style.display = 'none';
+    actions.style.display = 'none';
+    status.textContent = '';
+    try {
+      const res = await fetch('/api/update/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ branch })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showStatus(status, data.error || 'Check failed', false);
+        output.textContent = data.output || '';
+        output.style.display = data.output ? '' : 'none';
+        resetUI();
+        return;
+      }
+      if (data.upToDate) {
+        showStatus(status, `Already up to date on ${branch} (${data.localHead.slice(0, 7)}).`, true);
+        output.style.display = 'none';
+        resetUI();
+        return;
+      }
+      // Show available changes
+      let text = `Branch: ${branch}\n`;
+      text += `Current: ${data.localHead} → Latest: ${data.remoteHead}\n\n`;
+      text += `Commits:\n${data.commits}\n\n`;
+      text += `Files changed:\n${data.diffStat}`;
+      output.textContent = text;
+      output.style.display = '';
+      actions.style.display = '';
+      btn.disabled = true;
+      btn.textContent = 'Check for Updates';
+    } catch (e) {
+      showStatus(status, e.message, false);
+      resetUI();
+    }
+  });
+
+  // Step 2a: Apply update
+  applyBtn.addEventListener('click', async () => {
+    const branch = getBranch();
+    applyBtn.disabled = true;
+    cancelBtn.disabled = true;
+    applyBtn.textContent = `Applying (${branch})...`;
+    try {
+      const res = await fetch('/api/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ branch })
+      });
+      let data;
+      try { data = await res.json(); } catch {
+        showStatus(status, 'Update applied — server restarted.', true);
+        output.textContent = 'The server restarted to apply the update. This page will reload shortly.';
+        setTimeout(() => location.reload(), 3000);
+        return;
+      }
+      output.textContent = data.output || data.error || 'No output';
+      if (!res.ok) {
+        showStatus(status, data.error || 'Update failed', false);
+      } else {
+        showStatus(status, 'Update complete. Reloading...', true);
+        if (data.streamerPending) showRestartBtn();
+        setTimeout(() => location.reload(true), 6000);
+      }
+    } catch (e) {
+      showStatus(status, 'Update applied — server restarted.', true);
+      output.textContent = 'Connection lost during update (server restarted). This page will reload shortly.';
+      setTimeout(() => location.reload(), 3000);
+      return;
+    } finally {
+      actions.style.display = 'none';
+      applyBtn.disabled = false;
+      cancelBtn.disabled = false;
+      applyBtn.textContent = 'Apply Update';
+      resetUI();
+    }
+  });
+
+  // Step 2b: Cancel
+  cancelBtn.addEventListener('click', () => {
+    output.style.display = 'none';
+    actions.style.display = 'none';
+    status.textContent = '';
+    resetUI();
+  });
+
+  // Restart streamer after current video
+  if (restartBtn) {
+    restartBtn.addEventListener('click', async () => {
+      restartBtn.disabled = true;
+      restartBtn.textContent = 'Scheduling...';
+      try {
+        const res = await fetch('/api/streamer/restart-after-current', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) {
+          showRestartPending();
+          showStatus(status, 'Streamer will restart after the current video finishes.', true);
+        } else {
+          restartBtn.disabled = false;
+          restartBtn.textContent = 'Restart Streamer After Current Video';
+          showStatus(status, data.error || 'Failed to schedule restart', false);
+        }
+      } catch (e) {
+        restartBtn.disabled = false;
+        restartBtn.textContent = 'Restart Streamer After Current Video';
+        showStatus(status, e.message, false);
+      }
+    });
+  }
+})();
 
 /* ── Dark Mode ────────────────────────────────────────────────────── */
 

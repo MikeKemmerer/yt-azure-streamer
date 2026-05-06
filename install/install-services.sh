@@ -146,36 +146,7 @@ AA="${PREFIX}-automation"
 
 az login --identity >/dev/null 2>&1
 
-# Ensure required PowerShell modules are imported into the Automation Account
-# Az.Accounts is needed for Connect-AzAccount -Identity
-# Az.Compute is needed for Start-AzVM / Stop-AzVM
-echo "  Importing Az modules into Automation Account (if not present)..."
 SUB=$(az account show --query id -o tsv)
-for MODULE in Az.Accounts Az.Compute; do
-  STATE=$(az rest --method GET \
-    --url "/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Automation/automationAccounts/$AA/modules/${MODULE}?api-version=2023-11-01" \
-    --query properties.provisioningState -o tsv 2>/dev/null || echo "NotFound")
-  if [ "$STATE" != "Succeeded" ] && [ "$STATE" != "Creating" ]; then
-    echo "  Importing $MODULE..."
-    az rest --method PUT \
-      --url "/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Automation/automationAccounts/$AA/modules/${MODULE}?api-version=2023-11-01" \
-      --body "{\"properties\":{\"contentLink\":{\"uri\":\"https://www.powershellgallery.com/api/v2/package/${MODULE}\"}}}" \
-      >/dev/null 2>&1 || echo "  WARNING: Failed to import $MODULE"
-  else
-    echo "  $MODULE already present (state: $STATE)"
-  fi
-  # Az.Compute depends on Az.Accounts — wait for it to finish
-  if [ "$MODULE" = "Az.Accounts" ]; then
-    echo "  Waiting for Az.Accounts to finish importing..."
-    for i in $(seq 1 30); do
-      S=$(az rest --method GET \
-        --url "/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Automation/automationAccounts/$AA/modules/Az.Accounts?api-version=2023-11-01" \
-        --query properties.provisioningState -o tsv 2>/dev/null || echo "Unknown")
-      [ "$S" = "Succeeded" ] && break
-      sleep 10
-    done
-  fi
-done
 
 BASE_URL="/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Automation/automationAccounts/$AA"
 LOCATION=$(az rest --method GET --url "$BASE_URL?api-version=2023-11-01" --query location -o tsv 2>/dev/null || echo "westus2")
