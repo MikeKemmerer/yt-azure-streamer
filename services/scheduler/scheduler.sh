@@ -8,6 +8,7 @@ set -euo pipefail
 SCHEDULE_FILE="/etc/yt/schedule.json"
 CHECK_INTERVAL=30  # seconds between checks
 MANUAL_OVERRIDE="/run/streamer-manual-override"
+MANUAL_STOP="/run/streamer-manual-stop"
 
 PREFIX=$(cat /etc/yt/nameprefix 2>/dev/null || echo "unknown")
 echo "Scheduler starting with prefix: $PREFIX"
@@ -91,11 +92,19 @@ while true; do
       echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) Entered scheduled window — clearing manual override"
       rm -f "$MANUAL_OVERRIDE"
     fi
-    if ! stream_is_running; then
+    # Respect manual stop — user explicitly stopped during this window
+    if [[ -f "$MANUAL_STOP" ]]; then
+      :
+    elif ! stream_is_running; then
       echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) Schedule active — starting streamer..."
       systemctl start streamer.service || true
     fi
   else
+    # Outside schedule window — clear manual stop (it only applies to the window it was set in)
+    if [[ -f "$MANUAL_STOP" ]]; then
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) Outside schedule — clearing manual stop"
+      rm -f "$MANUAL_STOP"
+    fi
     if stream_is_running; then
       if [[ -f "$MANUAL_OVERRIDE" ]]; then
         # Streamer was started manually — leave it running
