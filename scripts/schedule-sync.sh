@@ -245,9 +245,9 @@ for sched in existing_data.get("value", []):
     # Only consider schedules that look like ours
     if not (name.endswith("-start") or name.endswith("-stop")):
         continue
-    props = sched.get("properties", {})
-    adv = props.get("advancedSchedule", {})
-    week_days = adv.get("weekDays", [])
+    props = sched.get("properties") or {}
+    adv = props.get("advancedSchedule") or {}
+    week_days = adv.get("weekDays") or []
     start_time = props.get("startTime", "")
     tz_name = props.get("timeZone", "UTC")
     # Parse hour:minute from startTime
