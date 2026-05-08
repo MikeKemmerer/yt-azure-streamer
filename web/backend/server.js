@@ -818,7 +818,7 @@ const server = http.createServer(async (req, res) => {
       let branch = 'main';
       try {
         const parsed = JSON.parse(body);
-        if (parsed.branch && /^[a-zA-Z0-9._-]+$/.test(parsed.branch)) {
+        if (parsed.branch && /^[a-zA-Z0-9._\/-]+$/.test(parsed.branch)) {
           branch = parsed.branch;
         }
       } catch { /* default to main */ }
@@ -867,7 +867,7 @@ const server = http.createServer(async (req, res) => {
       let branch = 'main';
       try {
         const parsed = JSON.parse(body);
-        if (parsed.branch && /^[a-zA-Z0-9._-]+$/.test(parsed.branch)) {
+        if (parsed.branch && /^[a-zA-Z0-9._\/-]+$/.test(parsed.branch)) {
           branch = parsed.branch;
         }
       } catch { /* default to main */ }
