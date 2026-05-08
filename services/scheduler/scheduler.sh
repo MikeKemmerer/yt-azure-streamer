@@ -4,11 +4,17 @@ set -euo pipefail
 # Scheduler daemon: reads /etc/yt/schedule.json and starts/stops
 # streamer.service based on the current time window.
 # Runs continuously under systemd (Type=simple, Restart=always).
+#
+# Supports dual-stream scheduling: events may target specific streams
+# (landscape, portrait, or both). Signal files in /run/ tell the streamer
+# which outputs to activate.
 
 SCHEDULE_FILE="/etc/yt/schedule.json"
 CHECK_INTERVAL=30  # seconds between checks
 MANUAL_OVERRIDE="/run/streamer-manual-override"
 MANUAL_STOP="/run/streamer-manual-stop"
+ACTIVE_LANDSCAPE="/run/streamer-active-landscape"
+ACTIVE_PORTRAIT="/run/streamer-active-portrait"
 
 PREFIX=$(cat /etc/yt/nameprefix 2>/dev/null || echo "unknown")
 echo "Scheduler starting with prefix: $PREFIX"
@@ -17,8 +23,9 @@ stream_is_running() {
   systemctl is-active --quiet streamer.service 2>/dev/null
 }
 
-# Returns exit 0 if we are inside a scheduled stream window, else exit 1.
-should_stream_now() {
+# Returns a space-separated list of active stream profiles ("landscape", "portrait", or both)
+# to stdout. Exit 0 if any stream should be active, exit 1 if none.
+get_active_streams() {
   [[ -f "$SCHEDULE_FILE" ]] || return 1
   python3 - "$SCHEDULE_FILE" <<'PYEOF'
 import sys, json, datetime
@@ -44,6 +51,8 @@ now = datetime.datetime.now(tz=tz)
 today_str = now.strftime("%Y-%m-%d")
 day_map = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
 
+active_streams = set()
+
 # Check overrides first — if today has an override, use it instead of weekly schedule
 for override in schedule.get("overrides", []):
     if override.get("date") != today_str:
@@ -66,6 +75,12 @@ for override in schedule.get("overrides", []):
     start_t = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
     stop_t  = now.replace(hour=eh, minute=em, second=0, microsecond=0)
     if start_t <= now < stop_t:
+        streams = override.get("streams", ["landscape"])
+        for s in streams:
+            active_streams.add(s)
+    # Override found for today — don't check weekly events
+    if active_streams:
+        print(" ".join(sorted(active_streams)))
         sys.exit(0)
     sys.exit(1)
 
@@ -79,32 +94,60 @@ for event in schedule.get("events", []):
     start_t = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
     stop_t  = now.replace(hour=eh, minute=em, second=0, microsecond=0)
     if start_t <= now < stop_t:
-        sys.exit(0)  # Inside a streaming window
+        streams = event.get("streams", ["landscape"])
+        for s in streams:
+            active_streams.add(s)
 
+if active_streams:
+    print(" ".join(sorted(active_streams)))
+    sys.exit(0)
 sys.exit(1)  # Not in any streaming window
 PYEOF
 }
 
+update_stream_signals() {
+  local active_streams="$1"
+  # Update landscape signal
+  if echo "$active_streams" | grep -qw landscape; then
+    [[ -f "$ACTIVE_LANDSCAPE" ]] || touch "$ACTIVE_LANDSCAPE"
+  else
+    rm -f "$ACTIVE_LANDSCAPE"
+  fi
+  # Update portrait signal
+  if echo "$active_streams" | grep -qw portrait; then
+    [[ -f "$ACTIVE_PORTRAIT" ]] || touch "$ACTIVE_PORTRAIT"
+  else
+    rm -f "$ACTIVE_PORTRAIT"
+  fi
+}
+
 while true; do
-  if should_stream_now; then
+  ACTIVE_STREAMS=""
+  if ACTIVE_STREAMS=$(get_active_streams); then
     # Inside a schedule window — clear any manual override (schedule takes over)
     if [[ -f "$MANUAL_OVERRIDE" ]]; then
       echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) Entered scheduled window — clearing manual override"
       rm -f "$MANUAL_OVERRIDE"
     fi
+
+    # Update per-stream signal files
+    update_stream_signals "$ACTIVE_STREAMS"
+
     # Respect manual stop — user explicitly stopped during this window
     if [[ -f "$MANUAL_STOP" ]]; then
       :
     elif ! stream_is_running; then
-      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) Schedule active — starting streamer..."
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) Schedule active (streams: $ACTIVE_STREAMS) — starting streamer..."
       systemctl start streamer.service || true
     fi
   else
-    # Outside schedule window — clear manual stop (it only applies to the window it was set in)
+    # Outside schedule window — clear manual stop and stream signals
     if [[ -f "$MANUAL_STOP" ]]; then
       echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) Outside schedule — clearing manual stop"
       rm -f "$MANUAL_STOP"
     fi
+    rm -f "$ACTIVE_LANDSCAPE" "$ACTIVE_PORTRAIT"
+
     if stream_is_running; then
       if [[ -f "$MANUAL_OVERRIDE" ]]; then
         # Streamer was started manually — leave it running

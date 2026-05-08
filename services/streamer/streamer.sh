@@ -4,8 +4,13 @@ set -euo pipefail
 # Streamer service: plays videos from blobfuse2 in playlist order to YouTube
 # RTMP, with bookmark-based resume and configurable max resolution.
 #
+# Supports dual-stream output: landscape (16:9) and portrait (9:16, 1080x1920)
+# with independent stream keys and schedules. Both outputs play the same video
+# in sync. The scheduler writes signal files to indicate which streams are active.
+#
 # Config is read from /etc/yt/schedule.json:
-#   "stream": { "max_resolution": "720p" }
+#   "stream": { "max_resolution": "720p" }                   (legacy settings)
+#   "streams": { "landscape": {...}, "portrait": {...} }      (per-stream config)
 #
 # Supported resolutions: 144p 240p 360p 480p 720p 1080p 1440p 2160p
 # Videos below max_resolution are NOT upsampled.
@@ -66,34 +71,85 @@ BUFSIZE="${RES_BUFSIZE[$MAX_RES]}"
 AUDIO_BR="${RES_AUDIO[$MAX_RES]}"
 echo "Max resolution: $MAX_RES (${MAX_H}p, maxrate=$MAXRATE)"
 
-# --- Fetch YouTube stream key ---
-if [[ "$MODE" == "local" ]]; then
-  echo "Reading stream key from /etc/yt/secrets/stream-key..."
-  STREAM_KEY=$(cat /etc/yt/secrets/stream-key 2>/dev/null | tr -d '[:space:]')
-  if [[ -z "$STREAM_KEY" ]]; then
-    echo "ERROR: Stream key not found at /etc/yt/secrets/stream-key"
-    echo "       Set it with: echo 'YOUR_KEY' | sudo tee /etc/yt/secrets/stream-key"
-    exit 1
+# --- Read per-stream config ---
+LANDSCAPE_KEY_NAME="youtube-stream-key"
+PORTRAIT_KEY_NAME="youtube-stream-key-portrait"
+PORTRAIT_CHURCH_NAME="Saint Demetrios Greek Orthodox Church"
+PORTRAIT_CHURCH_LOCATION="Seattle, Washington"
+LANDSCAPE_STREAM_NAME="Main Stream"
+PORTRAIT_STREAM_NAME="Shorts / Vertical"
+if [[ -f "$CONFIG_FILE" ]]; then
+  eval "$(python3 -c "
+import json
+try:
+  cfg = json.load(open('$CONFIG_FILE'))
+  streams = cfg.get('streams', {})
+  l = streams.get('landscape', {})
+  p = streams.get('portrait', {})
+  # Escape single quotes for bash
+  def esc(s): return str(s).replace(\"'\", \"'\\\\\\\"'\\\\\\\"'\")
+  print(f\"LANDSCAPE_KEY_NAME='{esc(l.get('stream_key_name', 'youtube-stream-key'))}'\")
+  print(f\"PORTRAIT_KEY_NAME='{esc(p.get('stream_key_name', 'youtube-stream-key-portrait'))}'\")
+  print(f\"PORTRAIT_CHURCH_NAME='{esc(p.get('church_name', 'Saint Demetrios Greek Orthodox Church'))}'\")
+  print(f\"PORTRAIT_CHURCH_LOCATION='{esc(p.get('church_location', 'Seattle, Washington'))}'\")
+  print(f\"LANDSCAPE_STREAM_NAME='{esc(l.get('name', 'Main Stream'))}'\")
+  print(f\"PORTRAIT_STREAM_NAME='{esc(p.get('name', 'Shorts / Vertical'))}'\")
+except: pass
+" 2>/dev/null)"
+fi
+echo "Landscape key name: $LANDSCAPE_KEY_NAME ($LANDSCAPE_STREAM_NAME)"
+echo "Portrait key name: $PORTRAIT_KEY_NAME ($PORTRAIT_STREAM_NAME)"
+
+# --- Fetch YouTube stream keys ---
+fetch_stream_key() {
+  local key_name="$1"
+  local display_name="$2"
+  if [[ "$MODE" == "local" ]]; then
+    local key_file="/etc/yt/secrets/$key_name"
+    local key
+    key=$(cat "$key_file" 2>/dev/null | tr -d '[:space:]')
+    if [[ -z "$key" ]]; then
+      echo "WARNING: Stream key not found at $key_file ($display_name)"
+      return 1
+    fi
+    echo "$key"
+  else
+    local key
+    key=$(az keyvault secret show \
+      --vault-name "$KV_NAME" \
+      --name "$key_name" \
+      --query value \
+      -o tsv 2>/dev/null || true)
+    if [[ -z "$key" ]]; then
+      echo "WARNING: '$key_name' secret not found in Key Vault '$KV_NAME' ($display_name)" >&2
+      return 1
+    fi
+    echo "$key"
   fi
-else
-  echo "Fetching stream key from Key Vault '$KV_NAME'..."
+}
+
+if [[ "$MODE" != "local" ]]; then
+  echo "Logging in with managed identity..."
   az login --identity >/dev/null 2>&1
-
-  STREAM_KEY=$(az keyvault secret show \
-    --vault-name "$KV_NAME" \
-    --name "youtube-stream-key" \
-    --query value \
-    -o tsv 2>/dev/null || true)
-
-  if [[ -z "$STREAM_KEY" ]]; then
-    echo "ERROR: 'youtube-stream-key' secret not found in Key Vault '$KV_NAME'."
-    echo "       Set it with:"
-    echo "         az keyvault secret set --vault-name $KV_NAME --name youtube-stream-key --value <YOUR_KEY>"
-    exit 1
-  fi
 fi
 
-RTMP_URL="rtmp://a.rtmp.youtube.com/live2/${STREAM_KEY}"
+LANDSCAPE_KEY=""
+PORTRAIT_KEY=""
+LANDSCAPE_KEY=$(fetch_stream_key "$LANDSCAPE_KEY_NAME" "$LANDSCAPE_STREAM_NAME") || true
+PORTRAIT_KEY=$(fetch_stream_key "$PORTRAIT_KEY_NAME" "$PORTRAIT_STREAM_NAME") || true
+
+if [[ -z "$LANDSCAPE_KEY" && -z "$PORTRAIT_KEY" ]]; then
+  echo "ERROR: No stream keys available. At least one stream key is required."
+  exit 1
+fi
+
+LANDSCAPE_RTMP=""
+PORTRAIT_RTMP=""
+[[ -n "$LANDSCAPE_KEY" ]] && LANDSCAPE_RTMP="rtmp://a.rtmp.youtube.com/live2/${LANDSCAPE_KEY}"
+[[ -n "$PORTRAIT_KEY" ]] && PORTRAIT_RTMP="rtmp://a.rtmp.youtube.com/live2/${PORTRAIT_KEY}"
+
+echo "Landscape RTMP: ${LANDSCAPE_RTMP:+configured}${LANDSCAPE_RTMP:-NOT AVAILABLE}"
+echo "Portrait RTMP: ${PORTRAIT_RTMP:+configured}${PORTRAIT_RTMP:-NOT AVAILABLE}"
 
 # --- Read shuffle config ---
 SHUFFLE_FLAG=""
@@ -374,7 +430,7 @@ with open('$NOW_FILE', 'w') as f:
     json.dump({'file': sys.argv[1], 'startedAt': int(sys.argv[2]), 'duration': int(sys.argv[3])}, f)
 " "$VIDEO" "$(date +%s)" "${DURATION:-0}"
 
-  # Build filter_complex: apply filters, split into stream + preview
+  # Build filter_complex: apply filters, split into stream + preview + optional portrait
   PREVIEW_FILE="/opt/yt/web/frontend/stream-preview.jpg"
   VF_STRING=""
   if [[ ${#VF_PARTS[@]} -gt 0 ]]; then
@@ -395,19 +451,92 @@ with open('$NOW_FILE', 'w') as f:
     AUDIO_FILTER="[0:a:0]loudnorm=I=-14:TP=-1:LRA=11[audio]"
   fi
 
-  FILTER_COMPLEX="[0:v]${VF_STRING}split=2[stream][prev];[prev]fps=1/10,scale=640:-2[preview];${AUDIO_FILTER}"
+  # --- Determine which streams are active ---
+  STREAM_LANDSCAPE=false
+  STREAM_PORTRAIT=false
+  if [[ -f /run/streamer-active-landscape && -n "$LANDSCAPE_RTMP" ]]; then
+    STREAM_LANDSCAPE=true
+  fi
+  if [[ -f /run/streamer-active-portrait && -n "$PORTRAIT_RTMP" ]]; then
+    STREAM_PORTRAIT=true
+  fi
+
+  # Fallback: if scheduler hasn't written signal files, use landscape if available
+  if [[ "$STREAM_LANDSCAPE" == false && "$STREAM_PORTRAIT" == false ]]; then
+    if [[ -n "$LANDSCAPE_RTMP" ]]; then
+      STREAM_LANDSCAPE=true
+    elif [[ -n "$PORTRAIT_RTMP" ]]; then
+      STREAM_PORTRAIT=true
+    fi
+  fi
+
+  echo "  Active streams: landscape=$STREAM_LANDSCAPE portrait=$STREAM_PORTRAIT"
+
+  # --- Build filter_complex and output args based on active streams ---
+  OUTPUT_ARGS=()
+
+  if [[ "$STREAM_LANDSCAPE" == true && "$STREAM_PORTRAIT" == true ]]; then
+    # Dual output: split video into landscape + portrait + preview
+    # Portrait: scale video to fit 1080w, pad into 1080x1920 canvas with church text
+    PORTRAIT_FONT_SERIF="$WM_FONT_SERIF"
+    PORTRAIT_FONT_SANS="$WM_FONT_SANS"
+    FILTER_COMPLEX="[0:v]${VF_STRING}split=3[land][port_src][prev];\
+[prev]fps=1/10,scale=640:-2[preview];\
+[port_src]scale=1080:-2:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:656:black,\
+drawtext=fontfile=${PORTRAIT_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=42:fontcolor=white:x=(w-tw)/2:y=180,\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=32:fontcolor=white@0.85:x=(w-tw)/2:y=240[portrait];\
+${AUDIO_FILTER}"
+    OUTPUT_ARGS+=(
+      -map "[land]" -map "[audio]"
+      -c:v libx264 -preset veryfast -maxrate "$MAXRATE" -bufsize "$BUFSIZE"
+      -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
+      -c:a aac -b:a "$AUDIO_BR" -ar 44100
+      -f flv "$LANDSCAPE_RTMP"
+      -map "[portrait]" -map "[audio]"
+      -c:v libx264 -preset veryfast -maxrate 5000k -bufsize 10000k
+      -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
+      -c:a aac -b:a 192k -ar 44100
+      -f flv "$PORTRAIT_RTMP"
+      -map "[preview]"
+      -update 1 -q:v 3 "$PREVIEW_FILE"
+    )
+  elif [[ "$STREAM_LANDSCAPE" == true ]]; then
+    # Landscape only (original behavior)
+    FILTER_COMPLEX="[0:v]${VF_STRING}split=2[stream][prev];[prev]fps=1/10,scale=640:-2[preview];${AUDIO_FILTER}"
+    OUTPUT_ARGS+=(
+      -map "[stream]" -map "[audio]"
+      -c:v libx264 -preset veryfast -maxrate "$MAXRATE" -bufsize "$BUFSIZE"
+      -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
+      -c:a aac -b:a "$AUDIO_BR" -ar 44100
+      -f flv "$LANDSCAPE_RTMP"
+      -map "[preview]"
+      -update 1 -q:v 3 "$PREVIEW_FILE"
+    )
+  elif [[ "$STREAM_PORTRAIT" == true ]]; then
+    # Portrait only
+    PORTRAIT_FONT_SERIF="$WM_FONT_SERIF"
+    PORTRAIT_FONT_SANS="$WM_FONT_SANS"
+    FILTER_COMPLEX="[0:v]${VF_STRING}split=2[port_src][prev];\
+[prev]fps=1/10,scale=640:-2[preview];\
+[port_src]scale=1080:-2:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:656:black,\
+drawtext=fontfile=${PORTRAIT_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=42:fontcolor=white:x=(w-tw)/2:y=180,\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=32:fontcolor=white@0.85:x=(w-tw)/2:y=240[portrait];\
+${AUDIO_FILTER}"
+    OUTPUT_ARGS+=(
+      -map "[portrait]" -map "[audio]"
+      -c:v libx264 -preset veryfast -maxrate 5000k -bufsize 10000k
+      -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
+      -c:a aac -b:a 192k -ar 44100
+      -f flv "$PORTRAIT_RTMP"
+      -map "[preview]"
+      -update 1 -q:v 3 "$PREVIEW_FILE"
+    )
+  fi
 
   # Always re-encode to guarantee keyframes every 2 seconds (YouTube requires ≤4s)
-  # The split sends the same filtered video to both RTMP and a periodic JPEG preview
   ffmpeg -y -re -i "$VIDEO" "${EXTRA_INPUTS[@]}" \
     -filter_complex "$FILTER_COMPLEX" \
-    -map "[stream]" -map "[audio]" \
-    -c:v libx264 -preset veryfast -maxrate "$MAXRATE" -bufsize "$BUFSIZE" \
-    -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)" \
-    -c:a aac -b:a "$AUDIO_BR" -ar 44100 \
-    -f flv "$RTMP_URL" \
-    -map "[preview]" \
-    -update 1 -q:v 3 "$PREVIEW_FILE" </dev/null || true
+    "${OUTPUT_ARGS[@]}" </dev/null || true
 
   # Update bookmark after each video completes (or is interrupted)
   python3 -c "

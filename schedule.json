@@ -5,12 +5,31 @@
       "name": "Stream Session",
       "start": "18:00",
       "stop": "20:00",
-      "days": ["Mon", "Wed", "Fri"]
+      "days": ["Mon", "Wed", "Fri"],
+      "streams": ["landscape"]
     }
   ],
   "overrides": [],
   "stream": {
     "max_resolution": "720p",
     "shuffle": false
+  },
+  "streams": {
+    "landscape": {
+      "name": "Main Stream",
+      "stream_key_name": "youtube-stream-key",
+      "max_resolution": "720p",
+      "shuffle": false,
+      "watermark": false
+    },
+    "portrait": {
+      "name": "Shorts / Vertical",
+      "stream_key_name": "youtube-stream-key-portrait",
+      "max_resolution": "1080p",
+      "shuffle": false,
+      "watermark": false,
+      "church_name": "Saint Demetrios Greek Orthodox Church",
+      "church_location": "Seattle, Washington"
+    }
   }
 }

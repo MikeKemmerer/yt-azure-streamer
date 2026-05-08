@@ -123,6 +123,17 @@ async function refreshStreamerStatus() {
     if (data.active && data.nowPlaying) {
       nowTitle.textContent = data.nowPlaying;
       nowPlaying.style.display = '';
+      // Active stream badges
+      const activeStreamsEl = document.getElementById('active-streams');
+      const landBadge = document.getElementById('stream-badge-landscape');
+      const portBadge = document.getElementById('stream-badge-portrait');
+      if (data.activeStreams) {
+        activeStreamsEl.style.display = '';
+        landBadge.style.display = data.activeStreams.landscape ? '' : 'none';
+        portBadge.style.display = data.activeStreams.portrait ? '' : 'none';
+      } else {
+        activeStreamsEl.style.display = 'none';
+      }
       // Progress + preview
       if (data.progress && data.progress.duration > 0) {
         progressState = { elapsed: data.progress.elapsed, duration: data.progress.duration, lastSync: Date.now() };
@@ -146,6 +157,7 @@ async function refreshStreamerStatus() {
       preview.style.display = 'none';
       progressBarContainer.style.display = 'none';
       progressTime.style.display = 'none';
+      document.getElementById('active-streams').style.display = 'none';
       stopProgressTicker();
     }
 
@@ -252,21 +264,24 @@ document.getElementById('restart-streamer').addEventListener('click', async () =
   finally { btn.disabled = false; }
 });
 
-/* ── Stream Key ──────────────────────────────────────────────────── */
+/* ── Stream Keys ─────────────────────────────────────────────────── */
 
-document.getElementById('stream-key-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const status = document.getElementById('stream-key-status');
-  const input = document.getElementById('stream-key-input');
-  try {
-    await api('/api/stream-key', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ streamKey: input.value })
-    });
-    input.value = '';
-    showStatus(status, 'Stream key updated.', true);
-  } catch (e) { showStatus(status, e.message, false); }
+document.querySelectorAll('.stream-key-form').forEach(form => {
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const status = document.getElementById('stream-key-status');
+    const profile = form.dataset.profile;
+    const input = form.querySelector('input');
+    try {
+      await api('/api/stream-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ streamKey: input.value, profile })
+      });
+      input.value = '';
+      showStatus(status, `Stream key updated (${profile}).`, true);
+    } catch (e) { showStatus(status, e.message, false); }
+  });
 });
 
 /* ── Settings ────────────────────────────────────────────────────── */
@@ -277,6 +292,13 @@ async function loadSettings() {
     document.getElementById('max-resolution').value = data.max_resolution;
     document.getElementById('shuffle-toggle').checked = data.shuffle;
     document.getElementById('watermark-toggle').checked = data.watermark;
+    // Update stream key labels with configured names
+    if (data.streams) {
+      const landLabel = document.getElementById('landscape-key-label');
+      const portLabel = document.getElementById('portrait-key-label');
+      if (data.streams.landscape?.name) landLabel.textContent = data.streams.landscape.name;
+      if (data.streams.portrait?.name) portLabel.textContent = data.streams.portrait.name;
+    }
   } catch { /* use defaults */ }
 }
 
@@ -662,9 +684,10 @@ function renderScheduleEvents() {
     el.innerHTML = '<p class="hint">No events configured.</p>';
     return;
   }
-  let html = '<table class="schedule-table"><tr><th>Name</th><th>Days</th><th>Start</th><th>Stop</th></tr>';
+  let html = '<table class="schedule-table"><tr><th>Name</th><th>Days</th><th>Start</th><th>Stop</th><th>Streams</th></tr>';
   for (const e of scheduleData.events) {
-    html += `<tr><td>${esc(e.name)}</td><td>${e.days.join(', ')}</td><td>${e.start}</td><td>${e.stop}</td></tr>`;
+    const streams = (e.streams || ['landscape']).join(', ');
+    html += `<tr><td>${esc(e.name)}</td><td>${e.days.join(', ')}</td><td>${e.start}</td><td>${e.stop}</td><td>${esc(streams)}</td></tr>`;
   }
   html += '</table>';
   el.innerHTML = html;
@@ -675,7 +698,9 @@ const ALL_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 function renderScheduleEditor() {
   const list = document.getElementById('schedule-event-list');
   list.innerHTML = '';
+  const ALL_STREAMS = ['landscape', 'portrait'];
   scheduleData.events.forEach((evt, i) => {
+    const evtStreams = evt.streams || ['landscape'];
     const div = document.createElement('div');
     div.className = 'event-editor';
     div.innerHTML = `
@@ -684,6 +709,9 @@ function renderScheduleEditor() {
       <input type="time" value="${evt.stop}" data-field="stop">
       <div class="day-checks">${ALL_DAYS.map(d =>
         `<label class="day-label"><input type="checkbox" value="${d}" ${evt.days.includes(d) ? 'checked' : ''}>${d}</label>`
+      ).join('')}</div>
+      <div class="stream-checks">${ALL_STREAMS.map(s =>
+        `<label class="stream-label"><input type="checkbox" value="${s}" data-stream ${evtStreams.includes(s) ? 'checked' : ''}>${s}</label>`
       ).join('')}</div>
       <button class="secondary remove-event" data-idx="${i}">&#10005;</button>
     `;
@@ -704,13 +732,14 @@ function collectScheduleEdits() {
     name: div.querySelector('[data-field="name"]').value,
     start: div.querySelector('[data-field="start"]').value,
     stop: div.querySelector('[data-field="stop"]').value,
-    days: Array.from(div.querySelectorAll('.day-checks input:checked')).map(cb => cb.value)
-  })).filter(e => e.name && e.start && e.stop && e.days.length);
+    days: Array.from(div.querySelectorAll('.day-checks input:checked')).map(cb => cb.value),
+    streams: Array.from(div.querySelectorAll('[data-stream]:checked')).map(cb => cb.value)
+  })).filter(e => e.name && e.start && e.stop && e.days.length && e.streams.length);
 }
 
 document.getElementById('add-event').addEventListener('click', () => {
   collectScheduleEdits();
-  scheduleData.events.push({ name: 'New Event', start: '18:00', stop: '20:00', days: ['Mon', 'Wed', 'Fri'] });
+  scheduleData.events.push({ name: 'New Event', start: '18:00', stop: '20:00', days: ['Mon', 'Wed', 'Fri'], streams: ['landscape'] });
   renderScheduleEditor();
 });
 

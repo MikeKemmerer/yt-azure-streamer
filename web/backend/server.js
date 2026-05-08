@@ -24,6 +24,8 @@ const PREVIEW_FILE = '/opt/yt/web/frontend/stream-preview.jpg';
 const MODE_FILE = '/etc/yt/mode';
 const LOCAL_CONF = '/etc/yt/local.conf';
 const STREAM_KEY_FILE = '/etc/yt/secrets/stream-key';
+const ACTIVE_LANDSCAPE = '/run/streamer-active-landscape';
+const ACTIVE_PORTRAIT = '/run/streamer-active-portrait';
 
 function readMode() {
   try { return fs.readFileSync(MODE_FILE, 'utf8').trim(); } catch { return 'azure'; }
@@ -214,13 +216,25 @@ const server = http.createServer(async (req, res) => {
         return jsonResponse(res, 400, { error: 'Invalid JSON' });
       }
       const key = parsed.streamKey;
+      const profile = parsed.profile || 'landscape';  // 'landscape' or 'portrait'
       if (!key || typeof key !== 'string' || key.length < 4 || key.length > 256) {
         return jsonResponse(res, 400, { error: 'streamKey must be 4-256 characters' });
       }
+      if (!['landscape', 'portrait'].includes(profile)) {
+        return jsonResponse(res, 400, { error: 'profile must be "landscape" or "portrait"' });
+      }
+
+      // Determine key name from streams config
+      const schedule = readSchedule();
+      const streams = schedule.streams || {};
+      const streamCfg = streams[profile] || {};
+      const keyName = streamCfg.stream_key_name || (profile === 'portrait' ? 'youtube-stream-key-portrait' : 'youtube-stream-key');
+
       if (readMode() === 'local') {
         try {
-          fs.writeFileSync(STREAM_KEY_FILE, key + '\n', { mode: 0o600 });
-          return jsonResponse(res, 200, { ok: true });
+          const keyFile = `/etc/yt/secrets/${keyName}`;
+          fs.writeFileSync(keyFile, key + '\n', { mode: 0o600 });
+          return jsonResponse(res, 200, { ok: true, profile });
         } catch (e) {
           return jsonResponse(res, 500, { error: 'Failed to write stream key: ' + e.message });
         }
@@ -228,11 +242,11 @@ const server = http.createServer(async (req, res) => {
       const vault = kvName();
       execFile('az', [
         'keyvault', 'secret', 'set',
-        '--vault-name', vault, '--name', 'youtube-stream-key',
+        '--vault-name', vault, '--name', keyName,
         '--value', key, '-o', 'none'
       ], { timeout: 30000 }, (err) => {
-        if (err) return jsonResponse(res, 500, { error: 'Failed to update stream key in Key Vault' });
-        jsonResponse(res, 200, { ok: true });
+        if (err) return jsonResponse(res, 500, { error: `Failed to update stream key '${keyName}' in Key Vault` });
+        jsonResponse(res, 200, { ok: true, profile });
       });
       return;
     }
@@ -243,7 +257,8 @@ const server = http.createServer(async (req, res) => {
       jsonResponse(res, 200, {
         max_resolution: schedule.stream?.max_resolution || '720p',
         shuffle: schedule.stream?.shuffle || false,
-        watermark: schedule.stream?.watermark || false
+        watermark: schedule.stream?.watermark || false,
+        streams: schedule.streams || {}
       });
       return;
     }
@@ -269,11 +284,27 @@ const server = http.createServer(async (req, res) => {
       if (parsed.watermark !== undefined) {
         schedule.stream.watermark = !!parsed.watermark;
       }
+      // Per-stream config updates
+      if (parsed.streams && typeof parsed.streams === 'object') {
+        if (!schedule.streams) schedule.streams = {};
+        for (const profile of ['landscape', 'portrait']) {
+          if (parsed.streams[profile] && typeof parsed.streams[profile] === 'object') {
+            if (!schedule.streams[profile]) schedule.streams[profile] = {};
+            const src = parsed.streams[profile];
+            const dst = schedule.streams[profile];
+            if (src.name !== undefined) dst.name = String(src.name).slice(0, 100);
+            if (src.stream_key_name !== undefined) dst.stream_key_name = String(src.stream_key_name).slice(0, 100);
+            if (src.church_name !== undefined) dst.church_name = String(src.church_name).slice(0, 200);
+            if (src.church_location !== undefined) dst.church_location = String(src.church_location).slice(0, 200);
+          }
+        }
+      }
       writeSchedule(schedule);
       jsonResponse(res, 200, {
         max_resolution: schedule.stream.max_resolution,
         shuffle: schedule.stream.shuffle,
-        watermark: schedule.stream.watermark
+        watermark: schedule.stream.watermark,
+        streams: schedule.streams || {}
       });
       return;
     }
@@ -346,7 +377,11 @@ const server = http.createServer(async (req, res) => {
         const state = readPlaybackState();
         const now = active ? readNowPlaying() : null;
         const stopPending = fs.existsSync('/run/streamer-stop-after-current');
-        const result = { active, uptimeSeconds, nowPlaying: null, upNext: [], progress: null, stopPending };
+        const activeStreams = {
+          landscape: fs.existsSync(ACTIVE_LANDSCAPE),
+          portrait: fs.existsSync(ACTIVE_PORTRAIT)
+        };
+        const result = { active, uptimeSeconds, nowPlaying: null, upNext: [], progress: null, stopPending, activeStreams };
 
         if (state && playlist.length > 0) {
           // The state file records the LAST COMPLETED video's index.
@@ -454,9 +489,25 @@ const server = http.createServer(async (req, res) => {
       try { fs.writeFileSync('/run/streamer-manual-override', ''); } catch {};
       // Clear manual stop in case user is re-starting after a manual stop
       try { fs.unlinkSync('/run/streamer-manual-stop'); } catch {};
+      // Parse which streams to activate (default: both)
+      let streams = ['landscape', 'portrait'];
+      try {
+        const body = await readBody(req);
+        const parsed = JSON.parse(body);
+        if (Array.isArray(parsed.streams)) {
+          streams = parsed.streams.filter(s => ['landscape', 'portrait'].includes(s));
+        }
+      } catch { /* use defaults */ }
+      // Write stream signal files
+      if (streams.includes('landscape')) {
+        try { fs.writeFileSync(ACTIVE_LANDSCAPE, ''); } catch {}
+      }
+      if (streams.includes('portrait')) {
+        try { fs.writeFileSync(ACTIVE_PORTRAIT, ''); } catch {}
+      }
       execFile('systemctl', ['start', 'streamer.service'], { timeout: 15000 }, (err) => {
         if (err) return jsonResponse(res, 500, { error: 'Failed to start streamer' });
-        jsonResponse(res, 200, { ok: true, active: true });
+        jsonResponse(res, 200, { ok: true, active: true, streams });
       });
       return;
     }
@@ -631,6 +682,7 @@ const server = http.createServer(async (req, res) => {
         events: schedule.events || [],
         overrides: (schedule.overrides || []).filter(o => o.date >= now.toISOString().slice(0, 10)),
         stream: schedule.stream || {},
+        streams: schedule.streams || {},
         nextStart,
         nextStop
       });
@@ -651,13 +703,15 @@ const server = http.createServer(async (req, res) => {
       }
       if (Array.isArray(parsed.events)) {
         const validDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+        const validStreams = ['landscape', 'portrait'];
         schedule.events = parsed.events
           .filter(e => e.name && e.start && e.stop && Array.isArray(e.days))
           .map(e => ({
             name: String(e.name).slice(0, 100),
             start: String(e.start).slice(0, 5),
             stop: String(e.stop).slice(0, 5),
-            days: e.days.filter(d => validDays.includes(d))
+            days: e.days.filter(d => validDays.includes(d)),
+            streams: Array.isArray(e.streams) ? e.streams.filter(s => validStreams.includes(s)) : ['landscape']
           }));
       }
       writeSchedule(schedule);

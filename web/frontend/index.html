@@ -27,6 +27,10 @@
     <div id="now-playing" class="now-playing" style="display:none">
       <strong>Now Playing:</strong> <span id="now-playing-title"></span>
     </div>
+    <div id="active-streams" class="active-streams" style="display:none">
+      <span id="stream-badge-landscape" class="stream-badge landscape" style="display:none">▶ Landscape</span>
+      <span id="stream-badge-portrait" class="stream-badge portrait" style="display:none">▶ Portrait</span>
+    </div>
     <div id="stream-preview" class="stream-preview" style="display:none">
       <img id="preview-img" alt="Stream preview">
       <div id="progress-bar-container" class="progress-bar-container" style="display:none">
@@ -114,14 +118,24 @@
     </div>
   </div>
 
-  <!-- ── Stream Key ─────────────────────────────────────────────── -->
+  <!-- ── Stream Keys ──────────────────────────────────────────────── -->
   <div class="card">
-    <h2>Stream Key</h2>
-    <p class="hint">Update the YouTube stream key stored in Key Vault. Takes effect on next stream start.</p>
-    <form id="stream-key-form">
-      <input type="password" id="stream-key-input" placeholder="Enter new stream key" autocomplete="off" minlength="4" maxlength="256" required>
-      <button type="submit">Update Key</button>
-    </form>
+    <h2>Stream Keys</h2>
+    <p class="hint">Update YouTube stream keys. Takes effect on next stream start.</p>
+    <div class="stream-key-group">
+      <label class="stream-key-label"><strong id="landscape-key-label">Landscape</strong></label>
+      <form class="stream-key-form" data-profile="landscape">
+        <input type="password" placeholder="Enter landscape stream key" autocomplete="off" minlength="4" maxlength="256" required>
+        <button type="submit">Update</button>
+      </form>
+    </div>
+    <div class="stream-key-group">
+      <label class="stream-key-label"><strong id="portrait-key-label">Portrait</strong></label>
+      <form class="stream-key-form" data-profile="portrait">
+        <input type="password" placeholder="Enter portrait stream key" autocomplete="off" minlength="4" maxlength="256" required>
+        <button type="submit">Update</button>
+      </form>
+    </div>
     <div id="stream-key-status" class="status"></div>
   </div>
 
