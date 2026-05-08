@@ -818,8 +818,12 @@ const server = http.createServer(async (req, res) => {
       let branch = 'main';
       try {
         const parsed = JSON.parse(body);
-        if (parsed.branch && /^[a-zA-Z0-9._\/-]+$/.test(parsed.branch)) {
-          branch = parsed.branch;
+        if (parsed.branch) {
+          if (/^[a-zA-Z0-9._/-]+$/.test(parsed.branch)) {
+            branch = parsed.branch;
+          } else {
+            return jsonResponse(res, 400, { error: `Invalid branch name: ${parsed.branch}` });
+          }
         }
       } catch { /* default to main */ }
 
@@ -867,8 +871,12 @@ const server = http.createServer(async (req, res) => {
       let branch = 'main';
       try {
         const parsed = JSON.parse(body);
-        if (parsed.branch && /^[a-zA-Z0-9._\/-]+$/.test(parsed.branch)) {
-          branch = parsed.branch;
+        if (parsed.branch) {
+          if (/^[a-zA-Z0-9._/-]+$/.test(parsed.branch)) {
+            branch = parsed.branch;
+          } else {
+            return jsonResponse(res, 400, { error: `Invalid branch name: ${parsed.branch}` });
+          }
         }
       } catch { /* default to main */ }
       const args = ['--branch', branch];
