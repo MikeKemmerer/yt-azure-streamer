@@ -6,7 +6,7 @@
       "start": "18:00",
       "stop": "20:00",
       "days": ["Mon", "Wed", "Fri"],
-      "streams": ["landscape"]
+      "streams": ["landscape", "portrait"]
     }
   ],
   "overrides": [],

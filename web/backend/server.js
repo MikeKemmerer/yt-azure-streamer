@@ -23,7 +23,6 @@ const NOW_FILE = '/run/streamer-now.json';
 const PREVIEW_FILE = '/opt/yt/web/frontend/stream-preview.jpg';
 const MODE_FILE = '/etc/yt/mode';
 const LOCAL_CONF = '/etc/yt/local.conf';
-const STREAM_KEY_FILE = '/etc/yt/secrets/stream-key';
 const ACTIVE_LANDSCAPE = '/run/streamer-active-landscape';
 const ACTIVE_PORTRAIT = '/run/streamer-active-portrait';
 

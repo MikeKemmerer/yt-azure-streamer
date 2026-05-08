@@ -287,14 +287,17 @@ except: pass
     -show_entries stream=height -of csv=p=0 "$VIDEO" 2>/dev/null || echo 0)
 
   # Build video filter chain
-  VF_PARTS=()
+  # SCALE_VF: common scaling (applied to all outputs)
+  # LANDSCAPE_WM: landscape-only watermark/HUD (NOT applied to portrait)
+  SCALE_VF=()
   if [[ "$INPUT_H" -gt "$MAX_H" ]]; then
     echo "  Input ${INPUT_H}p > max ${MAX_H}p — downscaling to ${MAX_RES}"
-    VF_PARTS+=("$SCALE_FILTER")
+    SCALE_VF+=("$SCALE_FILTER")
   else
     echo "  Input ${INPUT_H}p <= max ${MAX_H}p — no scaling"
   fi
 
+  LANDSCAPE_WM=()
   if [[ "$WATERMARK" == true && -f "$WM_FONT_SANS" ]]; then
     # Split title into max 2 lines; shrink font if title is very long
     MAX_LINE=55
@@ -386,10 +389,10 @@ except: pass
     # Single semi-transparent background bar, church name always visible,
     # title and "up next" crossfade on a 41s cycle
     CHURCH_NAME="Saint Demetrios Greek Orthodox Church - Seattle, WA"
-    VF_PARTS+=("drawbox=x=0:y=ih-ih/6:w=iw:h=ih/6:color=black@0.5:t=fill")
-    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SERIF}:text='${CHURCH_NAME}':fontsize=h/32:fontcolor=white@0.9:shadowcolor=black@0.6:shadowx=2:shadowy=2:x=w/30:y=h-h/7")
-    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=${TITLE_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26:alpha=${ALPHA_MAIN}")
-    VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${UPNEXT_FILE}:fontsize=${UPNEXT_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26:alpha=${ALPHA_NEXT}")
+    LANDSCAPE_WM+=("drawbox=x=0:y=ih-ih/6:w=iw:h=ih/6:color=black@0.5:t=fill")
+    LANDSCAPE_WM+=("drawtext=fontfile=${WM_FONT_SERIF}:text='${CHURCH_NAME}':fontsize=h/32:fontcolor=white@0.9:shadowcolor=black@0.6:shadowx=2:shadowy=2:x=w/30:y=h-h/7")
+    LANDSCAPE_WM+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=${TITLE_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26:alpha=${ALPHA_MAIN}")
+    LANDSCAPE_WM+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${UPNEXT_FILE}:fontsize=${UPNEXT_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26:alpha=${ALPHA_NEXT}")
   fi
 
   # Build -vf argument as an array (avoids word-splitting issues with spaces in text)
@@ -419,7 +422,7 @@ except: pass
         printf '%%{eif:trunc(min(t,%d)/60):d}:%%{eif:mod(trunc(min(t,%d)),60):d:2} / %s' \
           "$DURATION" "$DURATION" "$DUR_FMT" > "$TIME_FILE"
       fi
-      VF_PARTS+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TIME_FILE}:fontsize=h/40:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-w/30:y=h-h/20")
+      LANDSCAPE_WM+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TIME_FILE}:fontsize=h/40:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-w/30:y=h-h/20")
     fi
   fi
 
@@ -433,9 +436,24 @@ with open('$NOW_FILE', 'w') as f:
   # Build filter_complex: apply filters, split into stream + preview + optional portrait
   PREVIEW_LANDSCAPE="/opt/yt/web/frontend/stream-preview.jpg"
   PREVIEW_PORTRAIT="/opt/yt/web/frontend/stream-preview-portrait.jpg"
-  VF_STRING=""
-  if [[ ${#VF_PARTS[@]} -gt 0 ]]; then
-    VF_STRING="$(IFS=,; echo "${VF_PARTS[*]}"),"
+
+  # Common VF string (scale only — for portrait and pre-split in dual mode)
+  COMMON_VF_STRING=""
+  if [[ ${#SCALE_VF[@]} -gt 0 ]]; then
+    COMMON_VF_STRING="$(IFS=,; echo "${SCALE_VF[*]}"),"
+  fi
+
+  # Full landscape VF string (scale + watermark — for landscape-only mode)
+  ALL_LANDSCAPE=("${SCALE_VF[@]}" "${LANDSCAPE_WM[@]}")
+  LANDSCAPE_VF_STRING=""
+  if [[ ${#ALL_LANDSCAPE[@]} -gt 0 ]]; then
+    LANDSCAPE_VF_STRING="$(IFS=,; echo "${ALL_LANDSCAPE[*]}"),"
+  fi
+
+  # Landscape watermark chain (applied after split in dual mode)
+  LANDSCAPE_WM_CHAIN="null"
+  if [[ ${#LANDSCAPE_WM[@]} -gt 0 ]]; then
+    LANDSCAPE_WM_CHAIN="$(IFS=,; echo "${LANDSCAPE_WM[*]}")"
   fi
 
   # Check if input has an audio stream
@@ -462,8 +480,8 @@ with open('$NOW_FILE', 'w') as f:
     STREAM_PORTRAIT=true
   fi
 
-  # Fallback: if scheduler hasn't written signal files, use landscape if available
-  if [[ "$STREAM_LANDSCAPE" == false && "$STREAM_PORTRAIT" == false ]]; then
+  # Fallback: only when NO signal files exist (before scheduler first runs)
+  if [[ ! -f /run/streamer-active-landscape && ! -f /run/streamer-active-portrait ]]; then
     if [[ -n "$LANDSCAPE_RTMP" ]]; then
       STREAM_LANDSCAPE=true
     elif [[ -n "$PORTRAIT_RTMP" ]]; then
@@ -473,14 +491,22 @@ with open('$NOW_FILE', 'w') as f:
 
   echo "  Active streams: landscape=$STREAM_LANDSCAPE portrait=$STREAM_PORTRAIT"
 
+  # If no streams are active (signal files exist but keys are missing), skip
+  if [[ "$STREAM_LANDSCAPE" == false && "$STREAM_PORTRAIT" == false ]]; then
+    echo "  WARNING: No active streams — signal files present but stream keys unavailable"
+    sleep 10
+    continue
+  fi
+
   # --- Build filter_complex and output args based on active streams ---
   OUTPUT_ARGS=()
 
   if [[ "$STREAM_LANDSCAPE" == true && "$STREAM_PORTRAIT" == true ]]; then
-    # Dual output: split video into landscape + portrait + landscape preview + portrait preview
+    # Dual output: scale before split, watermark on landscape branch only
     PORTRAIT_FONT_SERIF="$WM_FONT_SERIF"
     PORTRAIT_FONT_SANS="$WM_FONT_SANS"
-    FILTER_COMPLEX="[0:v]${VF_STRING}split=3[land][port_src][prev_land_src];\
+    FILTER_COMPLEX="[0:v]${COMMON_VF_STRING}split=3[land_src][port_src][prev_land_src];\
+[land_src]${LANDSCAPE_WM_CHAIN}[land];\
 [prev_land_src]fps=1/10,scale=640:-2[preview_land];\
 [port_src]scale=1080:-2:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:656:black,\
 drawtext=fontfile=${PORTRAIT_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=42:fontcolor=white:x=(w-tw)/2:y=180,\
@@ -507,7 +533,7 @@ ${AUDIO_FILTER}"
   elif [[ "$STREAM_LANDSCAPE" == true ]]; then
     # Landscape only (original behavior)
     rm -f "$PREVIEW_PORTRAIT"
-    FILTER_COMPLEX="[0:v]${VF_STRING}split=2[stream][prev];[prev]fps=1/10,scale=640:-2[preview];${AUDIO_FILTER}"
+    FILTER_COMPLEX="[0:v]${LANDSCAPE_VF_STRING}split=2[stream][prev];[prev]fps=1/10,scale=640:-2[preview];${AUDIO_FILTER}"
     OUTPUT_ARGS+=(
       -map "[stream]" -map "[audio]"
       -c:v libx264 -preset veryfast -maxrate "$MAXRATE" -bufsize "$BUFSIZE"
@@ -518,11 +544,11 @@ ${AUDIO_FILTER}"
       -update 1 -q:v 3 "$PREVIEW_LANDSCAPE"
     )
   elif [[ "$STREAM_PORTRAIT" == true ]]; then
-    # Portrait only
+    # Portrait only (no landscape watermark — portrait has its own overlays)
     rm -f "$PREVIEW_LANDSCAPE"
     PORTRAIT_FONT_SERIF="$WM_FONT_SERIF"
     PORTRAIT_FONT_SANS="$WM_FONT_SANS"
-    FILTER_COMPLEX="[0:v]${VF_STRING}\
+    FILTER_COMPLEX="[0:v]${COMMON_VF_STRING}\
 scale=1080:-2:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:656:black,\
 drawtext=fontfile=${PORTRAIT_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=42:fontcolor=white:x=(w-tw)/2:y=180,\
 drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=32:fontcolor=white@0.85:x=(w-tw)/2:y=240,\
