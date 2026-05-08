@@ -778,12 +778,20 @@ const server = http.createServer(async (req, res) => {
 
       // Upsert by date
       const idx = schedule.overrides.findIndex(o => o.date === parsed.date);
+      // Validate streams if provided
+      const VALID_STREAMS = ['landscape', 'portrait'];
+      let streams;
+      if (Array.isArray(parsed.streams) && parsed.streams.length > 0) {
+        streams = parsed.streams.filter(s => VALID_STREAMS.includes(s));
+        if (streams.length === 0) streams = undefined;
+      }
       const entry = {
         date: parsed.date,
         start: hasStart ? String(parsed.start).slice(0, 5) : null,
         stop: hasStop ? String(parsed.stop).slice(0, 5) : null,
         name: parsed.name ? String(parsed.name).slice(0, 100) : undefined,
-        timezone: parsed.timezone ? String(parsed.timezone).slice(0, 50) : undefined
+        timezone: parsed.timezone ? String(parsed.timezone).slice(0, 50) : undefined,
+        streams
       };
       if (idx >= 0) {
         schedule.overrides[idx] = entry;

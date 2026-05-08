@@ -773,16 +773,18 @@ function renderOverrides(overrides) {
     el.innerHTML = '<p class="hint">No upcoming overrides.</p>';
     return;
   }
-  let html = '<table class="schedule-table"><tr><th>Date</th><th>Name</th><th>Start</th><th>Stop</th><th>TZ</th><th></th></tr>';
+  let html = '<table class="schedule-table"><tr><th>Date</th><th>Name</th><th>Start</th><th>Stop</th><th>Streams</th><th>TZ</th><th></th></tr>';
   for (const o of overrides) {
     const startCell = o.start ? esc(o.start) : '<em>skip</em>';
     const stopCell  = o.stop  ? esc(o.stop)  : '<em>skip</em>';
     const tzCell    = o.timezone ? esc(o.timezone) : '<em>default</em>';
+    const streamsCell = (o.streams || ['landscape']).join(', ');
     html += `<tr>
       <td>${esc(o.date)}</td>
       <td>${esc(o.name || '')}</td>
       <td>${startCell}</td>
       <td>${stopCell}</td>
+      <td>${esc(streamsCell)}</td>
       <td>${tzCell}</td>
       <td><button class="secondary override-delete-btn" data-date="${esc(o.date)}">Remove</button></td>
     </tr>`;
@@ -804,8 +806,9 @@ async function deleteOverride(date) {
 }
 
 document.getElementById('override-skip').addEventListener('change', () => {
-  document.getElementById('override-times').style.display =
-    document.getElementById('override-skip').checked ? 'none' : '';
+  const skip = document.getElementById('override-skip').checked;
+  document.getElementById('override-times').style.display = skip ? 'none' : '';
+  document.getElementById('override-streams').style.display = skip ? 'none' : '';
 });
 
 document.getElementById('save-override').addEventListener('click', async () => {
@@ -820,7 +823,10 @@ document.getElementById('save-override').addEventListener('click', async () => {
   if (!skip && (!start || !stop)) return showStatus(status, 'Please provide both Start and Stop times.', false);
 
   // null start/stop signals "skip this day entirely" to the backend
+  const streams = Array.from(document.querySelectorAll('#override-streams input:checked')).map(cb => cb.value);
+  if (!skip && streams.length === 0) return showStatus(status, 'Please select at least one stream.', false);
   const payload = { date, start, stop };
+  if (!skip) payload.streams = streams;
   if (name) payload.name = name;
   const overrideTz = document.getElementById('override-tz').value;
   if (overrideTz && overrideTz !== scheduleData.timezone) payload.timezone = overrideTz;
