@@ -519,13 +519,15 @@ ${AUDIO_FILTER}"
     )
   elif [[ "$STREAM_PORTRAIT" == true ]]; then
     # Portrait only
+    rm -f "$PREVIEW_LANDSCAPE"
     PORTRAIT_FONT_SERIF="$WM_FONT_SERIF"
     PORTRAIT_FONT_SANS="$WM_FONT_SANS"
-    FILTER_COMPLEX="[0:v]${VF_STRING}split=2[port_src][prev];\
-[prev]fps=1/10,scale=640:-2[preview];\
-[port_src]scale=1080:-2:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:656:black,\
+    FILTER_COMPLEX="[0:v]${VF_STRING}\
+scale=1080:-2:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:656:black,\
 drawtext=fontfile=${PORTRAIT_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=42:fontcolor=white:x=(w-tw)/2:y=180,\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=32:fontcolor=white@0.85:x=(w-tw)/2:y=240[portrait];\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=32:fontcolor=white@0.85:x=(w-tw)/2:y=240,\
+split=2[portrait][prev_port];\
+[prev_port]fps=1/10,scale=-2:480[preview];\
 ${AUDIO_FILTER}"
     OUTPUT_ARGS+=(
       -map "[portrait]" -map "[audio]"
@@ -534,7 +536,7 @@ ${AUDIO_FILTER}"
       -c:a aac -b:a 192k -ar 44100
       -f flv "$PORTRAIT_RTMP"
       -map "[preview]"
-      -update 1 -q:v 3 "$PREVIEW_FILE"
+      -update 1 -q:v 3 "$PREVIEW_PORTRAIT"
     )
   fi
 

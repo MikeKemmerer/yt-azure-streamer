@@ -103,7 +103,8 @@ async function refreshStreamerStatus() {
     const upNextLabel = document.getElementById('up-next-label');
     const upNextList = document.getElementById('up-next-list');
     const preview = document.getElementById('stream-preview');
-    const previewImg = document.getElementById('preview-img');
+    const previewLand = document.getElementById('preview-img-landscape');
+    const previewPort = document.getElementById('preview-img-portrait');
 
     indicator.className = 'indicator ' + (data.active ? 'on' : 'off');
     label.textContent = data.active ? 'Streaming' : 'Stopped';
@@ -149,9 +150,25 @@ async function refreshStreamerStatus() {
         progressTime.style.display = 'none';
         stopProgressTicker();
       }
-      previewImg.src = '/stream-preview.jpg?' + Date.now();
-      previewImg.onload = () => { preview.style.display = ''; };
-      previewImg.onerror = () => { preview.style.display = 'none'; };
+      // Load preview images for active streams
+      const ts = Date.now();
+      let anyPreview = false;
+      const showLand = data.activeStreams ? data.activeStreams.landscape : true;
+      const showPort = data.activeStreams ? data.activeStreams.portrait : false;
+      if (showLand) {
+        previewLand.src = '/stream-preview.jpg?' + ts;
+        previewLand.onload = () => { previewLand.style.display = ''; preview.style.display = ''; };
+        previewLand.onerror = () => { previewLand.style.display = 'none'; };
+      } else {
+        previewLand.style.display = 'none';
+      }
+      if (showPort) {
+        previewPort.src = '/stream-preview-portrait.jpg?' + ts;
+        previewPort.onload = () => { previewPort.style.display = ''; preview.style.display = ''; };
+        previewPort.onerror = () => { previewPort.style.display = 'none'; };
+      } else {
+        previewPort.style.display = 'none';
+      }
     } else {
       nowPlaying.style.display = 'none';
       preview.style.display = 'none';

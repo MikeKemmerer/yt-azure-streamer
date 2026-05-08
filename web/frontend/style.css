@@ -211,9 +211,24 @@ body.dark .vm-controls { border-top-color: #444; }
   border-radius: 6px;
   overflow: hidden;
 }
-.stream-preview img {
-  width: 100%;
+.preview-images {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  background: #000;
+}
+.preview-images img {
   display: block;
+  border-radius: 4px;
+  object-fit: contain;
+}
+.preview-images img#preview-img-landscape {
+  max-width: 100%;
+  max-height: 360px;
+}
+.preview-images img#preview-img-portrait {
+  max-height: 360px;
+  width: auto;
 }
 .progress-bar-container {
   height: 5px;
