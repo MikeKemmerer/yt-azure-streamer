@@ -124,14 +124,28 @@ async function refreshStreamerStatus() {
     if (data.active && data.nowPlaying) {
       nowTitle.textContent = data.nowPlaying;
       nowPlaying.style.display = '';
-      // Active stream badges
+      // Active stream badges — clickable to toggle preview
       const activeStreamsEl = document.getElementById('active-streams');
       const landBadge = document.getElementById('stream-badge-landscape');
       const portBadge = document.getElementById('stream-badge-portrait');
       if (data.activeStreams) {
         activeStreamsEl.style.display = '';
-        landBadge.style.display = data.activeStreams.landscape ? '' : 'none';
-        portBadge.style.display = data.activeStreams.portrait ? '' : 'none';
+        const hasLand = data.activeStreams.landscape;
+        const hasPort = data.activeStreams.portrait;
+        landBadge.style.display = hasLand ? '' : 'none';
+        portBadge.style.display = hasPort ? '' : 'none';
+        // Default: show all active previews
+        if (hasLand) landBadge.classList.add('active');
+        if (hasPort) portBadge.classList.add('active');
+        // Click toggles which preview is visible
+        landBadge.onclick = () => {
+          landBadge.classList.toggle('active');
+          previewLand.style.display = landBadge.classList.contains('active') && previewLand.src ? '' : 'none';
+        };
+        portBadge.onclick = () => {
+          portBadge.classList.toggle('active');
+          previewPort.style.display = portBadge.classList.contains('active') && previewPort.src ? '' : 'none';
+        };
       } else {
         activeStreamsEl.style.display = 'none';
       }
@@ -152,22 +166,24 @@ async function refreshStreamerStatus() {
       }
       // Load preview images for active streams
       const ts = Date.now();
-      let anyPreview = false;
       const showLand = data.activeStreams ? data.activeStreams.landscape : true;
       const showPort = data.activeStreams ? data.activeStreams.portrait : false;
+      preview.style.display = '';  // Show container; individual imgs control visibility
       if (showLand) {
         previewLand.src = '/stream-preview.jpg?' + ts;
-        previewLand.onload = () => { previewLand.style.display = ''; preview.style.display = ''; };
+        previewLand.onload = () => { previewLand.style.display = ''; };
         previewLand.onerror = () => { previewLand.style.display = 'none'; };
       } else {
         previewLand.style.display = 'none';
+        previewLand.removeAttribute('src');
       }
       if (showPort) {
         previewPort.src = '/stream-preview-portrait.jpg?' + ts;
-        previewPort.onload = () => { previewPort.style.display = ''; preview.style.display = ''; };
+        previewPort.onload = () => { previewPort.style.display = ''; };
         previewPort.onerror = () => { previewPort.style.display = 'none'; };
       } else {
         previewPort.style.display = 'none';
+        previewPort.removeAttribute('src');
       }
     } else {
       nowPlaying.style.display = 'none';
@@ -701,10 +717,25 @@ function renderScheduleEvents() {
     el.innerHTML = '<p class="hint">No events configured.</p>';
     return;
   }
+  const now = new Date();
+  const dayAbbrs = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const todayAbbr = dayAbbrs[now.getDay()];
+  const nowMins = now.getHours() * 60 + now.getMinutes();
+
   let html = '<table class="schedule-table"><tr><th>Name</th><th>Days</th><th>Start</th><th>Stop</th><th>Streams</th></tr>';
   for (const e of scheduleData.events) {
     const streams = (e.streams || ['landscape']).join(', ');
-    html += `<tr><td>${esc(e.name)}</td><td>${e.days.join(', ')}</td><td>${e.start}</td><td>${e.stop}</td><td>${esc(streams)}</td></tr>`;
+    // Check if this event is currently active
+    let isActive = false;
+    if (e.days && e.days.includes(todayAbbr) && e.start && e.stop) {
+      const [sh, sm] = e.start.split(':').map(Number);
+      const [eh, em] = e.stop.split(':').map(Number);
+      const startMins = sh * 60 + sm;
+      const stopMins = eh * 60 + em;
+      isActive = nowMins >= startMins && nowMins < stopMins;
+    }
+    const cls = isActive ? ' class="active-event"' : '';
+    html += `<tr${cls}><td>${esc(e.name)}</td><td>${e.days.join(', ')}</td><td>${e.start}</td><td>${e.stop}</td><td>${esc(streams)}</td></tr>`;
   }
   html += '</table>';
   el.innerHTML = html;

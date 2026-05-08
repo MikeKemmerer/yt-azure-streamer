@@ -836,9 +836,19 @@ body.dark .app-footer { color: #666; border-top-color: #333; }
   font-size: 0.78rem;
   font-weight: 600;
   color: #fff;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.2s;
 }
+.stream-badge:hover { opacity: 0.9; }
+.stream-badge.active { opacity: 1; box-shadow: 0 0 0 2px rgba(255,255,255,0.5); }
 .stream-badge.landscape { background: #0078d4; }
 .stream-badge.portrait  { background: #7b2ff7; }
+
+/* ── Active schedule row ───────────────────────────────────────────── */
+.schedule-table tr.active-event { background: rgba(0, 120, 212, 0.1); }
+.schedule-table tr.active-event td:first-child::before { content: '● '; color: #4caf50; }
+body.dark .schedule-table tr.active-event { background: rgba(0, 120, 212, 0.15); }
 
 /* ── Stream key groups ─────────────────────────────────────────────── */
 .stream-key-group {
