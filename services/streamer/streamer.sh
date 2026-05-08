@@ -109,7 +109,7 @@ fetch_stream_key() {
     local key
     key=$(cat "$key_file" 2>/dev/null | tr -d '[:space:]')
     if [[ -z "$key" ]]; then
-      echo "WARNING: Stream key not found at $key_file ($display_name)"
+      echo "WARNING: Stream key not found at $key_file ($display_name)" >&2
       return 1
     fi
     echo "$key"
