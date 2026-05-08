@@ -431,7 +431,8 @@ with open('$NOW_FILE', 'w') as f:
 " "$VIDEO" "$(date +%s)" "${DURATION:-0}"
 
   # Build filter_complex: apply filters, split into stream + preview + optional portrait
-  PREVIEW_FILE="/opt/yt/web/frontend/stream-preview.jpg"
+  PREVIEW_LANDSCAPE="/opt/yt/web/frontend/stream-preview.jpg"
+  PREVIEW_PORTRAIT="/opt/yt/web/frontend/stream-preview-portrait.jpg"
   VF_STRING=""
   if [[ ${#VF_PARTS[@]} -gt 0 ]]; then
     VF_STRING="$(IFS=,; echo "${VF_PARTS[*]}"),"
@@ -476,15 +477,16 @@ with open('$NOW_FILE', 'w') as f:
   OUTPUT_ARGS=()
 
   if [[ "$STREAM_LANDSCAPE" == true && "$STREAM_PORTRAIT" == true ]]; then
-    # Dual output: split video into landscape + portrait + preview
-    # Portrait: scale video to fit 1080w, pad into 1080x1920 canvas with church text
+    # Dual output: split video into landscape + portrait + landscape preview + portrait preview
     PORTRAIT_FONT_SERIF="$WM_FONT_SERIF"
     PORTRAIT_FONT_SANS="$WM_FONT_SANS"
-    FILTER_COMPLEX="[0:v]${VF_STRING}split=3[land][port_src][prev];\
-[prev]fps=1/10,scale=640:-2[preview];\
+    FILTER_COMPLEX="[0:v]${VF_STRING}split=3[land][port_src][prev_land_src];\
+[prev_land_src]fps=1/10,scale=640:-2[preview_land];\
 [port_src]scale=1080:-2:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:656:black,\
 drawtext=fontfile=${PORTRAIT_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=42:fontcolor=white:x=(w-tw)/2:y=180,\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=32:fontcolor=white@0.85:x=(w-tw)/2:y=240[portrait];\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=32:fontcolor=white@0.85:x=(w-tw)/2:y=240,\
+split=2[portrait][prev_port_src];\
+[prev_port_src]fps=1/10,scale=-2:480[preview_port];\
 ${AUDIO_FILTER}"
     OUTPUT_ARGS+=(
       -map "[land]" -map "[audio]"
@@ -497,11 +499,14 @@ ${AUDIO_FILTER}"
       -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
       -c:a aac -b:a 192k -ar 44100
       -f flv "$PORTRAIT_RTMP"
-      -map "[preview]"
-      -update 1 -q:v 3 "$PREVIEW_FILE"
+      -map "[preview_land]"
+      -update 1 -q:v 3 "$PREVIEW_LANDSCAPE"
+      -map "[preview_port]"
+      -update 1 -q:v 3 "$PREVIEW_PORTRAIT"
     )
   elif [[ "$STREAM_LANDSCAPE" == true ]]; then
     # Landscape only (original behavior)
+    rm -f "$PREVIEW_PORTRAIT"
     FILTER_COMPLEX="[0:v]${VF_STRING}split=2[stream][prev];[prev]fps=1/10,scale=640:-2[preview];${AUDIO_FILTER}"
     OUTPUT_ARGS+=(
       -map "[stream]" -map "[audio]"
@@ -510,7 +515,7 @@ ${AUDIO_FILTER}"
       -c:a aac -b:a "$AUDIO_BR" -ar 44100
       -f flv "$LANDSCAPE_RTMP"
       -map "[preview]"
-      -update 1 -q:v 3 "$PREVIEW_FILE"
+      -update 1 -q:v 3 "$PREVIEW_LANDSCAPE"
     )
   elif [[ "$STREAM_PORTRAIT" == true ]]; then
     # Portrait only
