@@ -1017,21 +1017,22 @@ async function uploadFile(file) {
     }
   }
 
-  // Initial populate: use cached list from localStorage, or default to main + current branch
+  // Initial populate: always get live branch from /api/info, use cached branch list if available
   function initBranches() {
-    const stored = localStorage.getItem('cachedBranches');
-    if (stored) {
-      try {
-        const data = JSON.parse(stored);
-        cachedBranches = data.branches;
-        currentBranch = data.currentBranch || 'main';
-        populateBranchDropdown(cachedBranches, currentBranch);
-        return;
-      } catch {}
-    }
-    // No cache — get current branch from /api/info (already loaded)
-    fetch('/api/info').then(r => r.json()).then(data => {
-      currentBranch = data.branch || 'main';
+    fetch('/api/info').then(r => r.json()).then(info => {
+      currentBranch = info.branch || 'main';
+      const stored = localStorage.getItem('cachedBranches');
+      if (stored) {
+        try {
+          const data = JSON.parse(stored);
+          cachedBranches = data.branches;
+          // Update cache with live branch
+          data.currentBranch = currentBranch;
+          localStorage.setItem('cachedBranches', JSON.stringify(data));
+          populateBranchDropdown(cachedBranches, currentBranch);
+          return;
+        } catch {}
+      }
       const defaultList = ['main'];
       if (currentBranch !== 'main') defaultList.push(currentBranch);
       populateBranchDropdown(defaultList, currentBranch);
