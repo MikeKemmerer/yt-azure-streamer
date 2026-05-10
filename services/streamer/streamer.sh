@@ -297,50 +297,40 @@ except: pass
     echo "  Input ${INPUT_H}p <= max ${MAX_H}p — no scaling"
   fi
 
-  LANDSCAPE_WM=()
-  if [[ "$WATERMARK" == true && -f "$WM_FONT_SANS" ]]; then
-    # Split title into max 2 lines; shrink font if title is very long
-    MAX_LINE=55
-    TITLE_FILE="/tmp/streamer-title.txt"
-    TITLE_FONTSIZE="h/22"
-    # Force max 2 lines — if title is too long for 2 lines, shrink font
-    if [[ ${#TITLE} -gt $((MAX_LINE * 2)) ]]; then
-      TITLE_FONTSIZE="h/28"
-    fi
-    NUM_LINES=1
-    if [[ ${#TITLE} -gt $MAX_LINE ]]; then
-      NUM_LINES=2
-    fi
-    if [[ $NUM_LINES -eq 2 ]]; then
-      # Split at the space nearest the midpoint
-      TARGET=$(( ${#TITLE} / 2 ))
-      BEST=-1
-      for ((d=0; d < ${#TITLE}; d++)); do
-        FWD=$((TARGET + d))
-        BWD=$((TARGET - d))
-        if [[ $FWD -lt ${#TITLE} && "${TITLE:FWD:1}" == " " ]]; then
-          BEST=$FWD; break
-        fi
-        if [[ $BWD -gt 0 && "${TITLE:BWD:1}" == " " ]]; then
-          BEST=$BWD; break
-        fi
-      done
-      if [[ $BEST -gt 0 ]]; then
-        printf '%s\n%s' "${TITLE:0:BEST}" "${TITLE:BEST+1}" > "$TITLE_FILE"
-      else
-        printf '%s' "$TITLE" > "$TITLE_FILE"
+  # --- Prepare title/upnext text files (used by landscape watermark and portrait overlays) ---
+  MAX_LINE=55
+  TITLE_FILE="/tmp/streamer-title.txt"
+  NUM_LINES=1
+  if [[ ${#TITLE} -gt $MAX_LINE ]]; then
+    NUM_LINES=2
+  fi
+  if [[ $NUM_LINES -eq 2 ]]; then
+    TARGET=$(( ${#TITLE} / 2 ))
+    BEST=-1
+    for ((d=0; d < ${#TITLE}; d++)); do
+      FWD=$((TARGET + d))
+      BWD=$((TARGET - d))
+      if [[ $FWD -lt ${#TITLE} && "${TITLE:FWD:1}" == " " ]]; then
+        BEST=$FWD; break
       fi
+      if [[ $BWD -gt 0 && "${TITLE:BWD:1}" == " " ]]; then
+        BEST=$BWD; break
+      fi
+    done
+    if [[ $BEST -gt 0 ]]; then
+      printf '%s\n%s' "${TITLE:0:BEST}" "${TITLE:BEST+1}" > "$TITLE_FILE"
     else
       printf '%s' "$TITLE" > "$TITLE_FILE"
     fi
+  else
+    printf '%s' "$TITLE" > "$TITLE_FILE"
+  fi
 
-    # --- "Up Next" cycling text ---
-    UPNEXT_FILE="/tmp/streamer-upnext.txt"
-    NEXT_INDEX=$(( (INDEX + 1) % NUM_VIDEOS ))
-    NEXT_BASENAME=$(basename "${VIDEOS[$NEXT_INDEX]}")
-    NEXT_DISPLAY="${NEXT_BASENAME%.*}"
-    # Check for custom display title for next video
-    NEXT_CUSTOM=$(python3 -c "
+  UPNEXT_FILE="/tmp/streamer-upnext.txt"
+  NEXT_INDEX=$(( (INDEX + 1) % NUM_VIDEOS ))
+  NEXT_BASENAME=$(basename "${VIDEOS[$NEXT_INDEX]}")
+  NEXT_DISPLAY="${NEXT_BASENAME%.*}"
+  NEXT_CUSTOM=$(python3 -c "
 import json, sys
 try:
     cfg = json.load(open('/etc/yt/playlist-config.json'))
@@ -350,40 +340,46 @@ try:
             break
 except: pass
 " "$NEXT_BASENAME" 2>/dev/null || true)
-    if [[ -n "$NEXT_CUSTOM" ]]; then
-      NEXT_DISPLAY="$NEXT_CUSTOM"
+  if [[ -n "$NEXT_CUSTOM" ]]; then
+    NEXT_DISPLAY="$NEXT_CUSTOM"
+  fi
+  NEXT_TITLE="Up Next: ${NEXT_DISPLAY}"
+  if [[ ${#NEXT_TITLE} -gt $MAX_LINE ]]; then
+    TARGET=$(( ${#NEXT_TITLE} / 2 ))
+    BEST=-1
+    for ((d=0; d < ${#NEXT_TITLE}; d++)); do
+      FWD=$((TARGET + d))
+      BWD=$((TARGET - d))
+      if [[ $FWD -lt ${#NEXT_TITLE} && "${NEXT_TITLE:FWD:1}" == " " ]]; then
+        BEST=$FWD; break
+      fi
+      if [[ $BWD -gt 0 && "${NEXT_TITLE:BWD:1}" == " " ]]; then
+        BEST=$BWD; break
+      fi
+    done
+    if [[ $BEST -gt 0 ]]; then
+      printf '%s\n%s' "${NEXT_TITLE:0:BEST}" "${NEXT_TITLE:BEST+1}" > "$UPNEXT_FILE"
+    else
+      printf '%s' "$NEXT_TITLE" > "$UPNEXT_FILE"
     fi
-    NEXT_TITLE="Up Next: ${NEXT_DISPLAY}"
+  else
+    printf '%s' "$NEXT_TITLE" > "$UPNEXT_FILE"
+  fi
+
+  # Alpha expressions for 41s cycle: 33s main visible, 0.5s crossfade, 7s up-next, 0.5s crossfade
+  ALPHA_MAIN='if(lt(mod(t\,41)\,32.5)\,1\,if(lt(mod(t\,41)\,33)\,(33-mod(t\,41))/0.5\,if(lt(mod(t\,41)\,40)\,0\,(mod(t\,41)-40)/0.5)))'
+  ALPHA_NEXT='if(lt(mod(t\,41)\,32.5)\,0\,if(lt(mod(t\,41)\,33)\,(mod(t\,41)-32.5)/0.5\,if(lt(mod(t\,41)\,40)\,1\,(41-mod(t\,41))/0.5)))'
+
+  LANDSCAPE_WM=()
+  if [[ "$WATERMARK" == true && -f "$WM_FONT_SANS" ]]; then
+    TITLE_FONTSIZE="h/22"
+    if [[ ${#TITLE} -gt $((MAX_LINE * 2)) ]]; then
+      TITLE_FONTSIZE="h/28"
+    fi
     UPNEXT_FONTSIZE="h/22"
     if [[ ${#NEXT_TITLE} -gt $((MAX_LINE * 2)) ]]; then
       UPNEXT_FONTSIZE="h/28"
     fi
-    if [[ ${#NEXT_TITLE} -gt $MAX_LINE ]]; then
-      TARGET=$(( ${#NEXT_TITLE} / 2 ))
-      BEST=-1
-      for ((d=0; d < ${#NEXT_TITLE}; d++)); do
-        FWD=$((TARGET + d))
-        BWD=$((TARGET - d))
-        if [[ $FWD -lt ${#NEXT_TITLE} && "${NEXT_TITLE:FWD:1}" == " " ]]; then
-          BEST=$FWD; break
-        fi
-        if [[ $BWD -gt 0 && "${NEXT_TITLE:BWD:1}" == " " ]]; then
-          BEST=$BWD; break
-        fi
-      done
-      if [[ $BEST -gt 0 ]]; then
-        printf '%s\n%s' "${NEXT_TITLE:0:BEST}" "${NEXT_TITLE:BEST+1}" > "$UPNEXT_FILE"
-      else
-        printf '%s' "$NEXT_TITLE" > "$UPNEXT_FILE"
-      fi
-    else
-      printf '%s' "$NEXT_TITLE" > "$UPNEXT_FILE"
-    fi
-
-    # Alpha expressions for 41s cycle: 33s main visible, 0.5s crossfade, 7s up-next, 0.5s crossfade
-    # Timeline: 0-32.5 main=1, 32.5-33 fade out main/fade in next, 33-40 next=1, 40-41 fade out next/fade in main
-    ALPHA_MAIN='if(lt(mod(t\,41)\,32.5)\,1\,if(lt(mod(t\,41)\,33)\,(33-mod(t\,41))/0.5\,if(lt(mod(t\,41)\,40)\,0\,(mod(t\,41)-40)/0.5)))'
-    ALPHA_NEXT='if(lt(mod(t\,41)\,32.5)\,0\,if(lt(mod(t\,41)\,33)\,(mod(t\,41)-32.5)/0.5\,if(lt(mod(t\,41)\,40)\,1\,(41-mod(t\,41))/0.5)))'
 
     # Broadcast-style lower third:
     # Single semi-transparent background bar, church name always visible,
@@ -511,6 +507,8 @@ with open('$NOW_FILE', 'w') as f:
 [port_src]scale=1080:-2:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:656:black,\
 drawtext=fontfile=${PORTRAIT_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=42:fontcolor=white:x=(w-tw)/2:y=180,\
 drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=32:fontcolor=white@0.85:x=(w-tw)/2:y=240,\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=28:fontcolor=white:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=300:alpha=${ALPHA_MAIN},\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${UPNEXT_FILE}:fontsize=28:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=300:alpha=${ALPHA_NEXT},\
 split=2[portrait][prev_port_src];\
 [prev_port_src]fps=1/10,scale=-2:480[preview_port];\
 ${AUDIO_FILTER};\
@@ -553,6 +551,8 @@ ${AUDIO_FILTER};\
 scale=1080:-2:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:656:black,\
 drawtext=fontfile=${PORTRAIT_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=42:fontcolor=white:x=(w-tw)/2:y=180,\
 drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=32:fontcolor=white@0.85:x=(w-tw)/2:y=240,\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=28:fontcolor=white:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=300:alpha=${ALPHA_MAIN},\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${UPNEXT_FILE}:fontsize=28:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=300:alpha=${ALPHA_NEXT},\
 split=2[portrait][prev_port];\
 [prev_port]fps=1/10,scale=-2:480[preview];\
 ${AUDIO_FILTER}"
