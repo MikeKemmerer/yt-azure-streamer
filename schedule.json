@@ -12,7 +12,9 @@
   "overrides": [],
   "stream": {
     "max_resolution": "720p",
-    "shuffle": false
+    "shuffle": false,
+    "branding_name": "Saint Demetrios Greek Orthodox Church",
+    "branding_location": "Seattle, Washington"
   },
   "streams": {
     "landscape": {
@@ -27,9 +29,7 @@
       "stream_key_name": "youtube-stream-key-portrait",
       "max_resolution": "1080p",
       "shuffle": false,
-      "watermark": false,
-      "church_name": "Saint Demetrios Greek Orthodox Church",
-      "church_location": "Seattle, Washington"
+      "watermark": false
     }
   }
 }

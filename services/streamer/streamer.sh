@@ -94,8 +94,8 @@ echo "Portrait: ${PORT_W}x${PORT_H}"
 # --- Read per-stream config ---
 LANDSCAPE_KEY_NAME="youtube-stream-key"
 PORTRAIT_KEY_NAME="youtube-stream-key-portrait"
-PORTRAIT_CHURCH_NAME="Saint Demetrios Greek Orthodox Church"
-PORTRAIT_CHURCH_LOCATION="Seattle, Washington"
+BRANDING_NAME=""
+BRANDING_LOCATION=""
 LANDSCAPE_STREAM_NAME="Main Stream"
 PORTRAIT_STREAM_NAME="Shorts / Vertical"
 if [[ -f "$CONFIG_FILE" ]]; then
@@ -103,6 +103,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
 import json
 try:
   cfg = json.load(open('$CONFIG_FILE'))
+  stream = cfg.get('stream', {})
   streams = cfg.get('streams', {})
   l = streams.get('landscape', {})
   p = streams.get('portrait', {})
@@ -110,15 +111,24 @@ try:
   def esc(s): return str(s).replace(\"'\", \"'\\\\\\\"'\\\\\\\"'\")
   print(f\"LANDSCAPE_KEY_NAME='{esc(l.get('stream_key_name', 'youtube-stream-key'))}'\")
   print(f\"PORTRAIT_KEY_NAME='{esc(p.get('stream_key_name', 'youtube-stream-key-portrait'))}'\")
-  print(f\"PORTRAIT_CHURCH_NAME='{esc(p.get('church_name', 'Saint Demetrios Greek Orthodox Church'))}'\")
-  print(f\"PORTRAIT_CHURCH_LOCATION='{esc(p.get('church_location', 'Seattle, Washington'))}'\")
+  # Branding: prefer stream-level, fall back to portrait-level for backward compat
+  bn = stream.get('branding_name') or p.get('church_name', '')
+  bl = stream.get('branding_location') or p.get('church_location', '')
+  print(f\"BRANDING_NAME='{esc(bn)}'\")
+  print(f\"BRANDING_LOCATION='{esc(bl)}'\")
   print(f\"LANDSCAPE_STREAM_NAME='{esc(l.get('name', 'Main Stream'))}'\")
   print(f\"PORTRAIT_STREAM_NAME='{esc(p.get('name', 'Shorts / Vertical'))}'\")
 except: pass
 " 2>/dev/null)"
 fi
+# Set portrait variables from branding
+PORTRAIT_CHURCH_NAME="$BRANDING_NAME"
+PORTRAIT_CHURCH_LOCATION="$BRANDING_LOCATION"
 echo "Landscape key name: $LANDSCAPE_KEY_NAME ($LANDSCAPE_STREAM_NAME)"
 echo "Portrait key name: $PORTRAIT_KEY_NAME ($PORTRAIT_STREAM_NAME)"
+if [[ -n "$BRANDING_NAME" ]]; then
+  echo "Branding: $BRANDING_NAME — $BRANDING_LOCATION"
+fi
 
 # --- Fetch YouTube stream keys ---
 fetch_stream_key() {
@@ -442,9 +452,14 @@ except: pass
     # Broadcast-style lower third:
     # Single semi-transparent background bar, church name always visible,
     # title and "up next" crossfade on a 41s cycle
-    CHURCH_NAME="Saint Demetrios Greek Orthodox Church - Seattle, WA"
+    LANDSCAPE_LOWER_THIRD="${BRANDING_NAME}"
+    if [[ -n "$BRANDING_LOCATION" ]]; then
+      LANDSCAPE_LOWER_THIRD="${LANDSCAPE_LOWER_THIRD} - ${BRANDING_LOCATION}"
+    fi
     LANDSCAPE_WM+=("drawbox=x=0:y=ih-ih/6:w=iw:h=ih/6:color=black@0.5:t=fill")
-    LANDSCAPE_WM+=("drawtext=fontfile=${WM_FONT_SERIF}:text='${CHURCH_NAME}':fontsize=h/32:fontcolor=white@0.9:shadowcolor=black@0.6:shadowx=2:shadowy=2:x=w/30:y=h-h/7")
+    if [[ -n "$LANDSCAPE_LOWER_THIRD" ]]; then
+      LANDSCAPE_WM+=("drawtext=fontfile=${WM_FONT_SERIF}:text='${LANDSCAPE_LOWER_THIRD}':fontsize=h/32:fontcolor=white@0.9:shadowcolor=black@0.6:shadowx=2:shadowy=2:x=w/30:y=h-h/7")
+    fi
     LANDSCAPE_WM+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=${TITLE_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26:alpha=${ALPHA_MAIN}")
     LANDSCAPE_WM+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${UPNEXT_FILE}:fontsize=${UPNEXT_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26:alpha=${ALPHA_NEXT}")
   fi
@@ -484,6 +499,15 @@ except: pass
   PORTRAIT_HUD=""
   if [[ "${DURATION:-0}" -gt 0 && -f "$WM_FONT_SANS" ]]; then
     PORTRAIT_HUD=",drawtext=fontfile=${WM_FONT_SANS}:textfile=${TIME_FILE}:fontsize=${PORT_FONT_TIME}:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-w/15:y=${PORT_VID_BOTTOM}+10"
+  fi
+
+  # --- Portrait branding chain (organization name + location above video) ---
+  PORTRAIT_BRANDING=""
+  if [[ -n "$PORTRAIT_CHURCH_NAME" && -f "$WM_FONT_SERIF" ]]; then
+    PORTRAIT_BRANDING="${PORTRAIT_BRANDING},drawtext=fontfile=${WM_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=${PORT_FONT_CHURCH}:fontcolor=white:x=(w-tw)/2:y=${PORT_Y_CHURCH}"
+  fi
+  if [[ -n "$PORTRAIT_CHURCH_LOCATION" && -f "$WM_FONT_SANS" ]]; then
+    PORTRAIT_BRANDING="${PORTRAIT_BRANDING},drawtext=fontfile=${WM_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=${PORT_FONT_LOCATION}:fontcolor=white@0.85:x=(w-tw)/2:y=${PORT_Y_LOCATION}"
   fi
 
   NOW_FILE="/run/streamer-now.json"
@@ -568,9 +592,7 @@ with open('$NOW_FILE', 'w') as f:
     FILTER_COMPLEX="[0:v]${COMMON_VF_STRING}split=3[land_src][port_src][prev_land_src];\
 [land_src]${LANDSCAPE_WM_CHAIN}[land];\
 [prev_land_src]fps=1/10,scale=640:-2[preview_land];\
-[port_src]scale=${PORT_W}:-2:force_original_aspect_ratio=decrease,pad=${PORT_W}:${PORT_H}:(ow-iw)/2:${PORT_PAD_Y}:black,\
-drawtext=fontfile=${PORTRAIT_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=${PORT_FONT_CHURCH}:fontcolor=white:x=(w-tw)/2:y=${PORT_Y_CHURCH},\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=${PORT_FONT_LOCATION}:fontcolor=white@0.85:x=(w-tw)/2:y=${PORT_Y_LOCATION},\
+[port_src]scale=${PORT_W}:-2:force_original_aspect_ratio=decrease,pad=${PORT_W}:${PORT_H}:(ow-iw)/2:${PORT_PAD_Y}:black${PORTRAIT_BRANDING},\
 drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${PORT_TITLE_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_MAIN},\
 drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${PORT_UPNEXT_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT}${PORTRAIT_HUD},\
 split=2[portrait][prev_port_src];\
@@ -612,9 +634,7 @@ ${AUDIO_FILTER};\
     PORTRAIT_FONT_SERIF="$WM_FONT_SERIF"
     PORTRAIT_FONT_SANS="$WM_FONT_SANS"
     FILTER_COMPLEX="[0:v]${COMMON_VF_STRING}\
-scale=${PORT_W}:-2:force_original_aspect_ratio=decrease,pad=${PORT_W}:${PORT_H}:(ow-iw)/2:${PORT_PAD_Y}:black,\
-drawtext=fontfile=${PORTRAIT_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=${PORT_FONT_CHURCH}:fontcolor=white:x=(w-tw)/2:y=${PORT_Y_CHURCH},\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=${PORT_FONT_LOCATION}:fontcolor=white@0.85:x=(w-tw)/2:y=${PORT_Y_LOCATION},\
+scale=${PORT_W}:-2:force_original_aspect_ratio=decrease,pad=${PORT_W}:${PORT_H}:(ow-iw)/2:${PORT_PAD_Y}:black${PORTRAIT_BRANDING},\
 drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${PORT_TITLE_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_MAIN},\
 drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${PORT_UPNEXT_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT}${PORTRAIT_HUD},\
 split=2[portrait][prev_port];\

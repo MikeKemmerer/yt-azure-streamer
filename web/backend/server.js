@@ -257,6 +257,8 @@ const server = http.createServer(async (req, res) => {
         max_resolution: schedule.stream?.max_resolution || '720p',
         shuffle: schedule.stream?.shuffle || false,
         watermark: schedule.stream?.watermark || false,
+        branding_name: schedule.stream?.branding_name || '',
+        branding_location: schedule.stream?.branding_location || '',
         streams: schedule.streams || {}
       });
       return;
@@ -282,6 +284,12 @@ const server = http.createServer(async (req, res) => {
       }
       if (parsed.watermark !== undefined) {
         schedule.stream.watermark = !!parsed.watermark;
+      }
+      if (parsed.branding_name !== undefined) {
+        schedule.stream.branding_name = String(parsed.branding_name).slice(0, 200);
+      }
+      if (parsed.branding_location !== undefined) {
+        schedule.stream.branding_location = String(parsed.branding_location).slice(0, 200);
       }
       // Per-stream config updates
       if (parsed.streams && typeof parsed.streams === 'object') {

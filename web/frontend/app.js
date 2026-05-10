@@ -325,6 +325,8 @@ async function loadSettings() {
     document.getElementById('max-resolution').value = data.max_resolution;
     document.getElementById('shuffle-toggle').checked = data.shuffle;
     document.getElementById('watermark-toggle').checked = data.watermark;
+    document.getElementById('branding-name').value = data.branding_name || '';
+    document.getElementById('branding-location').value = data.branding_location || '';
     // Update stream key labels with configured names
     if (data.streams) {
       const landLabel = document.getElementById('landscape-key-label');
@@ -345,7 +347,9 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
       body: JSON.stringify({
         max_resolution: document.getElementById('max-resolution').value,
         shuffle: document.getElementById('shuffle-toggle').checked,
-        watermark: document.getElementById('watermark-toggle').checked
+        watermark: document.getElementById('watermark-toggle').checked,
+        branding_name: document.getElementById('branding-name').value.trim(),
+        branding_location: document.getElementById('branding-location').value.trim()
       })
     });
     showStatus(status, 'Settings saved.', true);
