@@ -513,14 +513,15 @@ drawtext=fontfile=${PORTRAIT_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize
 drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=32:fontcolor=white@0.85:x=(w-tw)/2:y=240,\
 split=2[portrait][prev_port_src];\
 [prev_port_src]fps=1/10,scale=-2:480[preview_port];\
-${AUDIO_FILTER}"
+${AUDIO_FILTER};\
+[audio]asplit=2[audio_land][audio_port]"
     OUTPUT_ARGS+=(
-      -map "[land]" -map "[audio]"
+      -map "[land]" -map "[audio_land]"
       -c:v libx264 -preset veryfast -maxrate "$MAXRATE" -bufsize "$BUFSIZE"
       -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
       -c:a aac -b:a "$AUDIO_BR" -ar 44100
       -f flv "$LANDSCAPE_RTMP"
-      -map "[portrait]" -map "[audio]"
+      -map "[portrait]" -map "[audio_port]"
       -c:v libx264 -preset veryfast -maxrate 5000k -bufsize 10000k
       -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
       -c:a aac -b:a 192k -ar 44100
