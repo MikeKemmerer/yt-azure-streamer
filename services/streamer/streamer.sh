@@ -51,29 +51,48 @@ declare -A RES_AUDIO=(
 
 echo "Streamer starting with prefix: $PREFIX"
 
-# --- Read max resolution from config ---
-MAX_RES="720p"
+# --- Read per-stream max resolution from config ---
+LAND_MAX_RES="720p"
+PORT_MAX_RES="1080p"
 if [[ -f "$CONFIG_FILE" ]]; then
-  CONFIGURED_RES=$(python3 -c "
-import json, sys
+  eval "$(python3 -c "
+import json
 try:
   cfg = json.load(open('$CONFIG_FILE'))
-  print(cfg.get('stream', {}).get('max_resolution', ''))
+  stream = cfg.get('stream', {})
+  streams = cfg.get('streams', {})
+  l = streams.get('landscape', {})
+  p = streams.get('portrait', {})
+  land_res = l.get('max_resolution') or stream.get('max_resolution', '720p')
+  port_res = p.get('max_resolution') or '1080p'
+  print(f\"LAND_MAX_RES='{land_res}'\")
+  print(f\"PORT_MAX_RES='{port_res}'\")
 except: pass
-" 2>/dev/null || true)
-  if [[ -n "$CONFIGURED_RES" && -n "${RES_HEIGHT[$CONFIGURED_RES]+x}" ]]; then
-    MAX_RES="$CONFIGURED_RES"
-  fi
+" 2>/dev/null)"
 fi
-MAX_H="${RES_HEIGHT[$MAX_RES]}"
-MAXRATE="${RES_BITRATE[$MAX_RES]}"
-BUFSIZE="${RES_BUFSIZE[$MAX_RES]}"
-AUDIO_BR="${RES_AUDIO[$MAX_RES]}"
-echo "Max resolution: $MAX_RES (${MAX_H}p, maxrate=$MAXRATE)"
+# Validate resolutions
+if [[ -z "${RES_HEIGHT[$LAND_MAX_RES]+x}" ]]; then LAND_MAX_RES="720p"; fi
+if [[ -z "${RES_HEIGHT[$PORT_MAX_RES]+x}" ]]; then PORT_MAX_RES="1080p"; fi
+LAND_MAX_H="${RES_HEIGHT[$LAND_MAX_RES]}"
+LAND_MAXRATE="${RES_BITRATE[$LAND_MAX_RES]}"
+LAND_BUFSIZE="${RES_BUFSIZE[$LAND_MAX_RES]}"
+LAND_AUDIO_BR="${RES_AUDIO[$LAND_MAX_RES]}"
+PORT_MAX_H="${RES_HEIGHT[$PORT_MAX_RES]}"
+PORT_MAXRATE="${RES_BITRATE[$PORT_MAX_RES]}"
+PORT_BUFSIZE="${RES_BUFSIZE[$PORT_MAX_RES]}"
+PORT_AUDIO_BR="${RES_AUDIO[$PORT_MAX_RES]}"
+# Input scaling uses the higher resolution
+if [[ "$LAND_MAX_H" -ge "$PORT_MAX_H" ]]; then
+  MAX_H="$LAND_MAX_H"
+else
+  MAX_H="$PORT_MAX_H"
+fi
+echo "Landscape max: $LAND_MAX_RES (${LAND_MAX_H}p, maxrate=$LAND_MAXRATE)"
+echo "Portrait max: $PORT_MAX_RES (${PORT_MAX_H}p, maxrate=$PORT_MAXRATE)"
 
-# --- Portrait dimensions (9:16 — width=MAX_H, height=MAX_H*16/9) ---
-PORT_W="$MAX_H"
-PORT_H=$(( MAX_H * 16 / 9 ))
+# --- Portrait dimensions (9:16 — width=PORT_MAX_H, height=PORT_MAX_H*16/9) ---
+PORT_W="$PORT_MAX_H"
+PORT_H=$(( PORT_MAX_H * 16 / 9 ))
 # Video pad offset: center video vertically in the portrait frame
 # 16:9 video at PORT_W wide → video height = PORT_W * 9 / 16 = MAX_H * 9 / 16
 PORT_VID_H=$(( PORT_W * 9 / 16 ))
@@ -98,6 +117,8 @@ BRANDING_NAME=""
 BRANDING_LOCATION=""
 LANDSCAPE_STREAM_NAME="Main Stream"
 PORTRAIT_STREAM_NAME="Shorts / Vertical"
+LAND_WATERMARK=false
+PORT_WATERMARK=false
 if [[ -f "$CONFIG_FILE" ]]; then
   eval "$(python3 -c "
 import json
@@ -118,6 +139,11 @@ try:
   print(f\"BRANDING_LOCATION='{esc(bl)}'\")
   print(f\"LANDSCAPE_STREAM_NAME='{esc(l.get('name', 'Main Stream'))}'\")
   print(f\"PORTRAIT_STREAM_NAME='{esc(p.get('name', 'Shorts / Vertical'))}'\")
+  # Per-stream watermark (lower third toggle)
+  lw = l.get('watermark', stream.get('watermark', False))
+  pw = p.get('watermark', False)
+  print(f\"LAND_WATERMARK={'true' if lw else 'false'}\")
+  print(f\"PORT_WATERMARK={'true' if pw else 'false'}\")
 except: pass
 " 2>/dev/null)"
 fi
@@ -126,6 +152,7 @@ PORTRAIT_CHURCH_NAME="$BRANDING_NAME"
 PORTRAIT_CHURCH_LOCATION="$BRANDING_LOCATION"
 echo "Landscape key name: $LANDSCAPE_KEY_NAME ($LANDSCAPE_STREAM_NAME)"
 echo "Portrait key name: $PORTRAIT_KEY_NAME ($PORTRAIT_STREAM_NAME)"
+echo "Lower third: landscape=$LAND_WATERMARK portrait=$PORT_WATERMARK"
 if [[ -n "$BRANDING_NAME" ]]; then
   echo "Branding: $BRANDING_NAME — $BRANDING_LOCATION"
 fi
@@ -196,23 +223,7 @@ except: pass
   fi
 fi
 
-# --- Read watermark config ---
-WATERMARK=false
-if [[ -f "$CONFIG_FILE" ]]; then
-  WM=$(python3 -c "
-import json, sys
-try:
-  cfg = json.load(open('$CONFIG_FILE'))
-  print(cfg.get('stream', {}).get('watermark', False))
-except: pass
-" 2>/dev/null || true)
-  if [[ "$WM" == "True" ]]; then
-    WATERMARK=true
-  fi
-fi
-echo "Watermark: $WATERMARK"
-
-# Watermark fonts
+# Overlay fonts
 WM_FONT_SERIF="/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
 if [[ ! -f "$WM_FONT_SERIF" ]]; then
   WM_FONT_SERIF="/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
@@ -321,7 +332,7 @@ except: pass
   # LANDSCAPE_WM: landscape-only watermark/HUD (NOT applied to portrait)
   SCALE_VF=()
   if [[ "$INPUT_H" -gt "$MAX_H" ]]; then
-    echo "  Input ${INPUT_H}p > max ${MAX_H}p — downscaling to ${MAX_RES}"
+    echo "  Input ${INPUT_H}p > max ${MAX_H}p — downscaling"
     SCALE_VF+=("$SCALE_FILTER")
   else
     echo "  Input ${INPUT_H}p <= max ${MAX_H}p — no scaling"
@@ -439,7 +450,7 @@ except: pass
   fi
 
   LANDSCAPE_WM=()
-  if [[ "$WATERMARK" == true && -f "$WM_FONT_SANS" ]]; then
+  if [[ "$LAND_WATERMARK" == true && -f "$WM_FONT_SANS" ]]; then
     TITLE_FONTSIZE="h/22"
     if [[ ${#TITLE} -gt $((MAX_LINE * 2)) ]]; then
       TITLE_FONTSIZE="h/28"
@@ -497,17 +508,24 @@ except: pass
 
   # --- Portrait HUD: time display just below video ---
   PORTRAIT_HUD=""
-  if [[ "${DURATION:-0}" -gt 0 && -f "$WM_FONT_SANS" ]]; then
+  if [[ "$PORT_WATERMARK" == true && "${DURATION:-0}" -gt 0 && -f "$WM_FONT_SANS" ]]; then
     PORTRAIT_HUD=",drawtext=fontfile=${WM_FONT_SANS}:textfile=${TIME_FILE}:fontsize=${PORT_FONT_TIME}:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-w/15:y=${PORT_VID_BOTTOM}+10"
   fi
 
   # --- Portrait branding chain (organization name + location above video) ---
   PORTRAIT_BRANDING=""
-  if [[ -n "$PORTRAIT_CHURCH_NAME" && -f "$WM_FONT_SERIF" ]]; then
+  if [[ "$PORT_WATERMARK" == true && -n "$PORTRAIT_CHURCH_NAME" && -f "$WM_FONT_SERIF" ]]; then
     PORTRAIT_BRANDING="${PORTRAIT_BRANDING},drawtext=fontfile=${WM_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=${PORT_FONT_CHURCH}:fontcolor=white:x=(w-tw)/2:y=${PORT_Y_CHURCH}"
   fi
-  if [[ -n "$PORTRAIT_CHURCH_LOCATION" && -f "$WM_FONT_SANS" ]]; then
+  if [[ "$PORT_WATERMARK" == true && -n "$PORTRAIT_CHURCH_LOCATION" && -f "$WM_FONT_SANS" ]]; then
     PORTRAIT_BRANDING="${PORTRAIT_BRANDING},drawtext=fontfile=${WM_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=${PORT_FONT_LOCATION}:fontcolor=white@0.85:x=(w-tw)/2:y=${PORT_Y_LOCATION}"
+  fi
+
+  # --- Portrait title/upnext overlays (cycling text) ---
+  PORTRAIT_TITLE_OVERLAYS=""
+  if [[ "$PORT_WATERMARK" == true && -f "$WM_FONT_SANS" ]]; then
+    PORTRAIT_TITLE_OVERLAYS=",drawtext=fontfile=${WM_FONT_SANS}:textfile=${PORT_TITLE_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_MAIN}"
+    PORTRAIT_TITLE_OVERLAYS="${PORTRAIT_TITLE_OVERLAYS},drawtext=fontfile=${WM_FONT_SANS}:textfile=${PORT_UPNEXT_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT}"
   fi
 
   NOW_FILE="/run/streamer-now.json"
@@ -587,28 +605,24 @@ with open('$NOW_FILE', 'w') as f:
 
   if [[ "$STREAM_LANDSCAPE" == true && "$STREAM_PORTRAIT" == true ]]; then
     # Dual output: scale before split, watermark on landscape branch only
-    PORTRAIT_FONT_SERIF="$WM_FONT_SERIF"
-    PORTRAIT_FONT_SANS="$WM_FONT_SANS"
     FILTER_COMPLEX="[0:v]${COMMON_VF_STRING}split=3[land_src][port_src][prev_land_src];\
 [land_src]${LANDSCAPE_WM_CHAIN}[land];\
 [prev_land_src]fps=1/10,scale=640:-2[preview_land];\
-[port_src]scale=${PORT_W}:-2:force_original_aspect_ratio=decrease,pad=${PORT_W}:${PORT_H}:(ow-iw)/2:${PORT_PAD_Y}:black${PORTRAIT_BRANDING},\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${PORT_TITLE_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_MAIN},\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${PORT_UPNEXT_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT}${PORTRAIT_HUD},\
+[port_src]scale=${PORT_W}:-2:force_original_aspect_ratio=decrease,pad=${PORT_W}:${PORT_H}:(ow-iw)/2:${PORT_PAD_Y}:black${PORTRAIT_BRANDING}${PORTRAIT_TITLE_OVERLAYS}${PORTRAIT_HUD},\
 split=2[portrait][prev_port_src];\
 [prev_port_src]fps=1/10,scale=-2:480[preview_port];\
 ${AUDIO_FILTER};\
 [audio]asplit=2[audio_land][audio_port]"
     OUTPUT_ARGS+=(
       -map "[land]" -map "[audio_land]"
-      -c:v libx264 -preset veryfast -maxrate "$MAXRATE" -bufsize "$BUFSIZE"
+      -c:v libx264 -preset veryfast -maxrate "$LAND_MAXRATE" -bufsize "$LAND_BUFSIZE"
       -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
-      -c:a aac -b:a "$AUDIO_BR" -ar 44100
+      -c:a aac -b:a "$LAND_AUDIO_BR" -ar 44100
       -f flv "$LANDSCAPE_RTMP"
       -map "[portrait]" -map "[audio_port]"
-      -c:v libx264 -preset veryfast -maxrate "$MAXRATE" -bufsize "$BUFSIZE"
+      -c:v libx264 -preset veryfast -maxrate "$PORT_MAXRATE" -bufsize "$PORT_BUFSIZE"
       -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
-      -c:a aac -b:a "$AUDIO_BR" -ar 44100
+      -c:a aac -b:a "$PORT_AUDIO_BR" -ar 44100
       -f flv "$PORTRAIT_RTMP"
       -map "[preview_land]"
       -update 1 -q:v 3 "$PREVIEW_LANDSCAPE"
@@ -621,9 +635,9 @@ ${AUDIO_FILTER};\
     FILTER_COMPLEX="[0:v]${LANDSCAPE_VF_STRING}split=2[stream][prev];[prev]fps=1/10,scale=640:-2[preview];${AUDIO_FILTER}"
     OUTPUT_ARGS+=(
       -map "[stream]" -map "[audio]"
-      -c:v libx264 -preset veryfast -maxrate "$MAXRATE" -bufsize "$BUFSIZE"
+      -c:v libx264 -preset veryfast -maxrate "$LAND_MAXRATE" -bufsize "$LAND_BUFSIZE"
       -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
-      -c:a aac -b:a "$AUDIO_BR" -ar 44100
+      -c:a aac -b:a "$LAND_AUDIO_BR" -ar 44100
       -f flv "$LANDSCAPE_RTMP"
       -map "[preview]"
       -update 1 -q:v 3 "$PREVIEW_LANDSCAPE"
@@ -631,20 +645,16 @@ ${AUDIO_FILTER};\
   elif [[ "$STREAM_PORTRAIT" == true ]]; then
     # Portrait only (no landscape watermark — portrait has its own overlays)
     rm -f "$PREVIEW_LANDSCAPE"
-    PORTRAIT_FONT_SERIF="$WM_FONT_SERIF"
-    PORTRAIT_FONT_SANS="$WM_FONT_SANS"
     FILTER_COMPLEX="[0:v]${COMMON_VF_STRING}\
-scale=${PORT_W}:-2:force_original_aspect_ratio=decrease,pad=${PORT_W}:${PORT_H}:(ow-iw)/2:${PORT_PAD_Y}:black${PORTRAIT_BRANDING},\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${PORT_TITLE_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_MAIN},\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${PORT_UPNEXT_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT}${PORTRAIT_HUD},\
+scale=${PORT_W}:-2:force_original_aspect_ratio=decrease,pad=${PORT_W}:${PORT_H}:(ow-iw)/2:${PORT_PAD_Y}:black${PORTRAIT_BRANDING}${PORTRAIT_TITLE_OVERLAYS}${PORTRAIT_HUD},\
 split=2[portrait][prev_port];\
 [prev_port]fps=1/10,scale=-2:480[preview];\
 ${AUDIO_FILTER}"
     OUTPUT_ARGS+=(
       -map "[portrait]" -map "[audio]"
-      -c:v libx264 -preset veryfast -maxrate "$MAXRATE" -bufsize "$BUFSIZE"
+      -c:v libx264 -preset veryfast -maxrate "$PORT_MAXRATE" -bufsize "$PORT_BUFSIZE"
       -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
-      -c:a aac -b:a "$AUDIO_BR" -ar 44100
+      -c:a aac -b:a "$PORT_AUDIO_BR" -ar 44100
       -f flv "$PORTRAIT_RTMP"
       -map "[preview]"
       -update 1 -q:v 3 "$PREVIEW_PORTRAIT"
