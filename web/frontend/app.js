@@ -297,14 +297,14 @@ document.getElementById('restart-streamer').addEventListener('click', async () =
   finally { btn.disabled = false; }
 });
 
-/* ── Stream Keys ─────────────────────────────────────────────────── */
+/* ── Stream Keys (inline in settings) ─────────────────────────────── */
 
-document.querySelectorAll('.stream-key-form').forEach(form => {
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const status = document.getElementById('stream-key-status');
-    const profile = form.dataset.profile;
-    const input = form.querySelector('input');
+document.querySelectorAll('.stream-key-btn').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const status = document.getElementById('settings-status');
+    const profile = btn.dataset.profile;
+    const input = btn.closest('.stream-key-inline').querySelector('input');
+    if (!input.value) return;
     try {
       await api('/api/stream-key', {
         method: 'POST',
@@ -322,18 +322,19 @@ document.querySelectorAll('.stream-key-form').forEach(form => {
 async function loadSettings() {
   try {
     const data = await api('/api/settings');
-    document.getElementById('max-resolution').value = data.max_resolution;
     document.getElementById('shuffle-toggle').checked = data.shuffle;
-    document.getElementById('watermark-toggle').checked = data.watermark;
     document.getElementById('branding-name').value = data.branding_name || '';
     document.getElementById('branding-location').value = data.branding_location || '';
-    // Update stream key labels with configured names
-    if (data.streams) {
-      const landLabel = document.getElementById('landscape-key-label');
-      const portLabel = document.getElementById('portrait-key-label');
-      if (data.streams.landscape?.name) landLabel.textContent = data.streams.landscape.name;
-      if (data.streams.portrait?.name) portLabel.textContent = data.streams.portrait.name;
-    }
+    // Per-stream settings
+    const land = data.streams?.landscape || {};
+    const port = data.streams?.portrait || {};
+    document.getElementById('land-max-resolution').value = land.max_resolution || data.max_resolution || '720p';
+    document.getElementById('land-watermark-toggle').checked = land.watermark ?? data.watermark ?? false;
+    document.getElementById('port-max-resolution').value = port.max_resolution || '1080p';
+    document.getElementById('port-watermark-toggle').checked = port.watermark ?? false;
+    // Update legend labels with configured names
+    if (land.name) document.getElementById('landscape-legend').textContent = land.name;
+    if (port.name) document.getElementById('portrait-legend').textContent = port.name;
   } catch { /* use defaults */ }
 }
 
@@ -345,11 +346,19 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        max_resolution: document.getElementById('max-resolution').value,
         shuffle: document.getElementById('shuffle-toggle').checked,
-        watermark: document.getElementById('watermark-toggle').checked,
         branding_name: document.getElementById('branding-name').value.trim(),
-        branding_location: document.getElementById('branding-location').value.trim()
+        branding_location: document.getElementById('branding-location').value.trim(),
+        streams: {
+          landscape: {
+            max_resolution: document.getElementById('land-max-resolution').value,
+            watermark: document.getElementById('land-watermark-toggle').checked
+          },
+          portrait: {
+            max_resolution: document.getElementById('port-max-resolution').value,
+            watermark: document.getElementById('port-watermark-toggle').checked
+          }
+        }
       })
     });
     showStatus(status, 'Settings saved.', true);

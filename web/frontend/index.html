@@ -128,54 +128,16 @@
     </div>
   </div>
 
-  <!-- ── Stream Keys ──────────────────────────────────────────────── -->
-  <div class="card">
-    <h2>Stream Keys</h2>
-    <p class="hint">Update YouTube stream keys. Takes effect on next stream start.</p>
-    <div class="stream-key-group">
-      <label class="stream-key-label"><strong id="landscape-key-label">Landscape</strong></label>
-      <form class="stream-key-form" data-profile="landscape">
-        <input type="password" placeholder="Enter landscape stream key" autocomplete="off" minlength="4" maxlength="256" required>
-        <button type="submit">Update</button>
-      </form>
-    </div>
-    <div class="stream-key-group">
-      <label class="stream-key-label"><strong id="portrait-key-label">Portrait</strong></label>
-      <form class="stream-key-form" data-profile="portrait">
-        <input type="password" placeholder="Enter portrait stream key" autocomplete="off" minlength="4" maxlength="256" required>
-        <button type="submit">Update</button>
-      </form>
-    </div>
-    <div id="stream-key-status" class="status"></div>
-  </div>
-
   <!-- ── Stream Settings ────────────────────────────────────────── -->
   <div class="card">
     <h2>Stream Settings</h2>
     <form id="settings-form">
-      <label>
-        Max Resolution
-        <select id="max-resolution">
-          <option value="144p">144p</option>
-          <option value="240p">240p</option>
-          <option value="360p">360p</option>
-          <option value="480p">480p</option>
-          <option value="720p">720p</option>
-          <option value="1080p">1080p</option>
-          <option value="1440p">1440p</option>
-          <option value="2160p">2160p</option>
-        </select>
-      </label>
       <label class="checkbox-label">
         <input type="checkbox" id="shuffle-toggle">
         Shuffle playlist order
       </label>
-      <label class="checkbox-label">
-        <input type="checkbox" id="watermark-toggle">
-        Show title watermark (lower third)
-      </label>
-      <fieldset style="margin:0.75rem 0;padding:0.5rem 0.75rem;border:1px solid var(--border);border-radius:6px">
-        <legend style="font-size:0.85rem;font-weight:600;padding:0 0.25rem">Branding</legend>
+      <fieldset class="stream-fieldset">
+        <legend>Branding</legend>
         <label>
           Organization Name
           <input type="text" id="branding-name" placeholder="e.g. Saint Demetrios Greek Orthodox Church" maxlength="200">
@@ -183,6 +145,60 @@
         <label>
           Location
           <input type="text" id="branding-location" placeholder="e.g. Seattle, Washington" maxlength="200">
+        </label>
+      </fieldset>
+      <fieldset class="stream-fieldset">
+        <legend id="landscape-legend">Landscape</legend>
+        <label>
+          Max Resolution
+          <select id="land-max-resolution">
+            <option value="144p">144p</option>
+            <option value="240p">240p</option>
+            <option value="360p">360p</option>
+            <option value="480p">480p</option>
+            <option value="720p" selected>720p</option>
+            <option value="1080p">1080p</option>
+            <option value="1440p">1440p</option>
+            <option value="2160p">2160p</option>
+          </select>
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="land-watermark-toggle">
+          Show lower third
+        </label>
+        <label>
+          Stream Key
+          <div class="stream-key-inline">
+            <input type="password" id="land-stream-key" placeholder="Enter stream key" autocomplete="off" maxlength="256">
+            <button type="button" class="secondary stream-key-btn" data-profile="landscape">Update</button>
+          </div>
+        </label>
+      </fieldset>
+      <fieldset class="stream-fieldset">
+        <legend id="portrait-legend">Portrait</legend>
+        <label>
+          Max Resolution
+          <select id="port-max-resolution">
+            <option value="144p">144p</option>
+            <option value="240p">240p</option>
+            <option value="360p">360p</option>
+            <option value="480p">480p</option>
+            <option value="720p">720p</option>
+            <option value="1080p" selected>1080p</option>
+            <option value="1440p">1440p</option>
+            <option value="2160p">2160p</option>
+          </select>
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="port-watermark-toggle">
+          Show lower third
+        </label>
+        <label>
+          Stream Key
+          <div class="stream-key-inline">
+            <input type="password" id="port-stream-key" placeholder="Enter stream key" autocomplete="off" maxlength="256">
+            <button type="button" class="secondary stream-key-btn" data-profile="portrait">Update</button>
+          </div>
         </label>
       </fieldset>
       <button type="submit">Save Settings</button>

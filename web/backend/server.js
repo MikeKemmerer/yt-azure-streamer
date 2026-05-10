@@ -301,6 +301,13 @@ const server = http.createServer(async (req, res) => {
             const dst = schedule.streams[profile];
             if (src.name !== undefined) dst.name = String(src.name).slice(0, 100);
             if (src.stream_key_name !== undefined) dst.stream_key_name = String(src.stream_key_name).slice(0, 100);
+            if (src.max_resolution !== undefined) {
+              if (!VALID_RESOLUTIONS.includes(src.max_resolution)) {
+                return jsonResponse(res, 400, { error: `Invalid ${profile} resolution. Valid: ${VALID_RESOLUTIONS.join(', ')}` });
+              }
+              dst.max_resolution = src.max_resolution;
+            }
+            if (src.watermark !== undefined) dst.watermark = !!src.watermark;
             if (src.church_name !== undefined) dst.church_name = String(src.church_name).slice(0, 200);
             if (src.church_location !== undefined) dst.church_location = String(src.church_location).slice(0, 200);
           }

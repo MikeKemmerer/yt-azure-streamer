@@ -867,6 +867,30 @@ body.dark .schedule-table tr.active-event { background: rgba(0, 120, 212, 0.15);
 .stream-key-form input {
   flex: 1;
 }
+.stream-key-inline {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+.stream-key-inline input {
+  flex: 1;
+}
+.stream-key-inline .stream-key-btn {
+  white-space: nowrap;
+}
+
+/* ── Stream settings fieldsets ─────────────────────────────────────── */
+.stream-fieldset {
+  margin: 0.75rem 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.stream-fieldset legend {
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0 0.25rem;
+}
 
 /* ── Stream checks in schedule editor ──────────────────────────────── */
 .stream-checks {
