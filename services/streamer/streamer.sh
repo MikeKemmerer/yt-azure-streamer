@@ -81,7 +81,7 @@ PORT_PAD_Y=$(( (PORT_H - PORT_VID_H) / 2 + PORT_VID_H / 10 ))
 # Font sizes scaled proportionally (base: 1080 wide)
 PORT_FONT_CHURCH=$(( 42 * PORT_W / 1080 ))
 PORT_FONT_LOCATION=$(( 32 * PORT_W / 1080 ))
-PORT_FONT_TITLE=$(( 28 * PORT_W / 1080 ))
+PORT_FONT_TITLE=$(( 42 * PORT_W / 1080 ))
 # Text Y positions scaled proportionally
 PORT_Y_CHURCH=$(( 180 * PORT_H / 1920 ))
 PORT_Y_LOCATION=$(( 240 * PORT_H / 1920 ))
@@ -387,6 +387,44 @@ except: pass
   ALPHA_MAIN='if(lt(mod(t\,41)\,32.5)\,1\,if(lt(mod(t\,41)\,33)\,(33-mod(t\,41))/0.5\,if(lt(mod(t\,41)\,40)\,0\,(mod(t\,41)-40)/0.5)))'
   ALPHA_NEXT='if(lt(mod(t\,41)\,32.5)\,0\,if(lt(mod(t\,41)\,33)\,(mod(t\,41)-32.5)/0.5\,if(lt(mod(t\,41)\,40)\,1\,(41-mod(t\,41))/0.5)))'
 
+  # --- Portrait title files (tighter wrap for larger font) ---
+  PORT_MAX_LINE=30
+  PORT_TITLE_FILE="/tmp/streamer-title-portrait.txt"
+  if [[ ${#TITLE} -gt $PORT_MAX_LINE ]]; then
+    TARGET=$(( ${#TITLE} / 2 ))
+    BEST=-1
+    for ((d=0; d < ${#TITLE}; d++)); do
+      FWD=$((TARGET + d)); BWD=$((TARGET - d))
+      if [[ $FWD -lt ${#TITLE} && "${TITLE:FWD:1}" == " " ]]; then BEST=$FWD; break; fi
+      if [[ $BWD -gt 0 && "${TITLE:BWD:1}" == " " ]]; then BEST=$BWD; break; fi
+    done
+    if [[ $BEST -gt 0 ]]; then
+      printf '%s\n%s' "${TITLE:0:BEST}" "${TITLE:BEST+1}" > "$PORT_TITLE_FILE"
+    else
+      printf '%s' "$TITLE" > "$PORT_TITLE_FILE"
+    fi
+  else
+    printf '%s' "$TITLE" > "$PORT_TITLE_FILE"
+  fi
+
+  PORT_UPNEXT_FILE="/tmp/streamer-upnext-portrait.txt"
+  if [[ ${#NEXT_TITLE} -gt $PORT_MAX_LINE ]]; then
+    TARGET=$(( ${#NEXT_TITLE} / 2 ))
+    BEST=-1
+    for ((d=0; d < ${#NEXT_TITLE}; d++)); do
+      FWD=$((TARGET + d)); BWD=$((TARGET - d))
+      if [[ $FWD -lt ${#NEXT_TITLE} && "${NEXT_TITLE:FWD:1}" == " " ]]; then BEST=$FWD; break; fi
+      if [[ $BWD -gt 0 && "${NEXT_TITLE:BWD:1}" == " " ]]; then BEST=$BWD; break; fi
+    done
+    if [[ $BEST -gt 0 ]]; then
+      printf '%s\n%s' "${NEXT_TITLE:0:BEST}" "${NEXT_TITLE:BEST+1}" > "$PORT_UPNEXT_FILE"
+    else
+      printf '%s' "$NEXT_TITLE" > "$PORT_UPNEXT_FILE"
+    fi
+  else
+    printf '%s' "$NEXT_TITLE" > "$PORT_UPNEXT_FILE"
+  fi
+
   LANDSCAPE_WM=()
   if [[ "$WATERMARK" == true && -f "$WM_FONT_SANS" ]]; then
     TITLE_FONTSIZE="h/22"
@@ -524,8 +562,8 @@ with open('$NOW_FILE', 'w') as f:
 [port_src]scale=${PORT_W}:-2:force_original_aspect_ratio=decrease,pad=${PORT_W}:${PORT_H}:(ow-iw)/2:${PORT_PAD_Y}:black,\
 drawtext=fontfile=${PORTRAIT_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=${PORT_FONT_CHURCH}:fontcolor=white:x=(w-tw)/2:y=${PORT_Y_CHURCH},\
 drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=${PORT_FONT_LOCATION}:fontcolor=white@0.85:x=(w-tw)/2:y=${PORT_Y_LOCATION},\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_MAIN},\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${UPNEXT_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT},\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${PORT_TITLE_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_MAIN},\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${PORT_UPNEXT_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT},\
 split=2[portrait][prev_port_src];\
 [prev_port_src]fps=1/10,scale=-2:480[preview_port];\
 ${AUDIO_FILTER};\
@@ -568,8 +606,8 @@ ${AUDIO_FILTER};\
 scale=${PORT_W}:-2:force_original_aspect_ratio=decrease,pad=${PORT_W}:${PORT_H}:(ow-iw)/2:${PORT_PAD_Y}:black,\
 drawtext=fontfile=${PORTRAIT_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=${PORT_FONT_CHURCH}:fontcolor=white:x=(w-tw)/2:y=${PORT_Y_CHURCH},\
 drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=${PORT_FONT_LOCATION}:fontcolor=white@0.85:x=(w-tw)/2:y=${PORT_Y_LOCATION},\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_MAIN},\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${UPNEXT_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT},\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${PORT_TITLE_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_MAIN},\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${PORT_UPNEXT_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT},\
 split=2[portrait][prev_port];\
 [prev_port]fps=1/10,scale=-2:480[preview];\
 ${AUDIO_FILTER}"
