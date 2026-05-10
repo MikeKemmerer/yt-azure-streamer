@@ -484,7 +484,7 @@ except: pass
   # --- Portrait HUD: time display + progress bar just below video ---
   PORTRAIT_HUD=""
   if [[ "${DURATION:-0}" -gt 0 && -f "$WM_FONT_SANS" ]]; then
-    PORTRAIT_HUD=",drawtext=fontfile=${WM_FONT_SANS}:textfile=${TIME_FILE}:fontsize=${PORT_FONT_TIME}:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-20:y=${PORT_VID_BOTTOM}+10"
+    PORTRAIT_HUD=",drawtext=fontfile=${WM_FONT_SANS}:textfile=${TIME_FILE}:fontsize=${PORT_FONT_TIME}:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-w/15:y=${PORT_VID_BOTTOM}+10"
     PORTRAIT_HUD="${PORTRAIT_HUD},drawbox=x=0:y=${PORT_VID_BOTTOM}:w=iw*t/${DURATION}:h=${PORT_PROGRESS_H}:color=red:thickness=fill"
   fi
 
