@@ -71,6 +71,23 @@ BUFSIZE="${RES_BUFSIZE[$MAX_RES]}"
 AUDIO_BR="${RES_AUDIO[$MAX_RES]}"
 echo "Max resolution: $MAX_RES (${MAX_H}p, maxrate=$MAXRATE)"
 
+# --- Portrait dimensions (9:16 — width=MAX_H, height=MAX_H*16/9) ---
+PORT_W="$MAX_H"
+PORT_H=$(( MAX_H * 16 / 9 ))
+# Video pad offset: center video vertically in the portrait frame
+# 16:9 video at PORT_W wide → video height = PORT_W * 9 / 16 = MAX_H * 9 / 16
+PORT_VID_H=$(( PORT_W * 9 / 16 ))
+PORT_PAD_Y=$(( (PORT_H - PORT_VID_H) / 2 + PORT_VID_H / 10 ))
+# Font sizes scaled proportionally (base: 1080 wide)
+PORT_FONT_CHURCH=$(( 42 * PORT_W / 1080 ))
+PORT_FONT_LOCATION=$(( 32 * PORT_W / 1080 ))
+PORT_FONT_TITLE=$(( 28 * PORT_W / 1080 ))
+# Text Y positions scaled proportionally
+PORT_Y_CHURCH=$(( 180 * PORT_H / 1920 ))
+PORT_Y_LOCATION=$(( 240 * PORT_H / 1920 ))
+PORT_Y_TITLE=$(( 300 * PORT_H / 1920 ))
+echo "Portrait: ${PORT_W}x${PORT_H}"
+
 # --- Read per-stream config ---
 LANDSCAPE_KEY_NAME="youtube-stream-key"
 PORTRAIT_KEY_NAME="youtube-stream-key-portrait"
@@ -504,11 +521,11 @@ with open('$NOW_FILE', 'w') as f:
     FILTER_COMPLEX="[0:v]${COMMON_VF_STRING}split=3[land_src][port_src][prev_land_src];\
 [land_src]${LANDSCAPE_WM_CHAIN}[land];\
 [prev_land_src]fps=1/10,scale=640:-2[preview_land];\
-[port_src]scale=1080:-2:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:656:black,\
-drawtext=fontfile=${PORTRAIT_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=42:fontcolor=white:x=(w-tw)/2:y=180,\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=32:fontcolor=white@0.85:x=(w-tw)/2:y=240,\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=28:fontcolor=white:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=300:alpha=${ALPHA_MAIN},\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${UPNEXT_FILE}:fontsize=28:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=300:alpha=${ALPHA_NEXT},\
+[port_src]scale=${PORT_W}:-2:force_original_aspect_ratio=decrease,pad=${PORT_W}:${PORT_H}:(ow-iw)/2:${PORT_PAD_Y}:black,\
+drawtext=fontfile=${PORTRAIT_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=${PORT_FONT_CHURCH}:fontcolor=white:x=(w-tw)/2:y=${PORT_Y_CHURCH},\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=${PORT_FONT_LOCATION}:fontcolor=white@0.85:x=(w-tw)/2:y=${PORT_Y_LOCATION},\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_MAIN},\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${UPNEXT_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT},\
 split=2[portrait][prev_port_src];\
 [prev_port_src]fps=1/10,scale=-2:480[preview_port];\
 ${AUDIO_FILTER};\
@@ -520,9 +537,9 @@ ${AUDIO_FILTER};\
       -c:a aac -b:a "$AUDIO_BR" -ar 44100
       -f flv "$LANDSCAPE_RTMP"
       -map "[portrait]" -map "[audio_port]"
-      -c:v libx264 -preset veryfast -maxrate 5000k -bufsize 10000k
+      -c:v libx264 -preset veryfast -maxrate "$MAXRATE" -bufsize "$BUFSIZE"
       -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
-      -c:a aac -b:a 192k -ar 44100
+      -c:a aac -b:a "$AUDIO_BR" -ar 44100
       -f flv "$PORTRAIT_RTMP"
       -map "[preview_land]"
       -update 1 -q:v 3 "$PREVIEW_LANDSCAPE"
@@ -548,19 +565,19 @@ ${AUDIO_FILTER};\
     PORTRAIT_FONT_SERIF="$WM_FONT_SERIF"
     PORTRAIT_FONT_SANS="$WM_FONT_SANS"
     FILTER_COMPLEX="[0:v]${COMMON_VF_STRING}\
-scale=1080:-2:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:656:black,\
-drawtext=fontfile=${PORTRAIT_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=42:fontcolor=white:x=(w-tw)/2:y=180,\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=32:fontcolor=white@0.85:x=(w-tw)/2:y=240,\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=28:fontcolor=white:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=300:alpha=${ALPHA_MAIN},\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${UPNEXT_FILE}:fontsize=28:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=300:alpha=${ALPHA_NEXT},\
+scale=${PORT_W}:-2:force_original_aspect_ratio=decrease,pad=${PORT_W}:${PORT_H}:(ow-iw)/2:${PORT_PAD_Y}:black,\
+drawtext=fontfile=${PORTRAIT_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=${PORT_FONT_CHURCH}:fontcolor=white:x=(w-tw)/2:y=${PORT_Y_CHURCH},\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=${PORT_FONT_LOCATION}:fontcolor=white@0.85:x=(w-tw)/2:y=${PORT_Y_LOCATION},\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_MAIN},\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${UPNEXT_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT},\
 split=2[portrait][prev_port];\
 [prev_port]fps=1/10,scale=-2:480[preview];\
 ${AUDIO_FILTER}"
     OUTPUT_ARGS+=(
       -map "[portrait]" -map "[audio]"
-      -c:v libx264 -preset veryfast -maxrate 5000k -bufsize 10000k
+      -c:v libx264 -preset veryfast -maxrate "$MAXRATE" -bufsize "$BUFSIZE"
       -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
-      -c:a aac -b:a 192k -ar 44100
+      -c:a aac -b:a "$AUDIO_BR" -ar 44100
       -f flv "$PORTRAIT_RTMP"
       -map "[preview]"
       -update 1 -q:v 3 "$PREVIEW_PORTRAIT"
