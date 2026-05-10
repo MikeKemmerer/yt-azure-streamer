@@ -823,7 +823,7 @@ function renderOverrides(overrides) {
   }
   let html = '<table class="schedule-table"><tr><th>Date</th><th>Name</th><th>Start</th><th>Stop</th><th>Streams</th><th>TZ</th><th></th></tr>';
   for (const o of overrides) {
-    const startCell = o.start ? esc(o.start) : '<em>skip</em>';
+    const startCell = o.startNow ? `<em>now</em> (${esc(o.start)})` : (o.start ? esc(o.start) : '<em>skip</em>');
     const stopCell  = o.stop  ? esc(o.stop)  : '<em>skip</em>';
     const tzCell    = o.timezone ? esc(o.timezone) : '<em>default</em>';
     const streamsCell = (o.streams || ['landscape']).join(', ');
@@ -857,6 +857,23 @@ document.getElementById('override-skip').addEventListener('change', () => {
   const skip = document.getElementById('override-skip').checked;
   document.getElementById('override-times').style.display = skip ? 'none' : '';
   document.getElementById('override-streams').style.display = skip ? 'none' : '';
+  if (skip) document.getElementById('override-start-now').checked = false;
+});
+
+document.getElementById('override-start-now').addEventListener('change', () => {
+  const startNow = document.getElementById('override-start-now').checked;
+  const startInput = document.getElementById('override-start');
+  const dateInput = document.getElementById('override-date');
+  if (startNow) {
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    startInput.value = `${hh}:${mm}`;
+    startInput.disabled = true;
+    dateInput.value = now.toISOString().slice(0, 10);
+  } else {
+    startInput.disabled = false;
+  }
 });
 
 document.getElementById('save-override').addEventListener('click', async () => {
@@ -864,17 +881,20 @@ document.getElementById('save-override').addEventListener('click', async () => {
   const date  = document.getElementById('override-date').value;
   const name  = document.getElementById('override-name').value.trim();
   const skip  = document.getElementById('override-skip').checked;
+  const startNow = document.getElementById('override-start-now').checked;
   const start = skip ? null : document.getElementById('override-start').value;
   const stop  = skip ? null : document.getElementById('override-stop').value;
 
   if (!date) return showStatus(status, 'Please select a date.', false);
-  if (!skip && (!start || !stop)) return showStatus(status, 'Please provide both Start and Stop times.', false);
+  if (!skip && !stop) return showStatus(status, 'Please provide a Stop time.', false);
+  if (!skip && !startNow && !start) return showStatus(status, 'Please provide a Start time or check "Start now".', false);
 
   // null start/stop signals "skip this day entirely" to the backend
   const streams = Array.from(document.querySelectorAll('#override-streams input:checked')).map(cb => cb.value);
   if (!skip && streams.length === 0) return showStatus(status, 'Please select at least one stream.', false);
   const payload = { date, start, stop };
   if (!skip) payload.streams = streams;
+  if (startNow) payload.startNow = true;
   if (name) payload.name = name;
   const overrideTz = document.getElementById('override-tz').value;
   if (overrideTz && overrideTz !== scheduleData.timezone) payload.timezone = overrideTz;
@@ -892,6 +912,8 @@ document.getElementById('save-override').addEventListener('click', async () => {
       showStatus(status, 'Override saved and synced.', true);
     }
     document.getElementById('override-add-details').removeAttribute('open');
+    document.getElementById('override-start-now').checked = false;
+    document.getElementById('override-start').disabled = false;
     loadSchedule();
   } catch (e) { showStatus(status, e.message, false); }
 });

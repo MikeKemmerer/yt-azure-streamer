@@ -60,8 +60,11 @@ for override in schedule.get("overrides", []):
     # Found an override for today
     o_start = override.get("start")
     o_stop = override.get("stop")
-    if not o_start or not o_stop:
-        sys.exit(1)  # Override with null times = skip today
+    o_start_now = override.get("startNow", False)
+    if not o_stop:
+        sys.exit(1)  # Override with no stop = skip today
+    if not o_start and not o_start_now:
+        sys.exit(1)  # No start info = skip today
     # Use per-override timezone if specified
     o_tz_name = override.get("timezone")
     if o_tz_name:
@@ -70,10 +73,20 @@ for override in schedule.get("overrides", []):
             now = datetime.datetime.now(tz=o_tz)
         except Exception:
             pass
-    sh, sm = map(int, o_start.split(":"))
     eh, em = map(int, o_stop.split(":"))
-    start_t = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
     stop_t  = now.replace(hour=eh, minute=em, second=0, microsecond=0)
+    if o_start_now:
+        # startNow: stream is active from override creation until stop
+        if o_start:
+            sh, sm = map(int, o_start.split(":"))
+            start_t = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
+        else:
+            start_t = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    else:
+        sh, sm = map(int, o_start.split(":"))
+        start_t = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
+    if stop_t <= start_t:
+        stop_t += datetime.timedelta(days=1)
     if start_t <= now < stop_t:
         streams = override.get("streams", ["landscape"])
         for s in streams:
