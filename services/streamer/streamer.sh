@@ -82,10 +82,10 @@ PORT_PAD_Y=$(( (PORT_H - PORT_VID_H) / 2 + PORT_VID_H / 10 ))
 PORT_FONT_CHURCH=$(( 42 * PORT_W / 1080 ))
 PORT_FONT_LOCATION=$(( 32 * PORT_W / 1080 ))
 PORT_FONT_TITLE=$(( 42 * PORT_W / 1080 ))
-# Text Y positions scaled proportionally
-PORT_Y_CHURCH=$(( 180 * PORT_H / 1920 ))
-PORT_Y_LOCATION=$(( 240 * PORT_H / 1920 ))
-PORT_Y_TITLE=$(( 300 * PORT_H / 1920 ))
+# Text Y positions scaled proportionally (pushed down to clear YouTube nav)
+PORT_Y_CHURCH=$(( 360 * PORT_H / 1920 ))
+PORT_Y_LOCATION=$(( 420 * PORT_H / 1920 ))
+PORT_Y_TITLE=$(( 480 * PORT_H / 1920 ))
 # Position just below the video for time display and progress bar
 PORT_VID_BOTTOM=$(( PORT_PAD_Y + PORT_VID_H ))
 PORT_FONT_TIME=$(( 24 * PORT_W / 1080 ))
@@ -485,7 +485,7 @@ except: pass
   PORTRAIT_HUD=""
   if [[ "${DURATION:-0}" -gt 0 && -f "$WM_FONT_SANS" ]]; then
     PORTRAIT_HUD=",drawtext=fontfile=${WM_FONT_SANS}:textfile=${TIME_FILE}:fontsize=${PORT_FONT_TIME}:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-w/15:y=${PORT_VID_BOTTOM}+10"
-    PORTRAIT_HUD="${PORTRAIT_HUD},drawbox=x=0:y=${PORT_VID_BOTTOM}:w=iw*t/${DURATION}:h=${PORT_PROGRESS_H}:color=red:thickness=fill"
+    PORTRAIT_HUD="${PORTRAIT_HUD},drawbox=x=0:y=${PORT_VID_BOTTOM}:w=${PORT_W}*t/${DURATION}:h=${PORT_PROGRESS_H}:color=red:thickness=fill:eval=frame"
   fi
 
   NOW_FILE="/run/streamer-now.json"
