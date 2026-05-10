@@ -605,6 +605,7 @@ const server = http.createServer(async (req, res) => {
             const [eh, em] = o.stop.split(':').map(Number);
             const startTime = new Date(d); startTime.setHours(sh, sm, 0, 0);
             const stopTime = new Date(d); stopTime.setHours(eh, em, 0, 0);
+            if (stopTime <= startTime) stopTime.setDate(stopTime.getDate() + 1);
             if (!nextStart && startTime > now) nextStart = startTime.toISOString();
             if (!nextStop && stopTime > now) nextStop = stopTime.toISOString();
           }
@@ -626,10 +627,16 @@ const server = http.createServer(async (req, res) => {
         if (nextStart && nextStop) break;
       }
 
+      let todayLocal;
+      try {
+        todayLocal = new Intl.DateTimeFormat('en-CA', { timeZone: schedule.timezone || 'UTC' }).format(now);
+      } catch {
+        todayLocal = now.toISOString().slice(0, 10);
+      }
       jsonResponse(res, 200, {
         timezone: schedule.timezone || 'UTC',
         events: schedule.events || [],
-        overrides: (schedule.overrides || []).filter(o => o.date >= now.toISOString().slice(0, 10)),
+        overrides: (schedule.overrides || []).filter(o => o.date >= todayLocal),
         stream: schedule.stream || {},
         nextStart,
         nextStop
@@ -682,7 +689,12 @@ const server = http.createServer(async (req, res) => {
     // Returns the list of schedule overrides (future only)
     if (req.method === 'GET' && req.url === '/api/overrides') {
       const schedule = readSchedule();
-      const today = new Date().toISOString().slice(0, 10);
+      let today;
+      try {
+        today = new Intl.DateTimeFormat('en-CA', { timeZone: schedule.timezone || 'UTC' }).format(new Date());
+      } catch {
+        today = new Date().toISOString().slice(0, 10);
+      }
       const overrides = (schedule.overrides || []).filter(o => o.date >= today);
       jsonResponse(res, 200, { overrides });
       return;
@@ -699,15 +711,29 @@ const server = http.createServer(async (req, res) => {
       if (!parsed.date || !/^\d{4}-\d{2}-\d{2}$/.test(parsed.date)) {
         return jsonResponse(res, 400, { error: 'date is required (YYYY-MM-DD)' });
       }
-      const today = new Date().toISOString().slice(0, 10);
+      const schedule = readSchedule();
+      if (!Array.isArray(schedule.overrides)) schedule.overrides = [];
+      const tz = parsed.timezone || schedule.timezone || 'UTC';
+      let today;
+      try {
+        today = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date());
+      } catch {
+        today = new Date().toISOString().slice(0, 10);
+      }
       if (parsed.date < today) {
         return jsonResponse(res, 400, { error: 'Cannot create override in the past' });
       }
-      // Validate start/stop if provided (both or neither)
+      // Validate start/stop if provided (both or neither, unless startNow)
       const hasStart = parsed.start !== undefined && parsed.start !== null;
       const hasStop = parsed.stop !== undefined && parsed.stop !== null;
-      if (hasStart !== hasStop) {
+      const startNow = !!parsed.startNow;
+      if (!startNow && hasStart !== hasStop) {
         return jsonResponse(res, 400, { error: 'Provide both start and stop, or neither (to skip the day)' });
+      }
+      if (!hasStart && !hasStop && !startNow) {
+        // skip-day override — no times needed
+      } else if (!hasStop) {
+        return jsonResponse(res, 400, { error: 'Provide a stop time' });
       }
       if (hasStart && !/^\d{2}:\d{2}$/.test(parsed.start)) {
         return jsonResponse(res, 400, { error: 'start must be HH:MM format' });
@@ -715,9 +741,6 @@ const server = http.createServer(async (req, res) => {
       if (hasStop && !/^\d{2}:\d{2}$/.test(parsed.stop)) {
         return jsonResponse(res, 400, { error: 'stop must be HH:MM format' });
       }
-
-      const schedule = readSchedule();
-      if (!Array.isArray(schedule.overrides)) schedule.overrides = [];
 
       // Prune past overrides
       schedule.overrides = schedule.overrides.filter(o => o.date >= today);
@@ -728,6 +751,7 @@ const server = http.createServer(async (req, res) => {
         date: parsed.date,
         start: hasStart ? String(parsed.start).slice(0, 5) : null,
         stop: hasStop ? String(parsed.stop).slice(0, 5) : null,
+        startNow: startNow || undefined,
         name: parsed.name ? String(parsed.name).slice(0, 100) : undefined,
         timezone: parsed.timezone ? String(parsed.timezone).slice(0, 50) : undefined
       };
