@@ -86,6 +86,10 @@ PORT_FONT_TITLE=$(( 42 * PORT_W / 1080 ))
 PORT_Y_CHURCH=$(( 180 * PORT_H / 1920 ))
 PORT_Y_LOCATION=$(( 240 * PORT_H / 1920 ))
 PORT_Y_TITLE=$(( 300 * PORT_H / 1920 ))
+# Position just below the video for time display and progress bar
+PORT_VID_BOTTOM=$(( PORT_PAD_Y + PORT_VID_H ))
+PORT_FONT_TIME=$(( 24 * PORT_W / 1080 ))
+PORT_PROGRESS_H=4
 echo "Portrait: ${PORT_W}x${PORT_H}"
 
 # --- Read per-stream config ---
@@ -477,6 +481,13 @@ except: pass
     fi
   fi
 
+  # --- Portrait HUD: time display + progress bar just below video ---
+  PORTRAIT_HUD=""
+  if [[ "${DURATION:-0}" -gt 0 && -f "$WM_FONT_SANS" ]]; then
+    PORTRAIT_HUD=",drawtext=fontfile=${WM_FONT_SANS}:textfile=${TIME_FILE}:fontsize=${PORT_FONT_TIME}:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-20:y=${PORT_VID_BOTTOM}+10"
+    PORTRAIT_HUD="${PORTRAIT_HUD},drawbox=x=0:y=${PORT_VID_BOTTOM}:w=iw*t/${DURATION}:h=${PORT_PROGRESS_H}:color=red:t=fill"
+  fi
+
   NOW_FILE="/run/streamer-now.json"
   python3 -c "
 import json, sys
@@ -563,7 +574,7 @@ with open('$NOW_FILE', 'w') as f:
 drawtext=fontfile=${PORTRAIT_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=${PORT_FONT_CHURCH}:fontcolor=white:x=(w-tw)/2:y=${PORT_Y_CHURCH},\
 drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=${PORT_FONT_LOCATION}:fontcolor=white@0.85:x=(w-tw)/2:y=${PORT_Y_LOCATION},\
 drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${PORT_TITLE_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_MAIN},\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${PORT_UPNEXT_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT},\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${PORT_UPNEXT_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT}${PORTRAIT_HUD},\
 split=2[portrait][prev_port_src];\
 [prev_port_src]fps=1/10,scale=-2:480[preview_port];\
 ${AUDIO_FILTER};\
@@ -607,7 +618,7 @@ scale=${PORT_W}:-2:force_original_aspect_ratio=decrease,pad=${PORT_W}:${PORT_H}:
 drawtext=fontfile=${PORTRAIT_FONT_SERIF}:text='${PORTRAIT_CHURCH_NAME}':fontsize=${PORT_FONT_CHURCH}:fontcolor=white:x=(w-tw)/2:y=${PORT_Y_CHURCH},\
 drawtext=fontfile=${PORTRAIT_FONT_SANS}:text='${PORTRAIT_CHURCH_LOCATION}':fontsize=${PORT_FONT_LOCATION}:fontcolor=white@0.85:x=(w-tw)/2:y=${PORT_Y_LOCATION},\
 drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${PORT_TITLE_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_MAIN},\
-drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${PORT_UPNEXT_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT},\
+drawtext=fontfile=${PORTRAIT_FONT_SANS}:textfile=${PORT_UPNEXT_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT}${PORTRAIT_HUD},\
 split=2[portrait][prev_port];\
 [prev_port]fps=1/10,scale=-2:480[preview];\
 ${AUDIO_FILTER}"
