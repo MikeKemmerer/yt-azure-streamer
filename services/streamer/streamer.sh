@@ -392,7 +392,7 @@ except: pass
   ALPHA_NEXT='if(lt(mod(t\,41)\,32.5)\,0\,if(lt(mod(t\,41)\,33)\,(mod(t\,41)-32.5)/0.5\,if(lt(mod(t\,41)\,40)\,1\,(41-mod(t\,41))/0.5)))'
 
   # --- Portrait title files (tighter wrap for larger font) ---
-  PORT_MAX_LINE=30
+  PORT_MAX_LINE=22
   PORT_TITLE_FILE="/tmp/streamer-title-portrait.txt"
   if [[ ${#TITLE} -gt $PORT_MAX_LINE ]]; then
     TARGET=$(( ${#TITLE} / 2 ))
@@ -485,7 +485,7 @@ except: pass
   PORTRAIT_HUD=""
   if [[ "${DURATION:-0}" -gt 0 && -f "$WM_FONT_SANS" ]]; then
     PORTRAIT_HUD=",drawtext=fontfile=${WM_FONT_SANS}:textfile=${TIME_FILE}:fontsize=${PORT_FONT_TIME}:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-20:y=${PORT_VID_BOTTOM}+10"
-    PORTRAIT_HUD="${PORTRAIT_HUD},drawbox=x=0:y=${PORT_VID_BOTTOM}:w=iw*t/${DURATION}:h=${PORT_PROGRESS_H}:color=red:t=fill"
+    PORTRAIT_HUD="${PORTRAIT_HUD},drawbox=x=0:y=${PORT_VID_BOTTOM}:w=iw*t/${DURATION}:h=${PORT_PROGRESS_H}:color=red:thickness=fill"
   fi
 
   NOW_FILE="/run/streamer-now.json"
