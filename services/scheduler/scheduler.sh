@@ -100,16 +100,30 @@ for override in schedule.get("overrides", []):
 # No override — use weekly schedule
 for event in schedule.get("events", []):
     days = [day_map[d] for d in event.get("days", []) if d in day_map]
-    if now.weekday() not in days:
-        continue
     sh, sm = map(int, event["start"].split(":"))
     eh, em = map(int, event["stop"].split(":"))
-    start_t = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
-    stop_t  = now.replace(hour=eh, minute=em, second=0, microsecond=0)
-    if start_t <= now < stop_t:
-        streams = event.get("streams", ["landscape"])
-        for s in streams:
-            active_streams.add(s)
+    overnight = (eh, em) <= (sh, sm)
+
+    # Same-day windows
+    if now.weekday() in days:
+        start_t = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
+        stop_t  = now.replace(hour=eh, minute=em, second=0, microsecond=0)
+        if overnight:
+            stop_t += datetime.timedelta(days=1)
+        if start_t <= now < stop_t:
+            streams = event.get("streams", ["landscape"])
+            for s in streams:
+                active_streams.add(s)
+
+    # Overnight windows after midnight (previous day's event)
+    if overnight and ((now.weekday() - 1) % 7) in days:
+        prev_day = now - datetime.timedelta(days=1)
+        start_t = prev_day.replace(hour=sh, minute=sm, second=0, microsecond=0)
+        stop_t  = now.replace(hour=eh, minute=em, second=0, microsecond=0)
+        if start_t <= now < stop_t:
+            streams = event.get("streams", ["landscape"])
+            for s in streams:
+                active_streams.add(s)
 
 if active_streams:
     print(" ".join(sorted(active_streams)))
@@ -173,4 +187,3 @@ while true; do
   fi
   sleep "$CHECK_INTERVAL"
 done
-

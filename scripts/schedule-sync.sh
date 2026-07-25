@@ -132,7 +132,8 @@ for event in schedule.get("events", []):
             continue
         day_idx = day_map[day_abbr]
         start_day, start_ph, start_pm = apply_padding(day_idx, start_h, start_m, -padding_min)
-        stop_day,  stop_ph,  stop_pm  = apply_padding(day_idx, stop_h,  stop_m,  +padding_min)
+        stop_base_day = (day_idx + 1) % 7 if (stop_h, stop_m) <= (start_h, start_m) else day_idx
+        stop_day,  stop_ph,  stop_pm  = apply_padding(stop_base_day, stop_h,  stop_m,  +padding_min)
 
         for kind, pd, h, m, runbook in [
             ("start", start_day, start_ph, start_pm, RUNBOOK_START),
@@ -421,4 +422,3 @@ for name in onetime_to_create:
 
 print("Schedule sync complete.")
 PYEOF
-

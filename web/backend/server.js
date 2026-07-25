@@ -513,6 +513,8 @@ const server = http.createServer(async (req, res) => {
         }
       } catch { /* use defaults */ }
       // Write stream signal files
+      try { fs.unlinkSync(ACTIVE_LANDSCAPE); } catch {}
+      try { fs.unlinkSync(ACTIVE_PORTRAIT); } catch {}
       if (streams.includes('landscape')) {
         try { fs.writeFileSync(ACTIVE_LANDSCAPE, ''); } catch {}
       }
