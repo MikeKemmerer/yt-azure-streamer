@@ -132,7 +132,8 @@ for event in schedule.get("events", []):
             continue
         day_idx = day_map[day_abbr]
         start_day, start_ph, start_pm = apply_padding(day_idx, start_h, start_m, -padding_min)
-        stop_day,  stop_ph,  stop_pm  = apply_padding(day_idx, stop_h,  stop_m,  +padding_min)
+        stop_base_day = (day_idx + 1) % 7 if (stop_h, stop_m) <= (start_h, start_m) else day_idx
+        stop_day,  stop_ph,  stop_pm  = apply_padding(stop_base_day, stop_h,  stop_m,  +padding_min)
 
         for kind, pd, h, m, runbook in [
             ("start", start_day, start_ph, start_pm, RUNBOOK_START),
@@ -186,35 +187,46 @@ for override in schedule.get("overrides", []):
     # Create one-time schedules for this override (if it has start/stop times)
     o_start = override.get("start")
     o_stop = override.get("stop")
-    if not o_start or not o_stop:
-        # Null times = skip day entirely (just push recurring, no one-time)
+    o_start_now = override.get("startNow", False)
+    if not o_stop:
+        # No stop time = skip day entirely (just push recurring, no one-time)
+        continue
+    if not o_start and not o_start_now:
         continue
 
-    o_start_h, o_start_m = map(int, o_start.split(":"))
     o_stop_h, o_stop_m = map(int, o_stop.split(":"))
 
     # Use per-override timezone if specified, otherwise fall back to schedule timezone
     o_tz_name = override.get("timezone")
     o_tz = ZoneInfo(o_tz_name) if o_tz_name else tz
 
-    # Apply padding
-    start_dt = datetime.datetime(o_date.year, o_date.month, o_date.day,
-                                  o_start_h, o_start_m, tzinfo=o_tz)
-    start_dt -= datetime.timedelta(minutes=padding_min)
+    o_name = override.get("name", "override").replace(" ", "-")
+
+    # Build stop schedule (always needed)
     stop_dt = datetime.datetime(o_date.year, o_date.month, o_date.day,
                                  o_stop_h, o_stop_m, tzinfo=o_tz)
-    stop_dt += datetime.timedelta(minutes=padding_min)
 
-    # Convert to UTC for Azure
-    start_utc = start_dt.astimezone(datetime.timezone.utc)
-    stop_utc = stop_dt.astimezone(datetime.timezone.utc)
+    # Build start schedule only if not startNow
+    if not o_start_now:
+        o_start_h, o_start_m = map(int, o_start.split(":"))
+        start_dt = datetime.datetime(o_date.year, o_date.month, o_date.day,
+                                      o_start_h, o_start_m, tzinfo=o_tz)
+        if stop_dt <= start_dt:
+            stop_dt += datetime.timedelta(days=1)
+        start_dt -= datetime.timedelta(minutes=padding_min)
+        stop_dt += datetime.timedelta(minutes=padding_min)
+        start_utc = start_dt.astimezone(datetime.timezone.utc)
+        stop_utc = stop_dt.astimezone(datetime.timezone.utc)
+        desired_onetime[f"override-{o_date_str}-start"] = {
+            "startTimeUtc": start_utc.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+            "runbook": RUNBOOK_START,
+            "description": f"One-time start for '{o_name}' on {o_date_str}",
+        }
+    else:
+        # startNow: no start entry; stop still gets padding
+        stop_dt += datetime.timedelta(minutes=padding_min)
+        stop_utc = stop_dt.astimezone(datetime.timezone.utc)
 
-    o_name = override.get("name", "override").replace(" ", "-")
-    desired_onetime[f"override-{o_date_str}-start"] = {
-        "startTimeUtc": start_utc.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
-        "runbook": RUNBOOK_START,
-        "description": f"One-time start for '{o_name}' on {o_date_str}",
-    }
     desired_onetime[f"override-{o_date_str}-stop"] = {
         "startTimeUtc": stop_utc.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
         "runbook": RUNBOOK_STOP,
@@ -410,4 +422,3 @@ for name in onetime_to_create:
 
 print("Schedule sync complete.")
 PYEOF
-

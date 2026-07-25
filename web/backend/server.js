@@ -23,7 +23,8 @@ const NOW_FILE = '/run/streamer-now.json';
 const PREVIEW_FILE = '/opt/yt/web/frontend/stream-preview.jpg';
 const MODE_FILE = '/etc/yt/mode';
 const LOCAL_CONF = '/etc/yt/local.conf';
-const STREAM_KEY_FILE = '/etc/yt/secrets/stream-key';
+const ACTIVE_LANDSCAPE = '/run/streamer-active-landscape';
+const ACTIVE_PORTRAIT = '/run/streamer-active-portrait';
 
 function readMode() {
   try { return fs.readFileSync(MODE_FILE, 'utf8').trim(); } catch { return 'azure'; }
@@ -214,13 +215,25 @@ const server = http.createServer(async (req, res) => {
         return jsonResponse(res, 400, { error: 'Invalid JSON' });
       }
       const key = parsed.streamKey;
+      const profile = parsed.profile || 'landscape';  // 'landscape' or 'portrait'
       if (!key || typeof key !== 'string' || key.length < 4 || key.length > 256) {
         return jsonResponse(res, 400, { error: 'streamKey must be 4-256 characters' });
       }
+      if (!['landscape', 'portrait'].includes(profile)) {
+        return jsonResponse(res, 400, { error: 'profile must be "landscape" or "portrait"' });
+      }
+
+      // Determine key name from streams config
+      const schedule = readSchedule();
+      const streams = schedule.streams || {};
+      const streamCfg = streams[profile] || {};
+      const keyName = streamCfg.stream_key_name || (profile === 'portrait' ? 'youtube-stream-key-portrait' : 'youtube-stream-key');
+
       if (readMode() === 'local') {
         try {
-          fs.writeFileSync(STREAM_KEY_FILE, key + '\n', { mode: 0o600 });
-          return jsonResponse(res, 200, { ok: true });
+          const keyFile = `/etc/yt/secrets/${keyName}`;
+          fs.writeFileSync(keyFile, key + '\n', { mode: 0o600 });
+          return jsonResponse(res, 200, { ok: true, profile });
         } catch (e) {
           return jsonResponse(res, 500, { error: 'Failed to write stream key: ' + e.message });
         }
@@ -228,11 +241,11 @@ const server = http.createServer(async (req, res) => {
       const vault = kvName();
       execFile('az', [
         'keyvault', 'secret', 'set',
-        '--vault-name', vault, '--name', 'youtube-stream-key',
+        '--vault-name', vault, '--name', keyName,
         '--value', key, '-o', 'none'
       ], { timeout: 30000 }, (err) => {
-        if (err) return jsonResponse(res, 500, { error: 'Failed to update stream key in Key Vault' });
-        jsonResponse(res, 200, { ok: true });
+        if (err) return jsonResponse(res, 500, { error: `Failed to update stream key '${keyName}' in Key Vault` });
+        jsonResponse(res, 200, { ok: true, profile });
       });
       return;
     }
@@ -243,7 +256,10 @@ const server = http.createServer(async (req, res) => {
       jsonResponse(res, 200, {
         max_resolution: schedule.stream?.max_resolution || '720p',
         shuffle: schedule.stream?.shuffle || false,
-        watermark: schedule.stream?.watermark || false
+        watermark: schedule.stream?.watermark || false,
+        branding_name: schedule.stream?.branding_name || '',
+        branding_location: schedule.stream?.branding_location || '',
+        streams: schedule.streams || {}
       });
       return;
     }
@@ -269,11 +285,40 @@ const server = http.createServer(async (req, res) => {
       if (parsed.watermark !== undefined) {
         schedule.stream.watermark = !!parsed.watermark;
       }
+      if (parsed.branding_name !== undefined) {
+        schedule.stream.branding_name = String(parsed.branding_name).slice(0, 200);
+      }
+      if (parsed.branding_location !== undefined) {
+        schedule.stream.branding_location = String(parsed.branding_location).slice(0, 200);
+      }
+      // Per-stream config updates
+      if (parsed.streams && typeof parsed.streams === 'object') {
+        if (!schedule.streams) schedule.streams = {};
+        for (const profile of ['landscape', 'portrait']) {
+          if (parsed.streams[profile] && typeof parsed.streams[profile] === 'object') {
+            if (!schedule.streams[profile]) schedule.streams[profile] = {};
+            const src = parsed.streams[profile];
+            const dst = schedule.streams[profile];
+            if (src.name !== undefined) dst.name = String(src.name).slice(0, 100);
+            if (src.stream_key_name !== undefined) dst.stream_key_name = String(src.stream_key_name).slice(0, 100);
+            if (src.max_resolution !== undefined) {
+              if (!VALID_RESOLUTIONS.includes(src.max_resolution)) {
+                return jsonResponse(res, 400, { error: `Invalid ${profile} resolution. Valid: ${VALID_RESOLUTIONS.join(', ')}` });
+              }
+              dst.max_resolution = src.max_resolution;
+            }
+            if (src.watermark !== undefined) dst.watermark = !!src.watermark;
+            if (src.church_name !== undefined) dst.church_name = String(src.church_name).slice(0, 200);
+            if (src.church_location !== undefined) dst.church_location = String(src.church_location).slice(0, 200);
+          }
+        }
+      }
       writeSchedule(schedule);
       jsonResponse(res, 200, {
         max_resolution: schedule.stream.max_resolution,
         shuffle: schedule.stream.shuffle,
-        watermark: schedule.stream.watermark
+        watermark: schedule.stream.watermark,
+        streams: schedule.streams || {}
       });
       return;
     }
@@ -346,7 +391,11 @@ const server = http.createServer(async (req, res) => {
         const state = readPlaybackState();
         const now = active ? readNowPlaying() : null;
         const stopPending = fs.existsSync('/run/streamer-stop-after-current');
-        const result = { active, uptimeSeconds, nowPlaying: null, upNext: [], progress: null, stopPending };
+        const activeStreams = {
+          landscape: fs.existsSync(ACTIVE_LANDSCAPE),
+          portrait: fs.existsSync(ACTIVE_PORTRAIT)
+        };
+        const result = { active, uptimeSeconds, nowPlaying: null, upNext: [], progress: null, stopPending, activeStreams };
 
         if (state && playlist.length > 0) {
           // The state file records the LAST COMPLETED video's index.
@@ -454,9 +503,27 @@ const server = http.createServer(async (req, res) => {
       try { fs.writeFileSync('/run/streamer-manual-override', ''); } catch {};
       // Clear manual stop in case user is re-starting after a manual stop
       try { fs.unlinkSync('/run/streamer-manual-stop'); } catch {};
+      // Parse which streams to activate (default: both)
+      let streams = ['landscape', 'portrait'];
+      try {
+        const body = await readBody(req);
+        const parsed = JSON.parse(body);
+        if (Array.isArray(parsed.streams)) {
+          streams = parsed.streams.filter(s => ['landscape', 'portrait'].includes(s));
+        }
+      } catch { /* use defaults */ }
+      // Write stream signal files
+      try { fs.unlinkSync(ACTIVE_LANDSCAPE); } catch {}
+      try { fs.unlinkSync(ACTIVE_PORTRAIT); } catch {}
+      if (streams.includes('landscape')) {
+        try { fs.writeFileSync(ACTIVE_LANDSCAPE, ''); } catch {}
+      }
+      if (streams.includes('portrait')) {
+        try { fs.writeFileSync(ACTIVE_PORTRAIT, ''); } catch {}
+      }
       execFile('systemctl', ['start', 'streamer.service'], { timeout: 15000 }, (err) => {
         if (err) return jsonResponse(res, 500, { error: 'Failed to start streamer' });
-        jsonResponse(res, 200, { ok: true, active: true });
+        jsonResponse(res, 200, { ok: true, active: true, streams });
       });
       return;
     }
@@ -605,6 +672,7 @@ const server = http.createServer(async (req, res) => {
             const [eh, em] = o.stop.split(':').map(Number);
             const startTime = new Date(d); startTime.setHours(sh, sm, 0, 0);
             const stopTime = new Date(d); stopTime.setHours(eh, em, 0, 0);
+            if (stopTime <= startTime) stopTime.setDate(stopTime.getDate() + 1);
             if (!nextStart && startTime > now) nextStart = startTime.toISOString();
             if (!nextStop && stopTime > now) nextStop = stopTime.toISOString();
           }
@@ -626,11 +694,18 @@ const server = http.createServer(async (req, res) => {
         if (nextStart && nextStop) break;
       }
 
+      let todayLocal;
+      try {
+        todayLocal = new Intl.DateTimeFormat('en-CA', { timeZone: schedule.timezone || 'UTC' }).format(now);
+      } catch {
+        todayLocal = now.toISOString().slice(0, 10);
+      }
       jsonResponse(res, 200, {
         timezone: schedule.timezone || 'UTC',
         events: schedule.events || [],
-        overrides: (schedule.overrides || []).filter(o => o.date >= now.toISOString().slice(0, 10)),
+        overrides: (schedule.overrides || []).filter(o => o.date >= todayLocal),
         stream: schedule.stream || {},
+        streams: schedule.streams || {},
         nextStart,
         nextStop
       });
@@ -651,13 +726,15 @@ const server = http.createServer(async (req, res) => {
       }
       if (Array.isArray(parsed.events)) {
         const validDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+        const validStreams = ['landscape', 'portrait'];
         schedule.events = parsed.events
           .filter(e => e.name && e.start && e.stop && Array.isArray(e.days))
           .map(e => ({
             name: String(e.name).slice(0, 100),
             start: String(e.start).slice(0, 5),
             stop: String(e.stop).slice(0, 5),
-            days: e.days.filter(d => validDays.includes(d))
+            days: e.days.filter(d => validDays.includes(d)),
+            streams: Array.isArray(e.streams) ? e.streams.filter(s => validStreams.includes(s)) : ['landscape']
           }));
       }
       writeSchedule(schedule);
@@ -682,7 +759,12 @@ const server = http.createServer(async (req, res) => {
     // Returns the list of schedule overrides (future only)
     if (req.method === 'GET' && req.url === '/api/overrides') {
       const schedule = readSchedule();
-      const today = new Date().toISOString().slice(0, 10);
+      let today;
+      try {
+        today = new Intl.DateTimeFormat('en-CA', { timeZone: schedule.timezone || 'UTC' }).format(new Date());
+      } catch {
+        today = new Date().toISOString().slice(0, 10);
+      }
       const overrides = (schedule.overrides || []).filter(o => o.date >= today);
       jsonResponse(res, 200, { overrides });
       return;
@@ -699,15 +781,29 @@ const server = http.createServer(async (req, res) => {
       if (!parsed.date || !/^\d{4}-\d{2}-\d{2}$/.test(parsed.date)) {
         return jsonResponse(res, 400, { error: 'date is required (YYYY-MM-DD)' });
       }
-      const today = new Date().toISOString().slice(0, 10);
+      const schedule = readSchedule();
+      if (!Array.isArray(schedule.overrides)) schedule.overrides = [];
+      const tz = parsed.timezone || schedule.timezone || 'UTC';
+      let today;
+      try {
+        today = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date());
+      } catch {
+        today = new Date().toISOString().slice(0, 10);
+      }
       if (parsed.date < today) {
         return jsonResponse(res, 400, { error: 'Cannot create override in the past' });
       }
-      // Validate start/stop if provided (both or neither)
+      // Validate start/stop if provided (both or neither, unless startNow)
       const hasStart = parsed.start !== undefined && parsed.start !== null;
       const hasStop = parsed.stop !== undefined && parsed.stop !== null;
-      if (hasStart !== hasStop) {
+      const startNow = !!parsed.startNow;
+      if (!startNow && hasStart !== hasStop) {
         return jsonResponse(res, 400, { error: 'Provide both start and stop, or neither (to skip the day)' });
+      }
+      if (!hasStart && !hasStop && !startNow) {
+        // skip-day override — no times needed
+      } else if (!hasStop) {
+        return jsonResponse(res, 400, { error: 'Provide a stop time' });
       }
       if (hasStart && !/^\d{2}:\d{2}$/.test(parsed.start)) {
         return jsonResponse(res, 400, { error: 'start must be HH:MM format' });
@@ -716,20 +812,26 @@ const server = http.createServer(async (req, res) => {
         return jsonResponse(res, 400, { error: 'stop must be HH:MM format' });
       }
 
-      const schedule = readSchedule();
-      if (!Array.isArray(schedule.overrides)) schedule.overrides = [];
-
       // Prune past overrides
       schedule.overrides = schedule.overrides.filter(o => o.date >= today);
 
       // Upsert by date
       const idx = schedule.overrides.findIndex(o => o.date === parsed.date);
+      // Validate streams if provided
+      const VALID_STREAMS = ['landscape', 'portrait'];
+      let streams;
+      if (Array.isArray(parsed.streams) && parsed.streams.length > 0) {
+        streams = parsed.streams.filter(s => VALID_STREAMS.includes(s));
+        if (streams.length === 0) streams = undefined;
+      }
       const entry = {
         date: parsed.date,
         start: hasStart ? String(parsed.start).slice(0, 5) : null,
         stop: hasStop ? String(parsed.stop).slice(0, 5) : null,
+        startNow: startNow || undefined,
         name: parsed.name ? String(parsed.name).slice(0, 100) : undefined,
-        timezone: parsed.timezone ? String(parsed.timezone).slice(0, 50) : undefined
+        timezone: parsed.timezone ? String(parsed.timezone).slice(0, 50) : undefined,
+        streams
       };
       if (idx >= 0) {
         schedule.overrides[idx] = entry;
