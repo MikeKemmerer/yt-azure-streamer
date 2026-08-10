@@ -31,6 +31,10 @@
 
 ### Fixes
 
+- **Static-video YouTube ingest** — normalize every landscape and portrait RTMP
+	output to 30 fps CFR, strict resolution-specific CBR with x264 HRD filler,
+	and fixed two-second GOPs. Historical 1 fps cover-art videos now produce a
+	steady ingest stream instead of retaining their sparse source cadence.
 - **jobSchedule ID lookup** — Azure jobSchedules API returns the GUID in `properties.jobScheduleId`, not a top-level `name` field.
 - **Duplicate `esc()` function** — removed redundant declaration that shadowed the global helper.
 - **Apostrophes in filenames** — ffmpeg concat playlist escaping now handles single quotes correctly.

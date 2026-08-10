@@ -48,6 +48,8 @@ declare -A RES_AUDIO=(
   [144p]=96k  [240p]=96k  [360p]=128k [480p]=128k
   [720p]=128k [1080p]=192k [1440p]=192k [2160p]=256k
 )
+OUTPUT_FPS=30
+GOP_SIZE=$((OUTPUT_FPS * 2))
 
 echo "Streamer starting with prefix: $PREFIX"
 
@@ -337,6 +339,9 @@ except: pass
   else
     echo "  Input ${INPUT_H}p <= max ${MAX_H}p — no scaling"
   fi
+  # YouTube ingest requires a steady cadence. Duplicate sparse source frames
+  # (including the historical 1 fps static-image videos) before output splits.
+  SCALE_VF+=("fps=${OUTPUT_FPS}:start_time=0")
 
   # --- Prepare title/upnext text files (used by landscape watermark and portrait overlays) ---
   MAX_LINE=55
@@ -615,13 +620,17 @@ ${AUDIO_FILTER};\
 [audio]asplit=2[audio_land][audio_port]"
     OUTPUT_ARGS+=(
       -map "[land]" -map "[audio_land]"
-      -c:v libx264 -preset veryfast -maxrate "$LAND_MAXRATE" -bufsize "$LAND_BUFSIZE"
-      -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
+      -c:v libx264 -preset veryfast -r "$OUTPUT_FPS" -fps_mode cfr
+      -b:v "$LAND_MAXRATE" -minrate "$LAND_MAXRATE" -maxrate "$LAND_MAXRATE" -bufsize "$LAND_BUFSIZE"
+      -g "$GOP_SIZE" -keyint_min "$GOP_SIZE" -sc_threshold 0
+      -x264-params "nal-hrd=cbr:force-cfr=1" -pix_fmt yuv420p
       -c:a aac -b:a "$LAND_AUDIO_BR" -ar 44100
       -f flv "$LANDSCAPE_RTMP"
       -map "[portrait]" -map "[audio_port]"
-      -c:v libx264 -preset veryfast -maxrate "$PORT_MAXRATE" -bufsize "$PORT_BUFSIZE"
-      -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
+      -c:v libx264 -preset veryfast -r "$OUTPUT_FPS" -fps_mode cfr
+      -b:v "$PORT_MAXRATE" -minrate "$PORT_MAXRATE" -maxrate "$PORT_MAXRATE" -bufsize "$PORT_BUFSIZE"
+      -g "$GOP_SIZE" -keyint_min "$GOP_SIZE" -sc_threshold 0
+      -x264-params "nal-hrd=cbr:force-cfr=1" -pix_fmt yuv420p
       -c:a aac -b:a "$PORT_AUDIO_BR" -ar 44100
       -f flv "$PORTRAIT_RTMP"
       -map "[preview_land]"
@@ -635,8 +644,10 @@ ${AUDIO_FILTER};\
     FILTER_COMPLEX="[0:v]${LANDSCAPE_VF_STRING}split=2[stream][prev];[prev]fps=1/10,scale=640:-2[preview];${AUDIO_FILTER}"
     OUTPUT_ARGS+=(
       -map "[stream]" -map "[audio]"
-      -c:v libx264 -preset veryfast -maxrate "$LAND_MAXRATE" -bufsize "$LAND_BUFSIZE"
-      -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
+      -c:v libx264 -preset veryfast -r "$OUTPUT_FPS" -fps_mode cfr
+      -b:v "$LAND_MAXRATE" -minrate "$LAND_MAXRATE" -maxrate "$LAND_MAXRATE" -bufsize "$LAND_BUFSIZE"
+      -g "$GOP_SIZE" -keyint_min "$GOP_SIZE" -sc_threshold 0
+      -x264-params "nal-hrd=cbr:force-cfr=1" -pix_fmt yuv420p
       -c:a aac -b:a "$LAND_AUDIO_BR" -ar 44100
       -f flv "$LANDSCAPE_RTMP"
       -map "[preview]"
@@ -652,8 +663,10 @@ split=2[portrait][prev_port];\
 ${AUDIO_FILTER}"
     OUTPUT_ARGS+=(
       -map "[portrait]" -map "[audio]"
-      -c:v libx264 -preset veryfast -maxrate "$PORT_MAXRATE" -bufsize "$PORT_BUFSIZE"
-      -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
+      -c:v libx264 -preset veryfast -r "$OUTPUT_FPS" -fps_mode cfr
+      -b:v "$PORT_MAXRATE" -minrate "$PORT_MAXRATE" -maxrate "$PORT_MAXRATE" -bufsize "$PORT_BUFSIZE"
+      -g "$GOP_SIZE" -keyint_min "$GOP_SIZE" -sc_threshold 0
+      -x264-params "nal-hrd=cbr:force-cfr=1" -pix_fmt yuv420p
       -c:a aac -b:a "$PORT_AUDIO_BR" -ar 44100
       -f flv "$PORTRAIT_RTMP"
       -map "[preview]"
@@ -661,7 +674,7 @@ ${AUDIO_FILTER}"
     )
   fi
 
-  # Always re-encode to guarantee keyframes every 2 seconds (YouTube requires ≤4s)
+  # Always re-encode at 30 fps CFR with a fixed two-second GOP.
   ffmpeg -y -re -i "$VIDEO" "${EXTRA_INPUTS[@]}" \
     -filter_complex "$FILTER_COMPLEX" \
     "${OUTPUT_ARGS[@]}" </dev/null || true
