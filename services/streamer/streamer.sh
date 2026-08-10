@@ -548,15 +548,6 @@ except: pass
     PORTRAIT_TITLE_OVERLAYS="${PORTRAIT_TITLE_OVERLAYS},drawtext=fontfile=${WM_FONT_SANS}:textfile=${PORT_UPNEXT_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT}"
   fi
 
-  NOW_FILE="/run/streamer-now.json"
-  python3 -c "
-import json, os, sys
-temporary = '$NOW_FILE.tmp'
-with open(temporary, 'w') as f:
-    json.dump({'file': sys.argv[1], 'startedAt': int(sys.argv[2]), 'duration': int(sys.argv[3])}, f)
-os.replace(temporary, '$NOW_FILE')
-" "$VIDEO" "$(date +%s)" "${DURATION:-0}"
-
   # Build filter_complex: apply filters, split into stream + preview + optional portrait
   PREVIEW_LANDSCAPE="/opt/yt/web/frontend/stream-preview.jpg"
   PREVIEW_PORTRAIT="/opt/yt/web/frontend/stream-preview-portrait.jpg"
@@ -621,6 +612,15 @@ os.replace(temporary, '$NOW_FILE')
     sleep 10
     continue
   fi
+
+  NOW_FILE="/run/streamer-now.json"
+  python3 -c "
+import json, os, sys
+temporary = '$NOW_FILE.tmp'
+with open(temporary, 'w') as f:
+    json.dump({'file': sys.argv[1], 'startedAt': int(sys.argv[2]), 'duration': int(sys.argv[3])}, f)
+os.replace(temporary, '$NOW_FILE')
+" "$VIDEO" "$(date +%s)" "${DURATION:-0}"
 
   # --- Build filter_complex and output args based on active streams ---
   OUTPUT_ARGS=()
@@ -692,9 +692,18 @@ ${AUDIO_FILTER}"
   fi
 
   # Always re-encode at 30 fps CFR with a fixed two-second GOP.
+  set +e
   ffmpeg -y -re -i "$VIDEO" "${EXTRA_INPUTS[@]}" \
     -filter_complex "$FILTER_COMPLEX" \
-    "${OUTPUT_ARGS[@]}" </dev/null || true
+    "${OUTPUT_ARGS[@]}" </dev/null
+  FFMPEG_STATUS=$?
+  set -e
+
+  if [[ $FFMPEG_STATUS -ne 0 ]]; then
+    echo "  ERROR: ffmpeg exited with status $FFMPEG_STATUS — retrying the same video in 10 seconds"
+    sleep 10
+    continue
+  fi
 
   # Update bookmark after each video completes (or is interrupted)
   python3 -c "

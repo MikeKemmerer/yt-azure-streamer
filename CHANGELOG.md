@@ -42,6 +42,11 @@
 	playlist and use it with the atomic now-playing file while active. Playlist
 	edits and stale bookmarks no longer change the displayed queue or predict the
 	wrong next video.
+- **Failed-output playlist skipping** — retry the same video after an FFmpeg or
+	RTMP failure instead of bookmarking it and racing through the entire queue.
+- **Manual dual-stream signals** — preserve explicitly selected output signals
+	outside scheduled windows so the scheduler does not leave a manually started
+	stream with no output.
 - **jobSchedule ID lookup** — Azure jobSchedules API returns the GUID in `properties.jobScheduleId`, not a top-level `name` field.
 - **Duplicate `esc()` function** — removed redundant declaration that shadowed the global helper.
 - **Apostrophes in filenames** — ffmpeg concat playlist escaping now handles single quotes correctly.
