@@ -55,8 +55,8 @@ assert.deepStrictEqual(
 
 assert.deepStrictEqual(
   buildRuntimePlaylist(['alpha.mp4', 'beta.mp4'], 'current-disabled.mp4'),
-  ['current-disabled.mp4', 'alpha.mp4', 'beta.mp4'],
-  'a disabled current video must remain at the head of the active queue until it finishes'
+  ['alpha.mp4', 'beta.mp4'],
+  'a disabled current video must finish once without remaining in the future queue'
 );
 
 assert.deepStrictEqual(

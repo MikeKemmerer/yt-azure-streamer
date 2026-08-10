@@ -210,7 +210,7 @@ function moveVideoNext(videos, targetFile, referenceFile) {
 function buildRuntimePlaylist(savedPlaylist, currentFile) {
   if (!currentFile) return [...savedPlaylist];
   const currentIndex = savedPlaylist.indexOf(currentFile);
-  if (currentIndex < 0) return [currentFile, ...savedPlaylist];
+  if (currentIndex < 0) return [...savedPlaylist];
   return [
     ...savedPlaylist.slice(currentIndex),
     ...savedPlaylist.slice(0, currentIndex)
@@ -254,12 +254,13 @@ function syncActivePlaylist(videos) {
   if (!currentFile) return { updated: false, pending: true, nextFile: null };
 
   const runtimePlaylist = buildRuntimePlaylist(readPlaylistOrder(), currentFile);
-  const runtimePaths = runtimePlaylist.map(file => (
-    file === currentFile && now.file ? now.file : path.join(VIDEO_DIR, file)
-  ));
+  const runtimePaths = runtimePlaylist.map(file => path.join(VIDEO_DIR, file));
   writeAtomic(RUNTIME_PLAYLIST_FILE, JSON.stringify(runtimePaths) + '\n');
 
-  const nextFile = runtimePlaylist.length > 1 ? runtimePlaylist[1] : null;
+  const currentIndex = runtimePlaylist.indexOf(currentFile);
+  const nextFile = currentIndex >= 0
+    ? runtimePlaylist[(currentIndex + 1) % runtimePlaylist.length]
+    : runtimePlaylist[0] || null;
   const titleMap = new Map(videos.filter(video => video.title).map(video => [video.file, video.title]));
   const displayTitle = nextFile
     ? titleMap.get(nextFile) || nextFile.replace(/\.[^.]+$/, '')
