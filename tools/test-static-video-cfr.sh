@@ -25,7 +25,8 @@ source = Path(sys.argv[1]).read_text()
 required = {
     'OUTPUT_FPS=30': 1,
     'GOP_SIZE=$((OUTPUT_FPS * 2))': 1,
-    'SCALE_VF+=("fps=${OUTPUT_FPS}:start_time=0")': 1,
+    'SCALE_VF+=("fps=${OUTPUT_FPS}:start_time=0" "realtime")': 1,
+    'aresample=44100:async=1000:first_pts=0': 2,
     '-fps_mode cfr': 4,
     '-x264-params "nal-hrd=cbr:force-cfr=1"': 4,
     '-g "$GOP_SIZE" -keyint_min "$GOP_SIZE" -sc_threshold 0': 4,
@@ -43,12 +44,13 @@ make_fixture() {
   local name="$1"
   local fps="$2"
   local with_audio="$3"
+    local sample_rate="$4"
   local output="$WORK_DIR/${name}.mp4"
 
   if [[ "$with_audio" == true ]]; then
     ffmpeg -hide_banner -loglevel error -y \
       -f lavfi -i "color=c=blue:s=320x180:r=${fps}:d=${DURATION}" \
-      -f lavfi -i "sine=f=440:r=44100:d=${DURATION}" \
+    -f lavfi -i "sine=f=440:r=${sample_rate}:d=${DURATION}" \
       -c:v libx264 -pix_fmt yuv420p -c:a aac -t "$DURATION" "$output"
   else
     ffmpeg -hide_banner -loglevel error -y \
@@ -64,18 +66,18 @@ transcode_fixture() {
   local landscape="$WORK_DIR/${name}-landscape.flv"
   local portrait="$WORK_DIR/${name}-portrait.flv"
   local -a extra_inputs=()
-  local audio_input="0:a"
+    local audio_filter="[0:a]loudnorm=I=-14:TP=-1:LRA=11,aresample=44100:async=1000:first_pts=0[audio]"
 
   if [[ "$with_audio" != true ]]; then
     extra_inputs=(-f lavfi -t "$DURATION" -i anullsrc=r=44100:cl=stereo)
-    audio_input="1:a"
+        audio_filter="[1:a]aresample=44100:async=1000:first_pts=0[audio]"
   fi
 
   ffmpeg -hide_banner -loglevel error -y -i "$input" "${extra_inputs[@]}" \
     -filter_complex \
-      "[0:v]fps=${OUTPUT_FPS}:start_time=0,split=2[land][port_src];\
+            "[0:v]fps=${OUTPUT_FPS}:start_time=0,realtime,split=2[land][port_src];\
 [port_src]scale=180:-2,pad=180:320:(ow-iw)/2:(oh-ih)/2[portrait];\
-[${audio_input}]asplit=2[audio_land][audio_port]" \
+${audio_filter};[audio]asplit=2[audio_land][audio_port]" \
     -map '[land]' -map '[audio_land]' \
     -c:v libx264 -preset veryfast -r "$OUTPUT_FPS" -fps_mode cfr \
     -b:v "$TARGET_BITRATE" -minrate "$TARGET_BITRATE" -maxrate "$TARGET_BITRATE" -bufsize "$BUFSIZE" \
@@ -131,6 +133,21 @@ if actual_frames != expected_frames:
 if audio is None or audio.get("sample_rate") != "44100":
     raise SystemExit("missing 44.1 kHz audio")
 
+audio_packets = probe(
+    "-select_streams", "a:0",
+    "-show_packets",
+    "-show_entries", "packet=pts_time",
+)["packets"]
+audio_timestamps = [float(packet["pts_time"]) for packet in audio_packets]
+audio_deltas = [
+    current - previous
+    for previous, current in zip(audio_timestamps, audio_timestamps[1:])
+]
+if any(delta <= 0 for delta in audio_deltas):
+    raise SystemExit("audio timestamps are not strictly monotonic")
+if not audio_deltas or max(audio_deltas) > 0.030:
+    raise SystemExit(f"audio packet gap exceeds 30 ms: {max(audio_deltas, default=0):.6f}")
+
 frames = probe(
     "-select_streams", "v:0",
     "-show_frames",
@@ -167,7 +184,8 @@ if not complete_windows or any(bits < lower or bits > upper for bits in complete
 format_bitrate = int(metadata["format"].get("bit_rate", 0))
 print(
     f"PASS {path}: {actual_frames} frames, {video['avg_frame_rate']} fps, "
-    f"keyframes={keyframes}, format_bitrate={format_bitrate}, windows={complete_windows}"
+    f"keyframes={keyframes}, max_audio_gap={max(audio_deltas):.3f}s, "
+    f"format_bitrate={format_bitrate}, windows={complete_windows}"
 )
 PY
 }
@@ -176,15 +194,16 @@ run_case() {
   local name="$1"
   local fps="$2"
   local with_audio="$3"
+    local sample_rate="$4"
 
-  make_fixture "$name" "$fps" "$with_audio"
+    make_fixture "$name" "$fps" "$with_audio" "$sample_rate"
   transcode_fixture "$name" "$with_audio"
   validate_output "$WORK_DIR/${name}-landscape.flv" 320 180
   validate_output "$WORK_DIR/${name}-portrait.flv" 180 320
 }
 
 assert_streamer_contract
-run_case static-audio 1 true
-run_case static-silent 1 false
-run_case normal-audio 30 true
+run_case static-audio-96k 1 true 96000
+run_case static-silent 1 false 44100
+run_case normal-audio 30 true 48000
 echo "All static-video CFR tests passed."

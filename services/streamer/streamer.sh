@@ -355,8 +355,9 @@ except: pass
     echo "  Input ${INPUT_H}p <= max ${MAX_H}p — no scaling"
   fi
   # YouTube ingest requires a steady cadence. Duplicate sparse source frames
-  # (including the historical 1 fps static-image videos) before output splits.
-  SCALE_VF+=("fps=${OUTPUT_FPS}:start_time=0")
+  # (including the historical 1 fps static-image videos) before output splits,
+  # then pace those duplicates so the FLV muxer does not release them in bursts.
+  SCALE_VF+=("fps=${OUTPUT_FPS}:start_time=0" "realtime")
 
   # --- Prepare title/upnext text files (used by landscape watermark and portrait overlays) ---
   MAX_LINE=55
@@ -579,10 +580,10 @@ except: pass
   if [[ -z "$HAS_AUDIO" ]]; then
     echo "  No audio stream — generating silence"
     EXTRA_INPUTS=("-f" "lavfi" "-t" "${DURATION:-0}" "-i" "anullsrc=r=44100:cl=stereo")
-    AUDIO_FILTER="[1:a]anull[audio]"
+    AUDIO_FILTER="[1:a]aresample=44100:async=1000:first_pts=0[audio]"
   else
     # Normalize audio loudness to -14 LUFS (YouTube standard) with -1 dBTP true peak
-    AUDIO_FILTER="[0:a:0]loudnorm=I=-14:TP=-1:LRA=11[audio]"
+    AUDIO_FILTER="[0:a:0]loudnorm=I=-14:TP=-1:LRA=11,aresample=44100:async=1000:first_pts=0[audio]"
   fi
 
   # --- Determine which streams are active ---

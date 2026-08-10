@@ -31,6 +31,9 @@
 
 ### Fixes
 
+- **Static-video audio continuity** — pace duplicated frames in real time before
+	FLV muxing and rebase/resample audio onto a continuous 44.1 kHz clock. This
+	prevents choppy YouTube audio from historical 1 fps videos with 96 kHz AAC.
 - **Static-video YouTube ingest** — normalize every landscape and portrait RTMP
 	output to 30 fps CFR, strict resolution-specific CBR with x264 HRD filler,
 	and fixed two-second GOPs. Historical 1 fps cover-art videos now produce a
