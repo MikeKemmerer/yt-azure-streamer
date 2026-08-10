@@ -481,9 +481,34 @@ function renderVideoList(filter) {
     num.className = 'video-num';
     num.textContent = '#' + (i + 1);
 
+    const playNextBtn = document.createElement('button');
+    playNextBtn.className = 'video-play-next-btn secondary';
+    playNextBtn.textContent = 'Play next';
+    playNextBtn.title = 'Move this video after the current video and save the playlist';
+    playNextBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const currentTitle = v.title || v.file.replace(/\.[^.]+$/, '');
+      const confirmed = confirm(`Play "${currentTitle}" next? This will reorder and save the playlist.`);
+      if (!confirmed) return;
+
+      const status = document.getElementById('playlist-status');
+      playNextBtn.disabled = true;
+      try {
+        const result = await savePlaylist(v.file);
+        const suffix = result.runtimeUpdated
+          ? ' Up Next and the live overlay were updated.'
+          : result.runtimePending ? ' The streamer is still starting; save again when Now Playing appears.' : '';
+        showStatus(status, `"${currentTitle}" will play next.${suffix}`, true);
+      } catch (error) {
+        playNextBtn.disabled = false;
+        showStatus(status, error.message, false);
+      }
+    });
+
     li.appendChild(grip);
     li.appendChild(cb);
     li.appendChild(nameBlock);
+    li.appendChild(playNextBtn);
     li.appendChild(num);
 
     list.appendChild(li);
@@ -520,15 +545,28 @@ function renderVideoList(filter) {
   });
 }
 
+async function savePlaylist(playNext) {
+  const body = { videos: videoData };
+  if (playNext) body.playNext = playNext;
+  const result = await api('/api/videos', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (Array.isArray(result.videos)) videoData = result.videos;
+  renderVideoList(document.getElementById('playlist-search').value);
+  await refreshStreamerStatus();
+  return result;
+}
+
 document.getElementById('save-playlist').addEventListener('click', async () => {
   const status = document.getElementById('playlist-status');
   try {
-    await api('/api/videos', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ videos: videoData })
-    });
-    showStatus(status, 'Playlist saved and regenerated.', true);
+    const result = await savePlaylist();
+    const suffix = result.runtimeUpdated
+      ? ' Up Next and the live overlay were updated.'
+      : result.runtimePending ? ' The streamer is still starting; save again when Now Playing appears.' : '';
+    showStatus(status, `Playlist saved and regenerated.${suffix}`, true);
   } catch (e) { showStatus(status, e.message, false); }
 });
 

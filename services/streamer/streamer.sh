@@ -493,7 +493,7 @@ except: pass
       LANDSCAPE_WM+=("drawtext=fontfile=${WM_FONT_SERIF}:text='${LANDSCAPE_LOWER_THIRD}':fontsize=h/32:fontcolor=white@0.9:shadowcolor=black@0.6:shadowx=2:shadowy=2:x=w/30:y=h-h/7")
     fi
     LANDSCAPE_WM+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=${TITLE_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26:alpha=${ALPHA_MAIN}")
-    LANDSCAPE_WM+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${UPNEXT_FILE}:fontsize=${UPNEXT_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26:alpha=${ALPHA_NEXT}")
+    LANDSCAPE_WM+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${UPNEXT_FILE}:reload=${OUTPUT_FPS}:fontsize=${UPNEXT_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26:alpha=${ALPHA_NEXT}")
   fi
 
   # Build -vf argument as an array (avoids word-splitting issues with spaces in text)
@@ -546,7 +546,7 @@ except: pass
   PORTRAIT_TITLE_OVERLAYS=""
   if [[ "$PORT_WATERMARK" == true && -f "$WM_FONT_SANS" ]]; then
     PORTRAIT_TITLE_OVERLAYS=",drawtext=fontfile=${WM_FONT_SANS}:textfile=${PORT_TITLE_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_MAIN}"
-    PORTRAIT_TITLE_OVERLAYS="${PORTRAIT_TITLE_OVERLAYS},drawtext=fontfile=${WM_FONT_SANS}:textfile=${PORT_UPNEXT_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT}"
+    PORTRAIT_TITLE_OVERLAYS="${PORTRAIT_TITLE_OVERLAYS},drawtext=fontfile=${WM_FONT_SANS}:textfile=${PORT_UPNEXT_FILE}:reload=${OUTPUT_FPS}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT}"
   fi
 
   # Build filter_complex: apply filters, split into stream + preview + optional portrait
@@ -732,7 +732,39 @@ os.replace(temporary, '$STATE_FILE')
     exit 0
   fi
 
-  # Advance to next video (wrap around)
-  INDEX=$(( (INDEX + 1) % NUM_VIDEOS ))
+  # Adopt playlist changes only after the current video finishes.
+  UPDATED_VIDEOS=()
+  if [[ -f "$RUNTIME_PLAYLIST_FILE" ]]; then
+    mapfile -t UPDATED_VIDEOS < <(python3 - "$RUNTIME_PLAYLIST_FILE" <<'PY'
+import json
+import os
+import sys
+
+try:
+    playlist = json.load(open(sys.argv[1], encoding="utf-8"))
+    for item in playlist:
+        if isinstance(item, str) and os.path.isfile(item):
+            print(item)
+except (OSError, TypeError, ValueError):
+    pass
+PY
+)
+  fi
+
+  if [[ ${#UPDATED_VIDEOS[@]} -gt 0 ]]; then
+    NEXT_INDEX=0
+    for i in "${!UPDATED_VIDEOS[@]}"; do
+      if [[ "${UPDATED_VIDEOS[$i]}" == "$VIDEO" ]]; then
+        NEXT_INDEX=$(( (i + 1) % ${#UPDATED_VIDEOS[@]} ))
+        break
+      fi
+    done
+    VIDEOS=("${UPDATED_VIDEOS[@]}")
+    NUM_VIDEOS=${#VIDEOS[@]}
+    INDEX=$NEXT_INDEX
+    echo "  Reloaded active playlist: $NUM_VIDEOS videos, next index $INDEX"
+  else
+    INDEX=$(( (INDEX + 1) % NUM_VIDEOS ))
+  fi
 done
 

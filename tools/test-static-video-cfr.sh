@@ -27,6 +27,8 @@ required = {
     'GOP_SIZE=$((OUTPUT_FPS * 2))': 1,
     'SCALE_VF+=("fps=${OUTPUT_FPS}:start_time=0" "realtime")': 1,
     'aresample=44100:async=1000:first_pts=0': 2,
+    ':reload=${OUTPUT_FPS}:': 2,
+    'Reloaded active playlist': 1,
     '-fps_mode cfr': 4,
     '-x264-params "nal-hrd=cbr:force-cfr=1"': 4,
     '-g "$GOP_SIZE" -keyint_min "$GOP_SIZE" -sc_threshold 0': 4,

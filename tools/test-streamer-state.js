@@ -2,7 +2,12 @@
 'use strict';
 
 const assert = require('assert');
-const { buildPlaybackPosition } = require('../web/backend/server');
+const {
+  buildPlaybackPosition,
+  buildRuntimePlaylist,
+  moveVideoNext,
+  wrapOverlayText
+} = require('../web/backend/server');
 
 const runtimePlaylist = ['alpha.mp4', 'beta.mp4', 'gamma.mp4'];
 
@@ -37,6 +42,63 @@ assert.deepStrictEqual(
   ),
   { nowPlaying: null, upNext: ['gamma.mp4', 'new.mp4', 'beta.mp4'] },
   'stopped playback must relocate a bookmark by filename when its index is stale'
+);
+
+assert.deepStrictEqual(
+  buildRuntimePlaylist(
+    ['alpha.mp4', 'beta.mp4', 'gamma.mp4', 'delta.mp4'],
+    'gamma.mp4'
+  ),
+  ['gamma.mp4', 'delta.mp4', 'alpha.mp4', 'beta.mp4'],
+  'a saved active playlist must rotate around the current video'
+);
+
+assert.deepStrictEqual(
+  buildRuntimePlaylist(['alpha.mp4', 'beta.mp4'], 'current-disabled.mp4'),
+  ['current-disabled.mp4', 'alpha.mp4', 'beta.mp4'],
+  'a disabled current video must remain at the head of the active queue until it finishes'
+);
+
+assert.deepStrictEqual(
+  moveVideoNext(
+    [
+      { file: 'alpha.mp4', enabled: true },
+      { file: 'beta.mp4', enabled: true },
+      { file: 'gamma.mp4', enabled: false }
+    ],
+    'gamma.mp4',
+    'alpha.mp4'
+  ),
+  [
+    { file: 'alpha.mp4', enabled: true },
+    { file: 'gamma.mp4', enabled: true },
+    { file: 'beta.mp4', enabled: true }
+  ],
+  'Play Next must enable and move the selected video after the current video'
+);
+
+assert.deepStrictEqual(
+  moveVideoNext(
+    [
+      { file: 'alpha.mp4', enabled: true },
+      { file: 'current.mp4', enabled: false },
+      { file: 'target.mp4', enabled: false }
+    ],
+    'target.mp4',
+    'current.mp4'
+  ),
+  [
+    { file: 'target.mp4', enabled: true },
+    { file: 'alpha.mp4', enabled: true },
+    { file: 'current.mp4', enabled: false }
+  ],
+  'Play Next must lead the saved queue when the current video is disabled'
+);
+
+assert.strictEqual(
+  wrapOverlayText('Up Next: A title that needs to wrap cleanly', 22),
+  'Up Next: A title that\nneeds to wrap cleanly',
+  'overlay text must wrap near its midpoint using the streamer line limits'
 );
 
 console.log('Streamer state tests passed.');

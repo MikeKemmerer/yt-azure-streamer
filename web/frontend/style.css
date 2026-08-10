@@ -372,6 +372,14 @@ body.dark .playlist-search {
   margin-top: 2px;
 }
 
+.video-play-next-btn {
+  flex: 0 0 76px;
+  min-height: 30px;
+  padding: 4px 8px;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
 .playlist-actions {
   display: flex;
   gap: 8px;

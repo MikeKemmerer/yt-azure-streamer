@@ -6,6 +6,9 @@
 
 ### Features
 
+- **Play Next playlist action** — each playlist item can be confirmed as the
+	next video. The action enables and moves it after the current item, saves the
+	playlist, and updates the dashboard and live video overlay immediately.
 - **Stop After Current** — new button in the Streamer card that gracefully stops the stream after the current video finishes (no mid-stream cut). Toggles to "Cancel" when a stop is pending.
 - **Immediate schedule sync** — saving the schedule from the web UI now triggers `schedule-sync.sh` immediately instead of waiting up to 10 minutes for the timer.
 - **Diff-based schedule sync** — `schedule-sync.sh` now fetches existing Azure Automation schedules first and only creates/updates/deletes what actually changed. Unchanged schedules are left alone, making saves near-instant.
@@ -31,6 +34,9 @@
 
 ### Fixes
 
+- **Active playlist saves** — saving a changed playlist now updates the running
+	queue and dashboard Up Next list without interrupting the current video. The
+	streamer adopts the new order when the current video completes.
 - **Static-video audio continuity** — pace duplicated frames in real time before
 	FLV muxing and rebase/resample audio onto a continuous 44.1 kHz clock. This
 	prevents choppy YouTube audio from historical 1 fps videos with 96 kHz AAC.

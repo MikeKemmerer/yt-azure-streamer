@@ -355,7 +355,7 @@ The web UI is protected by HTTP basic auth. Credentials are set during deploymen
 | **Storage** | Video file count and total size on the blobfuse2 mount |
 | **Stream Key** | Update the YouTube stream key stored in Key Vault (takes effect on next stream start) |
 | **Stream Settings** | Max resolution selector (144p–2160p), shuffle toggle, watermark (lower-third title) toggle |
-| **Playlist** | Touch-friendly drag-and-drop reorder (SortableJS), per-video enable/disable checkboxes, inline title editing, search filter, Select All / Deselect All, sort by name / sort by date / shuffle buttons, instant playlist regeneration on save |
+| **Playlist** | Touch-friendly drag-and-drop reorder (SortableJS), confirmed Play Next actions, per-video enable/disable checkboxes, inline title editing, search filter, Select All / Deselect All, sort by name / sort by date / shuffle buttons, and active queue/overlay updates on save |
 | **Logs** | Service log viewer with service selector (streamer, scheduler, schedule-sync, caddy, web-backend, blobfuse2), configurable line count (50–500), dark terminal-style output |
 | **Update** | Two-step update: check for changes first, then apply — re-deploys changed scripts, units, and frontend files without interrupting a live stream. Auto-reloads frontend after successful update |
 | **Deployment Info** | JSON dump of prefix, storage account, automation account, key vault, and hostname |
@@ -378,7 +378,7 @@ All endpoints are served under `/api/` and require authentication.
 | `GET` | `/api/settings` | Read max_resolution and shuffle from schedule.json |
 | `PUT` | `/api/settings` | Update max_resolution and shuffle |
 | `GET` | `/api/videos` | List videos with enabled/order from playlist config |
-| `PUT` | `/api/videos` | Save playlist config and regenerate ffmpeg playlist |
+| `PUT` | `/api/videos` | Save playlist config, optionally move a video next, and update the active queue/overlay |
 | `GET` | `/api/health` | Systemd unit states for all services |
 | `GET` | `/api/logs` | Journalctl output for a given service (query: `service`, `lines`) |
 | `GET` | `/api/schedule` | Read schedule with next start/stop times |

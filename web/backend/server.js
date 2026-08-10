@@ -26,6 +26,8 @@ const MODE_FILE = '/etc/yt/mode';
 const LOCAL_CONF = '/etc/yt/local.conf';
 const ACTIVE_LANDSCAPE = '/run/streamer-active-landscape';
 const ACTIVE_PORTRAIT = '/run/streamer-active-portrait';
+const UPNEXT_FILE = '/tmp/streamer-upnext.txt';
+const PORT_UPNEXT_FILE = '/tmp/streamer-upnext-portrait.txt';
 
 function readMode() {
   try { return fs.readFileSync(MODE_FILE, 'utf8').trim(); } catch { return 'azure'; }
@@ -189,6 +191,84 @@ function readRuntimePlaylist() {
     const playlist = JSON.parse(fs.readFileSync(RUNTIME_PLAYLIST_FILE, 'utf8'));
     return Array.isArray(playlist) ? playlist.map(file => path.basename(file)) : [];
   } catch { return []; }
+}
+
+function moveVideoNext(videos, targetFile, referenceFile) {
+  const reordered = videos.map(video => ({ ...video }));
+  const targetIndex = reordered.findIndex(video => video.file === targetFile);
+  if (targetIndex < 0 || targetFile === referenceFile) return reordered;
+
+  const [target] = reordered.splice(targetIndex, 1);
+  target.enabled = true;
+  const referenceIndex = reordered.findIndex(
+    video => video.file === referenceFile && video.enabled !== false
+  );
+  reordered.splice(referenceIndex >= 0 ? referenceIndex + 1 : 0, 0, target);
+  return reordered;
+}
+
+function buildRuntimePlaylist(savedPlaylist, currentFile) {
+  if (!currentFile) return [...savedPlaylist];
+  const currentIndex = savedPlaylist.indexOf(currentFile);
+  if (currentIndex < 0) return [currentFile, ...savedPlaylist];
+  return [
+    ...savedPlaylist.slice(currentIndex),
+    ...savedPlaylist.slice(0, currentIndex)
+  ];
+}
+
+function isStreamerActive() {
+  try {
+    execFileSync('systemctl', ['is-active', '--quiet', 'streamer.service'], { timeout: 5000 });
+    return true;
+  } catch { return false; }
+}
+
+function writeAtomic(file, content) {
+  const temporary = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, content);
+  fs.renameSync(temporary, file);
+}
+
+function wrapOverlayText(text, maxLine) {
+  if (text.length <= maxLine) return text;
+  const midpoint = Math.floor(text.length / 2);
+  for (let distance = 0; distance < text.length; distance++) {
+    const forward = midpoint + distance;
+    const backward = midpoint - distance;
+    if (forward < text.length && text[forward] === ' ') {
+      return `${text.slice(0, forward)}\n${text.slice(forward + 1)}`;
+    }
+    if (backward > 0 && text[backward] === ' ') {
+      return `${text.slice(0, backward)}\n${text.slice(backward + 1)}`;
+    }
+  }
+  return text;
+}
+
+function syncActivePlaylist(videos) {
+  if (!isStreamerActive()) return { updated: false, pending: false, nextFile: null };
+
+  const now = readNowPlaying();
+  const currentFile = now ? path.basename(now.file || '') : '';
+  if (!currentFile) return { updated: false, pending: true, nextFile: null };
+
+  const runtimePlaylist = buildRuntimePlaylist(readPlaylistOrder(), currentFile);
+  const runtimePaths = runtimePlaylist.map(file => (
+    file === currentFile && now.file ? now.file : path.join(VIDEO_DIR, file)
+  ));
+  writeAtomic(RUNTIME_PLAYLIST_FILE, JSON.stringify(runtimePaths) + '\n');
+
+  const nextFile = runtimePlaylist.length > 1 ? runtimePlaylist[1] : null;
+  const titleMap = new Map(videos.filter(video => video.title).map(video => [video.file, video.title]));
+  const displayTitle = nextFile
+    ? titleMap.get(nextFile) || nextFile.replace(/\.[^.]+$/, '')
+    : '';
+  const overlayText = displayTitle ? `Up Next: ${displayTitle}` : '';
+  writeAtomic(UPNEXT_FILE, wrapOverlayText(overlayText, 55));
+  writeAtomic(PORT_UPNEXT_FILE, wrapOverlayText(overlayText, 22));
+
+  return { updated: true, pending: false, nextFile };
 }
 
 function buildPlaybackPosition(active, playlist, state, now) {
@@ -404,18 +484,42 @@ const server = http.createServer(async (req, res) => {
         return jsonResponse(res, 400, { error: 'videos must be an array' });
       }
       const allFiles = new Set(listVideoFiles());
-      const videos = parsed.videos
+      let videos = parsed.videos
         .filter(v => v.file && typeof v.file === 'string' && allFiles.has(v.file))
         .map(v => ({ file: v.file, enabled: v.enabled !== false, title: v.title ? String(v.title).slice(0, 200) : '' }));
+
+      const playNext = typeof parsed.playNext === 'string' ? parsed.playNext : '';
+      if (playNext) {
+        if (!videos.some(video => video.file === playNext)) {
+          return jsonResponse(res, 400, { error: 'Play Next video is not in the playlist' });
+        }
+        const active = isStreamerActive();
+        const reference = active ? readNowPlaying() : readPlaybackState();
+        const referenceFile = reference ? path.basename(reference.file || '') : '';
+        if (playNext === referenceFile) {
+          return jsonResponse(res, 409, { error: 'That video is already playing' });
+        }
+        videos = moveVideoNext(videos, playNext, referenceFile);
+      }
 
       writePlaylistConfig({ videos });
 
       // Regenerate the ffmpeg playlist immediately
       try {
         execFileSync('/usr/local/bin/generate-playlist.sh', [], { timeout: 15000 });
-      } catch { /* non-fatal */ }
+      } catch {
+        return jsonResponse(res, 500, { error: 'Playlist was saved but could not be regenerated' });
+      }
 
-      jsonResponse(res, 200, { ok: true, count: videos.length });
+      const runtime = syncActivePlaylist(videos);
+      jsonResponse(res, 200, {
+        ok: true,
+        count: videos.length,
+        videos,
+        runtimeUpdated: runtime.updated,
+        runtimePending: runtime.pending,
+        nextFile: runtime.nextFile
+      });
       return;
     }
 
@@ -1132,4 +1236,9 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildPlaybackPosition };
+module.exports = {
+  buildPlaybackPosition,
+  buildRuntimePlaylist,
+  moveVideoNext,
+  wrapOverlayText
+};
