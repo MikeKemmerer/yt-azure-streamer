@@ -20,6 +20,7 @@ const PLAYLIST_CONFIG = '/etc/yt/playlist-config.json';
 const PLAYLIST_FILE = '/etc/yt/playlist.txt';
 const STATE_FILE = '/etc/yt/playlist-state.json';
 const NOW_FILE = '/run/streamer-now.json';
+const RUNTIME_PLAYLIST_FILE = '/run/streamer-playlist.json';
 const PREVIEW_FILE = '/opt/yt/web/frontend/stream-preview.jpg';
 const MODE_FILE = '/etc/yt/mode';
 const LOCAL_CONF = '/etc/yt/local.conf';
@@ -181,6 +182,52 @@ function readPlaybackState() {
   try {
     return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
   } catch { return null; }
+}
+
+function readRuntimePlaylist() {
+  try {
+    const playlist = JSON.parse(fs.readFileSync(RUNTIME_PLAYLIST_FILE, 'utf8'));
+    return Array.isArray(playlist) ? playlist.map(file => path.basename(file)) : [];
+  } catch { return []; }
+}
+
+function buildPlaybackPosition(active, playlist, state, now) {
+  const position = { nowPlaying: null, upNext: [] };
+  if (playlist.length === 0) return position;
+
+  if (active) {
+    const nowFile = now ? path.basename(now.file || '') : null;
+    const nowIdx = nowFile ? playlist.indexOf(nowFile) : -1;
+    if (nowIdx >= 0) {
+      position.nowPlaying = playlist[nowIdx];
+      for (let i = 1; i <= 5 && i < playlist.length; i++) {
+        position.upNext.push(playlist[(nowIdx + i) % playlist.length]);
+      }
+      return position;
+    }
+
+    position.nowPlaying = nowFile || playlist[0];
+    const firstUpcoming = nowFile ? 0 : 1;
+    for (let i = firstUpcoming; i < firstUpcoming + 5 && i < playlist.length; i++) {
+      position.upNext.push(playlist[i]);
+    }
+    return position;
+  }
+
+  const lastIdx = state ? state.index : -1;
+  const lastFile = state ? path.basename(state.file || '') : '';
+  let bookmarkIdx = -1;
+  if (lastIdx >= 0 && lastIdx < playlist.length && playlist[lastIdx] === lastFile) {
+    bookmarkIdx = lastIdx;
+  } else if (lastFile) {
+    bookmarkIdx = playlist.indexOf(lastFile);
+  }
+
+  const resumeIdx = bookmarkIdx >= 0 ? (bookmarkIdx + 1) % playlist.length : 0;
+  for (let i = 0; i < 5 && i < playlist.length; i++) {
+    position.upNext.push(playlist[(resumeIdx + i) % playlist.length]);
+  }
+  return position;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -387,7 +434,9 @@ const server = http.createServer(async (req, res) => {
           const entered = new Date(props.ActiveEnterTimestamp);
           if (!isNaN(entered)) uptimeSeconds = Math.floor((Date.now() - entered.getTime()) / 1000);
         }
-        const playlist = readPlaylistOrder();
+        const savedPlaylist = readPlaylistOrder();
+        const runtimePlaylist = active ? readRuntimePlaylist() : [];
+        const playlist = active && runtimePlaylist.length > 0 ? runtimePlaylist : savedPlaylist;
         const state = readPlaybackState();
         const now = active ? readNowPlaying() : null;
         const stopPending = fs.existsSync('/run/streamer-stop-after-current');
@@ -396,78 +445,11 @@ const server = http.createServer(async (req, res) => {
           portrait: fs.existsSync(ACTIVE_PORTRAIT)
         };
         const result = { active, uptimeSeconds, nowPlaying: null, upNext: [], progress: null, stopPending, activeStreams };
-
-        if (state && playlist.length > 0) {
-          // The state file records the LAST COMPLETED video's index.
-          // While streaming, the streamer is playing the NEXT one after the bookmark.
-          const lastIdx = state.index;
-          const lastFile = path.basename(state.file || '');
-
-          // Find the bookmarked video's position in the current playlist
-          let bookmarkIdx = -1;
-          if (lastIdx < playlist.length && playlist[lastIdx] === lastFile) {
-            bookmarkIdx = lastIdx;
-          } else {
-            bookmarkIdx = playlist.indexOf(lastFile);
-          }
-
-          if (active && bookmarkIdx >= 0) {
-            // Currently streaming: now playing is the one AFTER the bookmark
-            const nowIdx = (bookmarkIdx + 1) % playlist.length;
-            result.nowPlaying = playlist[nowIdx];
-            // Up next: the 5 videos after now playing, with durations
-            for (let i = 1; i <= 5 && i < playlist.length; i++) {
-              const name = playlist[(nowIdx + i) % playlist.length];
-              const dur = probeDuration(path.join(VIDEO_DIR, name));
-              result.upNext.push({ name, duration: dur });
-            }
-          } else if (active) {
-            // Active but no valid bookmark — use NOW_FILE or assume index 0
-            const nowFile = now ? path.basename(now.file || '') : null;
-            const nowIdx = nowFile ? playlist.indexOf(nowFile) : -1;
-            if (nowIdx >= 0) {
-              result.nowPlaying = playlist[nowIdx];
-              for (let i = 1; i <= 5 && i < playlist.length; i++) {
-                const name = playlist[(nowIdx + i) % playlist.length];
-                const dur = probeDuration(path.join(VIDEO_DIR, name));
-                result.upNext.push({ name, duration: dur });
-              }
-            } else {
-              result.nowPlaying = nowFile || playlist[0] || null;
-              for (let i = 1; i <= 5 && i < playlist.length; i++) {
-                const name = playlist[i];
-                const dur = probeDuration(path.join(VIDEO_DIR, name));
-                result.upNext.push({ name, duration: dur });
-              }
-            }
-          } else {
-            // Stopped: show what will play next on resume
-            const resumeIdx = bookmarkIdx >= 0 ? (bookmarkIdx + 1) % playlist.length : 0;
-            result.nowPlaying = null;
-            const slice = playlist.slice(resumeIdx, resumeIdx + 5);
-            if (slice.length < 5 && playlist.length > 0) {
-              const need = 5 - slice.length;
-              slice.push(...playlist.slice(0, need));
-            }
-            result.upNext = slice.map(name => ({
-              name, duration: probeDuration(path.join(VIDEO_DIR, name))
-            }));
-          }
-        } else if (active && playlist.length > 0) {
-          // State file missing or broken — fallback to NOW_FILE
-          const nowFile = now ? path.basename(now.file || '') : null;
-          const nowIdx = nowFile ? playlist.indexOf(nowFile) : -1;
-          if (nowIdx >= 0) {
-            result.nowPlaying = playlist[nowIdx];
-            for (let i = 1; i <= 5 && i < playlist.length; i++) {
-              const name = playlist[(nowIdx + i) % playlist.length];
-              const dur = probeDuration(path.join(VIDEO_DIR, name));
-              result.upNext.push({ name, duration: dur });
-            }
-          } else {
-            result.nowPlaying = nowFile || playlist[0] || null;
-          }
-        }
+        const position = buildPlaybackPosition(active, playlist, state, now);
+        result.nowPlaying = position.nowPlaying;
+        result.upNext = position.upNext.map(name => ({
+          name, duration: probeDuration(path.join(VIDEO_DIR, name))
+        }));
 
         // Progress of current video (from /run/streamer-now.json)
         if (active && now && now.startedAt && now.duration) {
@@ -1144,6 +1126,10 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(config.port, () => {
-  console.log(`Backend listening on port ${config.port}`);
-});
+if (require.main === module) {
+  server.listen(config.port, () => {
+    console.log(`Backend listening on port ${config.port}`);
+  });
+}
+
+module.exports = { buildPlaybackPosition };

@@ -30,6 +30,7 @@ fi
 PLAYLIST="/etc/yt/playlist.txt"
 STATE_FILE="/etc/yt/playlist-state.json"
 CONFIG_FILE="/etc/yt/schedule.json"
+RUNTIME_PLAYLIST_FILE="/run/streamer-playlist.json"
 
 # --- Resolution lookup tables ---
 declare -A RES_HEIGHT=(
@@ -248,6 +249,20 @@ if [[ $NUM_VIDEOS -eq 0 ]]; then
   exit 1
 fi
 echo "Playlist: $NUM_VIDEOS videos"
+
+# Freeze the exact in-memory order for the dashboard. Regenerating the saved
+# playlist while streaming must not change the displayed queue until restart.
+python3 - "$RUNTIME_PLAYLIST_FILE" "${VIDEOS[@]}" <<'PY'
+import json
+import os
+import sys
+
+path = sys.argv[1]
+temporary = path + ".tmp"
+with open(temporary, "w", encoding="utf-8") as output:
+    json.dump(sys.argv[2:], output)
+os.replace(temporary, path)
+PY
 
 # --- Read bookmark ---
 START_INDEX=0
@@ -535,9 +550,11 @@ except: pass
 
   NOW_FILE="/run/streamer-now.json"
   python3 -c "
-import json, sys
-with open('$NOW_FILE', 'w') as f:
+import json, os, sys
+temporary = '$NOW_FILE.tmp'
+with open(temporary, 'w') as f:
     json.dump({'file': sys.argv[1], 'startedAt': int(sys.argv[2]), 'duration': int(sys.argv[3])}, f)
+os.replace(temporary, '$NOW_FILE')
 " "$VIDEO" "$(date +%s)" "${DURATION:-0}"
 
   # Build filter_complex: apply filters, split into stream + preview + optional portrait
@@ -681,9 +698,11 @@ ${AUDIO_FILTER}"
 
   # Update bookmark after each video completes (or is interrupted)
   python3 -c "
-import json, sys
-with open('$STATE_FILE', 'w') as f:
+import json, os, sys
+temporary = '$STATE_FILE.tmp'
+with open(temporary, 'w') as f:
     json.dump({'index': int(sys.argv[1]), 'file': sys.argv[2]}, f)
+os.replace(temporary, '$STATE_FILE')
 " "$INDEX" "$VIDEO"
   echo "  Bookmark saved: index $INDEX"
 
