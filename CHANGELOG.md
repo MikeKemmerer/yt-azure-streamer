@@ -35,6 +35,9 @@
 	output to 30 fps CFR, strict resolution-specific CBR with x264 HRD filler,
 	and fixed two-second GOPs. Historical 1 fps cover-art videos now produce a
 	steady ingest stream instead of retaining their sparse source cadence.
+- **Branch-switch updates** — capture the previous commit before checkout and
+	finish deploying all changed files after self-updating. Selecting a new branch
+	no longer exits early while leaving `/usr/local/bin` on the old code.
 - **jobSchedule ID lookup** — Azure jobSchedules API returns the GUID in `properties.jobScheduleId`, not a top-level `name` field.
 - **Duplicate `esc()` function** — removed redundant declaration that shadowed the global helper.
 - **Apostrophes in filenames** — ffmpeg concat playlist escaping now handles single quotes correctly.
