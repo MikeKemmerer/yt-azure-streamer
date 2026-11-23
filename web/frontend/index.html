@@ -48,6 +48,13 @@
       <ol id="up-next-list"></ol>
     </div>
     <p class="hint">Manual start/stop. The scheduler will still start or stop the streamer at the next scheduled time.</p>
+    <fieldset class="output-selector">
+      <legend>Send to YouTube</legend>
+      <label class="stream-label"><input id="output-landscape" type="checkbox">Horizontal (16:9)</label>
+      <label class="stream-label"><input id="output-portrait" type="checkbox" checked>Vertical (9:16)</label>
+      <button id="streamer-apply-outputs" class="secondary" disabled>Apply outputs &amp; restart</button>
+      <p class="hint">Choose either or both before starting. Applying while live briefly reconnects YouTube and resets temporary queue edits. Scheduled windows can change outputs.</p>
+    </fieldset>
     <div class="streamer-controls">
       <button id="streamer-start" disabled>Start</button>
       <button id="streamer-stop" disabled>Stop</button>
@@ -59,7 +66,11 @@
     <p id="live-event-status" class="hint">Connecting live updates...</p>
     <h3 class="section-subheading">Live Upcoming Queue</h3>
     <p id="queue-description" class="hint">Waiting for player state.</p>
-    <ol id="live-queue-list" class="live-queue-list"></ol>
+    <div class="streamer-controls">
+      <button id="queue-expand" class="secondary" aria-controls="live-queue-list" aria-expanded="false" disabled>Show next 5</button>
+      <button id="queue-collapse" class="secondary" aria-controls="live-queue-list" hidden>Collapse queue</button>
+    </div>
+    <ol id="live-queue-list" class="live-queue-list" hidden></ol>
     <div class="streamer-controls">
       <button id="queue-clear" class="secondary" disabled>Clear Upcoming Queue</button>
       <button id="queue-reset" class="secondary" disabled>Restore Saved Queue</button>

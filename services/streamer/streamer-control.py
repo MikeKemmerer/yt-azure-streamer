@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Session-only queue control and nonblocking ffmpeg progress collection."""
+"""Live queue control, durable resume, and nonblocking ffmpeg progress collection."""
 
 import argparse
 import copy
+import fcntl
 import json
 import math
 import os
@@ -14,12 +15,21 @@ import uuid
 from pathlib import Path
 
 
-def atomic_json(path, value):
+def atomic_json(path, value, durable=False):
     temporary = str(path) + f".{os.getpid()}.tmp"
     try:
         with open(temporary, "w", encoding="utf-8") as output:
             json.dump(value, output)
+            if durable:
+                output.flush()
+                os.fsync(output.fileno())
         os.replace(temporary, path)
+        if durable:
+            directory = os.open(str(Path(path).parent), os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -31,6 +41,27 @@ def read_json(path, default=None):
             return json.load(source)
     except (OSError, ValueError):
         return default
+
+
+def wrap_overlay(text, width, max_lines=2):
+    if len(text) <= width:
+        return text
+    lines = min(max_lines, math.ceil(len(text) / width))
+    result = []
+    remaining = text
+    for count in range(lines, 1, -1):
+        target = len(remaining) // count
+        spaces = [i for i, char in enumerate(remaining) if char == " " and 0 < i < len(remaining) - 1]
+        if spaces:
+            split = min(spaces, key=lambda i: (abs(i - target), -i))
+            result.append(remaining[:split])
+            remaining = remaining[split + 1:]
+        elif max_lines > 2:
+            result.append(remaining[:target])
+            remaining = remaining[target:]
+        else:
+            return text
+    return "\n".join(result + [remaining])
 
 
 def process_start(pid):
@@ -167,6 +198,96 @@ class Controller:
         self.request_file = self.run / "streamer-control-request.json"
         self.progress_file = self.run / "streamer-progress.json"
         self.onair_file = self.run / "streamer-onair.json"
+        self.resume_file = self.etc / "playback-resume.json"
+        self.resume_lock = self.etc / "playback-resume.lock"
+        self.resume_blocked = self.run / "streamer-resume-blocked.json"
+
+    def resume(self, video_dir):
+        value = read_json(self.resume_file, {})
+        try:
+            name, position = value["file"], value["position"]
+            if (value.get("version") != 1 or not isinstance(name, str)
+                    or Path(name).name != name or "\\" in name
+                    or "\n" in name or "\r" in name
+                    or value.get("videoDir") != str(Path(video_dir).resolve())
+                    or isinstance(position, bool) or not isinstance(position, (int, float))
+                    or not math.isfinite(position) or position < 0
+                    or not isinstance(value.get("ordinary"), bool)):
+                return None
+            media = Path(video_dir) / name
+            if media.suffix.lower() not in (".mp4", ".mkv", ".mov", ".avi", ".ts", ".flv"):
+                return None
+            if not media.is_file() or media.stat().st_size != value["size"]:
+                return None
+            duration = value.get("duration", 0)
+            if not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration < 0:
+                return None
+            if duration and position >= duration - 1:
+                return None
+            return {**value, "path": str(media), "offset": round(max(0, position - 2), 3)}
+        except (OSError, KeyError, TypeError, ValueError):
+            return None
+
+    def checkpoint(self, sample=None):
+        with open(self.resume_lock, "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            state = read_json(self.state_file, {}) or {}
+            sample = sample if sample is not None else read_json(self.progress_file, {}) or {}
+            current = state.get("current", {})
+            generation = current.get("generation")
+            blocked = read_json(self.resume_blocked, {}) or {}
+            if (not generation or generation != sample.get("generation") or state.get("interrupt")
+                    or blocked.get("generation") == generation):
+                return False
+            if sample.get("end"):
+                return False
+            elapsed, at = sample.get("elapsed"), sample.get("at")
+            if (isinstance(elapsed, bool) or not isinstance(elapsed, (int, float))
+                    or not math.isfinite(elapsed) or elapsed <= 0
+                    or not isinstance(at, (int, float)) or not 0 <= time.time() - at <= 10):
+                return False
+            now = read_json(self.run / "streamer-now.json", {}) or {}
+            duration = now.get("duration", 0) if now.get("file") == current.get("file") else 0
+            position = current.get("offsetSeconds", 0) + elapsed
+            if duration and position >= duration - 1:
+                return False
+            try:
+                size = Path(current["file"]).stat().st_size
+                previous = read_json(self.resume_file, {}) or {}
+                if not isinstance(previous, dict):
+                    previous = {}
+                if previous.get("generation") == generation and previous.get("position", 0) > position:
+                    return False
+                atomic_json(self.resume_file, {
+                    "version": 1, "file": Path(current["file"]).name, "size": size,
+                    "videoDir": str(Path(state["videoDir"]).resolve()),
+                    "ordinary": current.get("ordinary", True), "position": position,
+                    "duration": duration, "generation": generation, "at": at,
+                }, durable=True)
+                return True
+            except (OSError, KeyError, TypeError):
+                return False
+
+    def discard_resume(self):
+        with open(self.resume_lock, "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            state = read_json(self.state_file, {}) or {}
+            atomic_json(self.resume_blocked, {"generation": state.get("current", {}).get("generation")})
+            atomic_json(self.resume_file, {}, durable=True)
+            self.resume_file.unlink(missing_ok=True)
+
+    def offset(self):
+        self.checkpoint()
+        state = read_json(self.state_file)
+        value = self.resume(state["videoDir"])
+        current = state["current"]
+        if (value and value.get("generation") == current.get("generation")
+                and value["path"] == current["file"]):
+            current["offsetSeconds"] = value["offset"]
+            current.pop("generation", None)
+            self.save(state)
+            self.progress_file.unlink(missing_ok=True)
+        return current.get("offsetSeconds", 0)
 
     def saved(self):
         try:
@@ -213,12 +334,8 @@ class Controller:
         filename = Path(state["upcoming"][0]["file"]).name if state["upcoming"] else ""
         title = titles.get(filename) or os.path.splitext(filename)[0]
         text = f"Up Next: {title}" if title else ""
-        for name, width in (("streamer-upnext.txt", 55), ("streamer-upnext-portrait.txt", 22)):
-            wrapped = text
-            if len(text) > width and " " in text:
-                spaces = [i for i, char in enumerate(text) if char == " "]
-                split = min(spaces, key=lambda i: abs(i - len(text) // 2))
-                wrapped = text[:split] + "\n" + text[split + 1:]
+        for name, width, lines in (("streamer-upnext.txt", 55, 2), ("streamer-upnext-portrait.txt", 40, 3)):
+            wrapped = wrap_overlay(text, width, lines)
             temporary = self.overlays / (name + f".{os.getpid()}.tmp")
             try:
                 temporary.write_text(wrapped, encoding="utf-8", errors="replace")
@@ -244,6 +361,20 @@ class Controller:
             "explicitEmpty": False, "actions": [], "stopped": False,
             "refillAnchor": ordered[0],
         }
+        resume = self.resume(video_dir)
+        if resume and (not resume["ordinary"] or resume["path"] in saved):
+            if resume["ordinary"]:
+                resume_index = saved.index(resume["path"])
+                ordered = saved[resume_index:] + saved[:resume_index]
+                state["refillAnchor"] = ordered[0]
+            state["current"] = {
+                "file": resume["path"], "ordinary": resume["ordinary"],
+                "offsetSeconds": resume["offset"],
+            }
+            state["upcoming"] = [
+                {"file": filename, "ordinary": True} for filename in ordered
+                if filename != resume["path"]
+            ]
         for filename in (self.request_file, self.progress_file, self.onair_file):
             filename.unlink(missing_ok=True)
         self.save(state)
@@ -269,6 +400,8 @@ class Controller:
                 "status": "rejected", "error": str(error), "at": time.time(),
             }])[-16:]
         self.save(state)
+        if interrupt:
+            self.discard_resume()
         self.request_file.unlink(missing_ok=True)
         return interrupt
 
@@ -329,6 +462,7 @@ class Controller:
         print(receiver.getsockname()[1], flush=True)
         sample = {}
         announced = False
+        checkpoint_at = 0
         buffered = ""
         while True:
             buffered += receiver.recv(4096).decode("utf-8", errors="replace")
@@ -352,6 +486,12 @@ class Controller:
                         "speed": speed, "at": time.time(), "end": value == "end",
                     }
                     atomic_json(self.progress_file, data)
+                    if data["elapsed"] > 0 and (data["end"] or data["at"] - checkpoint_at >= 5):
+                        try:
+                            self.checkpoint(data)
+                        except OSError:
+                            pass
+                        checkpoint_at = data["at"]
                     if not announced:
                         atomic_json(self.onair_file, data)
                         announced = True
@@ -362,7 +502,10 @@ class Controller:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("operation", choices=("init", "command", "prepare", "launched", "confirm", "next", "overlay", "telemetry"))
+    parser.add_argument("operation", choices=("init", "command", "prepare", "launched", "confirm", "next", "overlay", "telemetry", "wrap", "checkpoint", "complete", "offset"))
+    parser.add_argument("--text", default="")
+    parser.add_argument("--width", type=int, default=40)
+    parser.add_argument("--lines", type=int, choices=(2, 3), default=3)
     parser.add_argument("--run", default="/run")
     parser.add_argument("--etc", default="/etc/yt")
     parser.add_argument("--overlays", default="/tmp")
@@ -373,6 +516,11 @@ def main():
     parser.add_argument("--video-dir")
     parser.add_argument("--generation")
     args = parser.parse_args()
+    if args.operation == "wrap":
+        if args.width < 1:
+            parser.error("--width must be positive")
+        sys.stdout.buffer.write(wrap_overlay(args.text, args.width, args.lines).encode("utf-8", errors="replace"))
+        return
     controller = Controller(args.run, args.etc, args.overlays)
     if args.operation == "init":
         controller.selection(controller.init(args.index, args.owner, args.video_dir))
@@ -388,6 +536,12 @@ def main():
         controller.selection(controller.next())
     elif args.operation == "overlay":
         controller.overlay(read_json(controller.state_file))
+    elif args.operation == "checkpoint":
+        controller.checkpoint()
+    elif args.operation == "complete":
+        controller.discard_resume()
+    elif args.operation == "offset":
+        print(controller.offset())
     else:
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
         controller.telemetry(args.generation)

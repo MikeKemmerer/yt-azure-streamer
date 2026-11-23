@@ -64,6 +64,10 @@ let lastVideoEndRefresh = 0;
 let liveQueue = { ready: false, items: [], actions: [] };
 let pendingQueueAction = null;
 let queueSortable = null;
+let queueView = 'collapsed';
+let outputSelectionDirty = false;
+let outputsApplying = false;
+let outputSnapshot = { active: false, state: 'unknown', activeStreams: {} };
 let queueDragging = false;
 let renderedQueue = '';
 let liveEventsConnected = false;
@@ -148,6 +152,7 @@ function renderStreamerStatus(data) {
       stopAfterBtn.textContent = 'Stop After Current';
       stopAfterBtn.classList.remove('pending');
     }
+    renderOutputControls(data);
     if (data.active && data.nowPlaying) {
       nowTitle.textContent = data.nowPlaying;
       nowPlaying.style.display = '';
@@ -274,12 +279,21 @@ function renderLiveQueue(queue, current = liveCurrentFile, hold = liveQueueHold)
     : !queue.ready ? 'Live queue requires a running, updated streamer.'
     : queue.explicitEmpty ? 'Current sermon will finish, then streaming will stop until manual start.'
     : 'Temporary upcoming pass. Natural exhaustion refills from the saved playlist.';
-  const signature = JSON.stringify([queue.session, queue.revision, queue.ready, disabled, queue.items]);
+  const items = queue.items || [];
+  const visibleItems = queueView === 'all' ? items : queueView === 'next' ? items.slice(0, 5) : [];
+  const expand = document.getElementById('queue-expand');
+  expand.hidden = queueView === 'all' || (queueView === 'next' && items.length <= 5);
+  expand.disabled = !items.length;
+  expand.textContent = queueView === 'collapsed' ? 'Show next 5' : `Show all (${items.length})`;
+  expand.setAttribute('aria-expanded', String(queueView !== 'collapsed'));
+  document.getElementById('queue-collapse').hidden = queueView === 'collapsed';
+  const signature = JSON.stringify([queue.session, queue.revision, queue.ready, disabled, queue.items, queueView]);
   if (queueDragging || renderedQueue === signature) return;
   renderedQueue = signature;
   const list = document.getElementById('live-queue-list');
+  list.hidden = queueView === 'collapsed';
   list.innerHTML = '';
-  for (const item of queue.items || []) {
+  for (const item of visibleItems) {
     const li = document.createElement('li');
     li.dataset.file = item.file;
     const grip = document.createElement('span');
@@ -299,21 +313,34 @@ function renderLiveQueue(queue, current = liveCurrentFile, hold = liveQueueHold)
     list.appendChild(li);
   }
   if (queueSortable) queueSortable.destroy();
+  queueSortable = null;
+  if (queueView === 'collapsed') return;
   let expected;
+  let remaining;
   queueSortable = new Sortable(list, {
     handle: '.grip', animation: 150, disabled,
     onStart() {
       queueDragging = true;
       expected = { session: liveQueue.session, revision: liveQueue.revision };
+      remaining = liveQueue.items.slice(visibleItems.length).map(item => item.file);
     },
     onEnd() {
       queueDragging = false;
-      const files = [...list.children].map(item => item.dataset.file);
+      const files = [...list.children].map(item => item.dataset.file).concat(remaining);
       renderedQueue = '';
       submitQueueAction('replace', { files }, 'Queue reorder', expected);
     }
   });
 }
+
+document.getElementById('queue-expand').addEventListener('click', () => {
+  queueView = queueView === 'collapsed' ? 'next' : 'all';
+  renderLiveQueue(liveQueue);
+});
+document.getElementById('queue-collapse').addEventListener('click', () => {
+  queueView = 'collapsed';
+  renderLiveQueue(liveQueue);
+});
 
 async function submitQueueAction(operation, values = {}, label = 'Queue change', expected = liveQueue) {
   const status = document.getElementById('queue-action-status');
@@ -370,11 +397,65 @@ window.addEventListener('pageshow', event => {
   if (event.persisted) connectPlaybackEvents();
 });
 
+function selectedOutputs() {
+  return ['landscape', 'portrait'].filter(profile => document.getElementById(`output-${profile}`).checked);
+}
+
+function renderOutputControls(data) {
+  outputSnapshot = data;
+  const active = data.activeStreams || {};
+  if (!outputSelectionDirty && !outputsApplying && (active.landscape || active.portrait)) {
+    for (const profile of ['landscape', 'portrait']) {
+      document.getElementById(`output-${profile}`).checked = !!active[profile];
+    }
+  }
+  const selected = selectedOutputs();
+  const changed = ['landscape', 'portrait'].some(profile => selected.includes(profile) !== !!active[profile]);
+  for (const profile of ['landscape', 'portrait']) {
+    document.getElementById(`output-${profile}`).disabled = outputsApplying || data.state === 'unknown';
+  }
+  document.getElementById('streamer-apply-outputs').disabled =
+    outputsApplying || !data.active || data.state === 'unknown' || !selected.length || !changed || data.stopPending;
+  document.getElementById('streamer-start').disabled =
+    outputsApplying || data.active || data.state === 'unknown' || !selected.length;
+}
+
+for (const profile of ['landscape', 'portrait']) {
+  document.getElementById(`output-${profile}`).addEventListener('change', () => {
+    outputSelectionDirty = true;
+    renderOutputControls(outputSnapshot);
+  });
+}
+
+document.getElementById('streamer-apply-outputs').addEventListener('click', async () => {
+  const streams = selectedOutputs();
+  if (!streams.length || !confirm('Restart with the selected outputs? YouTube briefly reconnects and temporary queue edits reset. Both outputs use more CPU.')) return;
+  const status = document.getElementById('streamer-action-status');
+  outputsApplying = true;
+  renderOutputControls(outputSnapshot);
+  try {
+    await api('/api/streamer/outputs', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ streams })
+    });
+    outputSelectionDirty = false;
+    showStatus(status, 'Outputs selected; encoder restarting. Watch playback health for fresh on-air progress.', true);
+  } catch (error) { showStatus(status, error.message, false); }
+  finally {
+    outputsApplying = false;
+    await refreshStreamerStatus();
+  }
+});
+
 document.getElementById('streamer-start').addEventListener('click', async () => {
   const status = document.getElementById('streamer-action-status');
   try {
     document.getElementById('streamer-start').disabled = true;
-    await api('/api/streamer/start', { method: 'POST' });
+    await api('/api/streamer/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ streams: selectedOutputs() })
+    });
+    outputSelectionDirty = false;
     showStatus(status, 'Streamer started.', true);
     await refreshStreamerStatus();
   } catch (e) { showStatus(status, e.message, false); }

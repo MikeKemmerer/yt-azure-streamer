@@ -165,7 +165,7 @@ az storage blob upload \
 
 Supported formats: `.mp4`, `.mkv`, `.mov`, `.avi`, `.ts`, `.flv`. The playlist is regenerated each time the streamer starts, so new/deleted files are picked up automatically. Set `stream.shuffle` to `true` in `schedule.json` to randomize playback order instead of chronological/alphabetical.
 
-> **Playlist resume:** The streamer bookmarks its position after each video. On restart (e.g. after scheduled downtime), it resumes from the *next* video — so the playlist makes forward progress across stop/start cycles rather than always restarting from the beginning.
+> **Playlist resume:** Stops and restarts resume the interrupted video with a two-second rewind. Measured playback position is saved durably every five seconds and again during a controlled service stop, so crashes and reboots can also recover (with a few extra seconds replayed). Completed or intentionally skipped videos advance using the separate ordinary-playlist bookmark.
 
 ### 6. (Optional) Configure the stream schedule
 
@@ -272,6 +272,18 @@ This integration is **read-only**. In Studio, bind each event to the output's co
 ### One-time read-only authorization
 
 The host must already have the local installation, be awake/network-connected, and have its media mount ready. Do not run the dedicated-host installer blindly on a shared kiosk.
+
+On shared hosts, set `YT_BACKEND_HOST=127.0.0.1` in the backend's systemd environment and expose the authenticated frontend proxy on an unused port/interface. This keeps the API private without taking over an existing web server's ports 80/443.
+
+If an SSH user owns `/opt/yt` but the backend/updater runs as root, Git can reject the checkout with **detected dubious ownership**, breaking both Refresh branches and Check for Updates. After verifying that this is your trusted installed checkout and its `origin` is correct, allow only that directory for root:
+
+```bash
+sudo -H git config --global --add safe.directory /opt/yt
+```
+
+Do not use a wildcard trust exception. This repairs Git access without changing file ownership, applying an update, or restarting playback. Commit and push a locally deployed branch before using Apply Update: the updater resets the installed checkout to the selected remote branch.
+
+The streamer defaults to a thumbnail every ten seconds. If FFmpeg 7 buffers live output around this low-rate preview, set `YT_PREVIEW_FPS=1` in the streamer's systemd environment and deliberately restart it. This changes only thumbnail cadence, not the 30 fps stream, resolution, bitrate, or encoder count; verify sustained output on the installed host.
 
 1. Enable the YouTube Data API in your Google Cloud project. Create an OAuth **Desktop app** client and download its client JSON outside the repository.
 2. Configure the consent screen for unattended use. External applications left in **Testing** generally receive refresh authorizations that expire after seven days for these scopes; review Google's publishing/verification requirements. Tokens can also be revoked or expire later.
@@ -429,7 +441,13 @@ The web UI is protected by HTTP basic auth. Credentials are set during deploymen
 
 Queue Next, drag reorder, and removal change only the upcoming pass; the current sermon keeps playing. Play Now asks for confirmation, interrupts only the current ffmpeg child, and briefly reconnects RTMP. The requested video then returns to the ordinary upcoming queue, omitting the interrupted sermon and the request's previous pending occurrence.
 
-Natural queue exhaustion refills from the saved playlist. Explicitly clearing the queue instead finishes the current sermon and stops, with a transient hold that prevents scheduled starts until manual Start. Restart and VM reboot discard temporary queue edits/requests and restore saved/bookmarked ordering; backend restart alone preserves the playback session. A reboot also clears the empty-queue hold.
+Natural queue exhaustion refills from the saved playlist. Explicitly clearing the queue instead finishes the current sermon and stops, with a transient hold that prevents scheduled starts until manual Start. Restart and VM reboot discard temporary upcoming queue edits/requests and restore saved/bookmarked ordering, but first resume an interrupted current video at its saved timestamp. A current one-off can resume without changing the ordinary bookmark. Missing, changed-size, disabled ordinary, or invalid checkpoint media falls back to the saved rotation. Backend restart alone preserves the playback session. A reboot also clears the empty-queue hold.
+
+Timestamp recovery does not change boot/start policy: the scheduler or an operator must still start playback after a reboot.
+
+The upcoming queue starts collapsed: Show 5 reveals five entries, Show all reveals the full queue, and Collapse hides it again. The preview already shows the next five videos.
+
+Select Horizontal (16:9), Vertical (9:16), or both beside playback controls. Start uses that selection. While running, Apply outputs & restart briefly reconnects RTMP and resets temporary upcoming edits, preserving the current video's timestamp. Each selected output requires its own configured key; both outputs share playback. Schedules may select different outputs later. Portrait title and Up Next overlays keep shorter titles on one or two lines, using a third only for longer text; landscape retains two.
 
 Restore Saved Queue applies the saved ordering to upcoming playback without interrupting the current sermon. Removing a sermon is temporary; disable it in Saved Playlist to exclude it from future refills. Saving the library updates future refills but does not silently replace pending live edits.
 
@@ -457,6 +475,7 @@ All endpoints are served under `/api/` and require authentication.
 | `POST` | `/api/streamer/stop-after-current` | Signal the streamer to stop after the current video ends |
 | `DELETE` | `/api/streamer/stop-after-current` | Cancel a pending stop-after-current |
 | `POST` | `/api/streamer/restart` | Restart the streamer service |
+| `POST` | `/api/streamer/outputs` | Apply a nonempty `streams` selection (`landscape`, `portrait`) and restart active playback |
 | `POST` | `/api/stream-key` | Update YouTube stream key in Key Vault |
 | `GET` | `/api/settings` | Read max_resolution and shuffle from schedule.json |
 | `PUT` | `/api/settings` | Update max_resolution and shuffle |
@@ -602,6 +621,7 @@ All deployment-specific configuration lives under `/etc/yt/`, separate from the 
 | `/etc/yt/playlist.txt` | ffmpeg concat playlist (auto-generated) |
 | `/etc/yt/playlist-config.json` | Per-video enable/disable and order |
 | `/etc/yt/playlist-state.json` | Resume bookmark (last played index) |
+| `/etc/yt/playback-resume.json` | Durable interrupted-video timestamp, separate from ordinary rotation |
 | `/etc/yt/blobfuse2/blobfuse2.yaml` | Blobfuse2 mount config (generated from template at install) |
 | `/etc/yt/caddy/Caddyfile` | Caddy reverse proxy config (generated from template at install) |
 | `/etc/yt/caddy/auth.conf` | HTTP basic auth credentials (fetched from Key Vault) |

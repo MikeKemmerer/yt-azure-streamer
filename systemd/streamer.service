@@ -6,6 +6,7 @@ Requires=mnt-blobfuse2.mount
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/streamer.sh
+ExecStop=-/usr/bin/timeout 3s /usr/local/bin/streamer-control.py checkpoint
 Restart=always
 RestartSec=5
 

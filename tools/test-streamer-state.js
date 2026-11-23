@@ -10,7 +10,8 @@ const {
   playbackHealth,
   writeEvent,
   validateYouTubeConfig,
-  youtubeFingerprint
+  youtubeFingerprint,
+  validateOutputSelection
 } = require('../web/backend/server');
 
 const runtimePlaylist = ['alpha.mp4', 'beta.mp4', 'gamma.mp4'];
@@ -104,6 +105,14 @@ assert.strictEqual(
   'Up Next: A title that\nneeds to wrap cleanly',
   'overlay text must wrap near its midpoint using the streamer line limits'
 );
+const longPortraitTitle = 'January 4, 2025 - Repentance is the Beginning, Middle, and End to a Christian Way of Life';
+const portraitLines = wrapOverlayText(longPortraitTitle, 40, 3).split('\n');
+assert.strictEqual(portraitLines.length, 3);
+assert.strictEqual(portraitLines.join(' '), longPortraitTitle);
+assert(Math.max(...portraitLines.map(line => line.length)) < 40);
+assert.strictEqual(wrapOverlayText('A concise sermon title', 40, 3), 'A concise sermon title');
+assert.strictEqual(wrapOverlayText('February 16, 2025 - The Parable of the Prodigal Son', 40, 3).split('\n').length, 2);
+assert.deepStrictEqual(wrapOverlayText('X'.repeat(90), 40, 3).split('\n'), Array(3).fill('X'.repeat(30)));
 
 function loadBackend(dependencies) {
   const fs = require('fs');
@@ -303,6 +312,74 @@ async function testYouTubeScheduleRoutes() {
   assert.strictEqual(unavailable.status, 400);
 }
 
+function testProgressiveQueueDisplay() {
+  const vm = require('vm');
+  const source = require('fs').readFileSync(require.resolve('../web/frontend/app.js'), 'utf8');
+  const start = source.indexOf('function renderLiveQueue(');
+  const end = source.indexOf('async function submitQueueAction(', start);
+  const node = () => ({
+    children: [], dataset: {}, listeners: {},
+    set innerHTML(value) { this.children = []; },
+    append(...children) { this.children.push(...children); },
+    appendChild(child) { this.children.push(child); },
+    setAttribute() {},
+    addEventListener(event, callback) { this.listeners[event] = callback; }
+  });
+  const elements = new Map();
+  const element = id => {
+    if (!elements.has(id)) elements.set(id, node());
+    return elements.get(id);
+  };
+  const sortables = [];
+  const actions = [];
+  const context = {
+    liveQueue: null, liveCurrentFile: null, liveQueueHold: false,
+    pendingQueueAction: null, queueView: 'collapsed', queueDragging: false,
+    renderedQueue: '', queueSortable: null,
+    document: { getElementById: element, createElement: node, querySelectorAll: () => [] },
+    Sortable: class {
+      constructor(list, options) { sortables.push(options); }
+      destroy() {}
+    },
+    showStatus() {},
+    submitQueueAction(operation, values) { actions.push({ operation, files: Array.from(values.files) }); }
+  };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  const queue = {
+    session: 'queue-display', revision: 1, ready: true,
+    items: Array.from({ length: 12 }, (_, i) => ({ file: `sermon-${i}.mp4` }))
+  };
+  context.renderLiveQueue(queue);
+  const list = element('live-queue-list');
+  assert.strictEqual(list.hidden, true);
+  assert.strictEqual(list.children.length, 0);
+  element('queue-expand').listeners.click();
+  assert.strictEqual(list.hidden, false);
+  assert.strictEqual(list.children.length, 5);
+  assert.strictEqual(element('queue-expand').textContent, 'Show all (12)');
+  const sorting = sortables.at(-1);
+  sorting.onStart();
+  list.children.push(list.children.shift());
+  sorting.onEnd();
+  assert.deepStrictEqual(actions.at(-1).files, [
+    ...queue.items.slice(1, 5).map(item => item.file), queue.items[0].file,
+    ...queue.items.slice(5).map(item => item.file)
+  ], 'reordering the first five must preserve the entire hidden queue');
+  element('queue-expand').listeners.click();
+  assert.strictEqual(list.children.length, 12);
+  assert.strictEqual(element('queue-expand').hidden, true);
+  element('queue-collapse').listeners.click();
+  assert.strictEqual(list.hidden, true);
+  assert.strictEqual(list.children.length, 0);
+  context.renderLiveQueue({ ...queue, revision: 2, items: queue.items.slice(0, 3) });
+  element('queue-expand').listeners.click();
+  assert.strictEqual(list.children.length, 3);
+  assert.strictEqual(element('queue-expand').hidden, true);
+  context.renderLiveQueue({ ...queue, revision: 3, items: [] });
+  assert.strictEqual(element('queue-expand').disabled, true);
+}
+
 async function testUnconfirmedUpdate(fetch) {
   const fs = require('fs');
   const vm = require('vm');
@@ -371,6 +448,7 @@ function liveBackend(options = {}) {
       },
       execFile(command, args, opts, callback) {
         calls.push(command);
+        if (options.onExecFile) options.onExecFile(command, args);
         callback(options.serviceError ? new Error('systemctl unavailable') : null, 'ActiveState=active\n');
       }
     },
@@ -379,6 +457,44 @@ function liveBackend(options = {}) {
   });
   const command = { id: 'edit-one', operation: 'replace', files: ['beta.mp4'], session: state.session, revision: state.revision };
   return { state, files, calls, handler, command };
+}
+
+async function testManualOutputControls() {
+  for (const invalid of [null, [], 1, {}, { streams: [] }, { streams: ['portrait', 'portrait'] },
+    { streams: ['invalid'] }, { streams: 'portrait' }]) {
+    assert.throws(() => validateOutputSelection(invalid));
+  }
+  assert.deepStrictEqual(validateOutputSelection({}, ['landscape', 'portrait']), ['landscape', 'portrait']);
+  const serviceCalls = [];
+  const fixture = liveBackend({ onExecFile(command, args) { serviceCalls.push([command, Array.from(args)]); } });
+  fixture.files.set('/etc/yt/mode', 'local');
+  fixture.files.set('/etc/yt/secrets/youtube-stream-key', 'fixture-landscape');
+  fixture.files.set('/etc/yt/secrets/youtube-stream-key-portrait', 'fixture-portrait');
+  fixture.files.set('/run/streamer-active-landscape', '');
+  const change = await invokeRoute(fixture.handler, 'POST', '/api/streamer/outputs', { streams: ['portrait'] });
+  assert.strictEqual(change.status, 200);
+  assert(fixture.files.has('/run/streamer-active-portrait'));
+  assert(!fixture.files.has('/run/streamer-active-landscape'));
+  assert(fixture.files.has('/run/streamer-manual-override'));
+  assert.deepStrictEqual(serviceCalls.at(-1), ['systemctl', ['restart', 'streamer.service']]);
+  const before = JSON.stringify([...fixture.files]);
+  const empty = await invokeRoute(fixture.handler, 'POST', '/api/streamer/outputs', { streams: [] });
+  assert.strictEqual(empty.status, 400);
+  assert.strictEqual(JSON.stringify([...fixture.files]), before, 'empty selection must not trigger fallback output');
+  fixture.files.delete('/etc/yt/secrets/youtube-stream-key');
+  const missing = await invokeRoute(fixture.handler, 'POST', '/api/streamer/outputs', { streams: ['landscape'] });
+  assert.strictEqual(missing.status, 409);
+  assert(fixture.files.has('/run/streamer-active-portrait'));
+  fixture.files.set('/run/streamer-stop-after-current', '');
+  const pending = await invokeRoute(fixture.handler, 'POST', '/api/streamer/outputs', { streams: ['portrait'] });
+  assert.strictEqual(pending.status, 409);
+  const stopped = liveBackend({ active: false });
+  assert.strictEqual((await invokeRoute(stopped.handler, 'POST', '/api/streamer/outputs', { streams: ['portrait'] })).status, 409);
+  fixture.files.delete('/run/streamer-stop-after-current');
+  const start = await invokeRoute(fixture.handler, 'POST', '/api/streamer/start', { streams: ['portrait'] });
+  assert.strictEqual(start.status, 200);
+  assert.deepStrictEqual(serviceCalls.at(-1), ['systemctl', ['start', 'streamer.service']]);
+  assert(!fixture.files.has('/run/streamer-active-landscape'));
 }
 
 async function testLiveCommands() {
@@ -433,6 +549,16 @@ async function testLiveSnapshotAndSavedOnly() {
   assert.strictEqual(unknown.body.state, 'unknown');
   assert.strictEqual(unknown.body.playbackHealth.status, 'unknown',
     'failed operational sampling must not claim playback is stopped or healthy');
+  const resumed = liveBackend();
+  resumed.files.set('/run/streamer-now.json', JSON.stringify({
+    file: resumed.state.current.file, startedAt: 1, duration: 100, offsetSeconds: 30
+  }));
+  resumed.files.set('/run/streamer-progress.json', JSON.stringify({
+    generation: resumed.state.current.generation, elapsed: 15, at: Date.now() / 1000, speed: 1
+  }));
+  const progress = (await invokeRoute(resumed.handler, 'GET', '/api/streamer')).body.progress;
+  assert.strictEqual(progress.elapsed, 45, 'measured time must include the resumed input position');
+  assert.strictEqual(progress.duration, 100, 'duration stays relative to the complete source');
 }
 
 function testMeasuredHealth() {
@@ -505,7 +631,7 @@ function testPlaybackHealthFeedback() {
           return elements.get(id);
         }
       },
-      renderLiveQueue() {}, stopProgressTicker() {}, fmtDuration() { return ''; }
+      renderLiveQueue() {}, renderOutputControls() {}, stopProgressTicker() {}, fmtDuration() { return ''; }
     });
     const text = elements.get('playback-health').textContent;
     assert(text.includes(health.status) && text.includes(health.reason));
@@ -559,7 +685,9 @@ async function testSharedEvents() {
   await testUpdateResult(null, 'Update complete\n');
   await testLocalPlaylistSave();
   await testYouTubeScheduleRoutes();
+  testProgressiveQueueDisplay();
   await testLiveCommands();
+  await testManualOutputControls();
   await testLiveSnapshotAndSavedOnly();
   testMeasuredHealth();
   testStaleProgressAndCollectorFailure();

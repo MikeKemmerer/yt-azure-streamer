@@ -73,6 +73,11 @@ declare -A RES_AUDIO=(
   [720p]=128k [1080p]=192k [1440p]=192k [2160p]=256k
 )
 OUTPUT_FPS=30
+PREVIEW_FPS="${YT_PREVIEW_FPS:-1/10}"
+case "$PREVIEW_FPS" in
+  1/10|1) ;;
+  *) echo "ERROR: YT_PREVIEW_FPS must be 1/10 or 1" >&2; exit 1 ;;
+esac
 GOP_SIZE=$((OUTPUT_FPS * 2))
 
 echo "Streamer starting with prefix: $PREFIX"
@@ -335,6 +340,7 @@ while true; do
   VIDEO="${CONTROL_PLAYBACK[0]}"
   CURRENT_ORDINARY="${CONTROL_PLAYBACK[1]}"
   INDEX="${CONTROL_PLAYBACK[2]}"
+  RESUME_SECONDS=$(playback_control offset)
   BASENAME=$(basename "$VIDEO")
   TITLE="${BASENAME%.*}"  # filename without extension (default)
 
@@ -449,42 +455,11 @@ except: pass
   ALPHA_NEXT='if(lt(mod(t\,41)\,32.5)\,0\,if(lt(mod(t\,41)\,33)\,(mod(t\,41)-32.5)/0.5\,if(lt(mod(t\,41)\,40)\,1\,(41-mod(t\,41))/0.5)))'
 
   # --- Portrait title files (tighter wrap for larger font) ---
-  PORT_MAX_LINE=22
+  PORT_MAX_LINE=40
   PORT_TITLE_FILE="/tmp/streamer-title-portrait.txt"
-  if [[ ${#TITLE} -gt $PORT_MAX_LINE ]]; then
-    TARGET=$(( ${#TITLE} / 2 ))
-    BEST=-1
-    for ((d=0; d < ${#TITLE}; d++)); do
-      FWD=$((TARGET + d)); BWD=$((TARGET - d))
-      if [[ $FWD -lt ${#TITLE} && "${TITLE:FWD:1}" == " " ]]; then BEST=$FWD; break; fi
-      if [[ $BWD -gt 0 && "${TITLE:BWD:1}" == " " ]]; then BEST=$BWD; break; fi
-    done
-    if [[ $BEST -gt 0 ]]; then
-      printf '%s\n%s' "${TITLE:0:BEST}" "${TITLE:BEST+1}" > "$PORT_TITLE_FILE"
-    else
-      printf '%s' "$TITLE" > "$PORT_TITLE_FILE"
-    fi
-  else
-    printf '%s' "$TITLE" > "$PORT_TITLE_FILE"
-  fi
-
+  playback_control wrap --text "$TITLE" --width "$PORT_MAX_LINE" --lines 3 > "$PORT_TITLE_FILE"
   PORT_UPNEXT_FILE="/tmp/streamer-upnext-portrait.txt"
-  if [[ ${#NEXT_TITLE} -gt $PORT_MAX_LINE ]]; then
-    TARGET=$(( ${#NEXT_TITLE} / 2 ))
-    BEST=-1
-    for ((d=0; d < ${#NEXT_TITLE}; d++)); do
-      FWD=$((TARGET + d)); BWD=$((TARGET - d))
-      if [[ $FWD -lt ${#NEXT_TITLE} && "${NEXT_TITLE:FWD:1}" == " " ]]; then BEST=$FWD; break; fi
-      if [[ $BWD -gt 0 && "${NEXT_TITLE:BWD:1}" == " " ]]; then BEST=$BWD; break; fi
-    done
-    if [[ $BEST -gt 0 ]]; then
-      printf '%s\n%s' "${NEXT_TITLE:0:BEST}" "${NEXT_TITLE:BEST+1}" > "$PORT_UPNEXT_FILE"
-    else
-      printf '%s' "$NEXT_TITLE" > "$PORT_UPNEXT_FILE"
-    fi
-  else
-    printf '%s' "$NEXT_TITLE" > "$PORT_UPNEXT_FILE"
-  fi
+  playback_control wrap --text "$NEXT_TITLE" --width "$PORT_MAX_LINE" --lines 3 > "$PORT_UPNEXT_FILE"
 
   LANDSCAPE_WM=()
   if [[ "$LAND_WATERMARK" == true && -f "$WM_FONT_SANS" ]]; then
@@ -530,14 +505,14 @@ except: pass
         DUR_M=$(( (DURATION%3600)/60 ))
         DUR_S=$((DURATION%60))
         DUR_FMT=$(printf '%d:%02d:%02d' "$DUR_H" "$DUR_M" "$DUR_S")
-        printf '%%{eif:trunc(min(t,%d)/3600):d}:%%{eif:mod(trunc(min(t,%d)/60),60):d:2}:%%{eif:mod(trunc(min(t,%d)),60):d:2} / %s' \
-          "$DURATION" "$DURATION" "$DURATION" "$DUR_FMT" > "$TIME_FILE"
+        printf '%%{eif:trunc(min(t+%s,%d)/3600):d}:%%{eif:mod(trunc(min(t+%s,%d)/60),60):d:2}:%%{eif:mod(trunc(min(t+%s,%d)),60):d:2} / %s' \
+          "$RESUME_SECONDS" "$DURATION" "$RESUME_SECONDS" "$DURATION" "$RESUME_SECONDS" "$DURATION" "$DUR_FMT" > "$TIME_FILE"
       else
         DUR_M=$((DURATION/60))
         DUR_S=$((DURATION%60))
         DUR_FMT=$(printf '%d:%02d' "$DUR_M" "$DUR_S")
-        printf '%%{eif:trunc(min(t,%d)/60):d}:%%{eif:mod(trunc(min(t,%d)),60):d:2} / %s' \
-          "$DURATION" "$DURATION" "$DUR_FMT" > "$TIME_FILE"
+        printf '%%{eif:trunc(min(t+%s,%d)/60):d}:%%{eif:mod(trunc(min(t+%s,%d)),60):d:2} / %s' \
+          "$RESUME_SECONDS" "$DURATION" "$RESUME_SECONDS" "$DURATION" "$DUR_FMT" > "$TIME_FILE"
       fi
       LANDSCAPE_WM+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TIME_FILE}:fontsize=h/40:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-w/30:y=h-h/20")
     fi
@@ -595,7 +570,8 @@ except: pass
   EXTRA_INPUTS=()
   if [[ -z "$HAS_AUDIO" ]]; then
     echo "  No audio stream — generating silence"
-    EXTRA_INPUTS=("-f" "lavfi" "-t" "${DURATION:-0}" "-i" "anullsrc=r=44100:cl=stereo")
+    REMAINING_DURATION=$(python3 -c 'import sys; print(max(0, float(sys.argv[1])-float(sys.argv[2])))' "${DURATION:-0}" "$RESUME_SECONDS")
+    EXTRA_INPUTS=("-f" "lavfi" "-t" "$REMAINING_DURATION" "-i" "anullsrc=r=44100:cl=stereo")
     AUDIO_FILTER="[1:a]aresample=44100:async=1000:first_pts=0[audio]"
   else
     # Normalize audio loudness to -14 LUFS (YouTube standard) with -1 dBTP true peak
@@ -635,9 +611,9 @@ except: pass
 import json, os, sys
 temporary = '$NOW_FILE.tmp'
 with open(temporary, 'w') as f:
-    json.dump({'file': sys.argv[1], 'startedAt': int(sys.argv[2]), 'duration': int(sys.argv[3])}, f)
+    json.dump({'file': sys.argv[1], 'startedAt': int(sys.argv[2]), 'duration': int(sys.argv[3]), 'offsetSeconds': float(sys.argv[4])}, f)
 os.replace(temporary, '$NOW_FILE')
-" "$VIDEO" "$(date +%s)" "${DURATION:-0}"
+" "$VIDEO" "$(date +%s)" "${DURATION:-0}" "$RESUME_SECONDS"
 
   # --- Build filter_complex and output args based on active streams ---
   OUTPUT_ARGS=()
@@ -646,10 +622,10 @@ os.replace(temporary, '$NOW_FILE')
     # Dual output: scale before split, watermark on landscape branch only
     FILTER_COMPLEX="[0:v]${COMMON_VF_STRING}split=3[land_src][port_src][prev_land_src];\
 [land_src]${LANDSCAPE_WM_CHAIN}[land];\
-[prev_land_src]fps=1/10,scale=640:-2[preview_land];\
+[prev_land_src]fps=${PREVIEW_FPS},scale=640:-2[preview_land];\
 [port_src]scale=${PORT_W}:-2:force_original_aspect_ratio=decrease,pad=${PORT_W}:${PORT_H}:(ow-iw)/2:${PORT_PAD_Y}:black${PORTRAIT_BRANDING}${PORTRAIT_TITLE_OVERLAYS}${PORTRAIT_HUD},\
 split=2[portrait][prev_port_src];\
-[prev_port_src]fps=1/10,scale=-2:480[preview_port];\
+[prev_port_src]fps=${PREVIEW_FPS},scale=-2:480[preview_port];\
 ${AUDIO_FILTER};\
 [audio]asplit=2[audio_land][audio_port]"
     OUTPUT_ARGS+=(
@@ -675,7 +651,7 @@ ${AUDIO_FILTER};\
   elif [[ "$STREAM_LANDSCAPE" == true ]]; then
     # Landscape only (original behavior)
     rm -f "$PREVIEW_PORTRAIT"
-    FILTER_COMPLEX="[0:v]${LANDSCAPE_VF_STRING}split=2[stream][prev];[prev]fps=1/10,scale=640:-2[preview];${AUDIO_FILTER}"
+    FILTER_COMPLEX="[0:v]${LANDSCAPE_VF_STRING}split=2[stream][prev];[prev]fps=${PREVIEW_FPS},scale=640:-2[preview];${AUDIO_FILTER}"
     OUTPUT_ARGS+=(
       -map "[stream]" -map "[audio]"
       -c:v libx264 -preset veryfast -r "$OUTPUT_FPS" -fps_mode cfr
@@ -693,7 +669,7 @@ ${AUDIO_FILTER};\
     FILTER_COMPLEX="[0:v]${COMMON_VF_STRING}\
 scale=${PORT_W}:-2:force_original_aspect_ratio=decrease,pad=${PORT_W}:${PORT_H}:(ow-iw)/2:${PORT_PAD_Y}:black${PORTRAIT_BRANDING}${PORTRAIT_TITLE_OVERLAYS}${PORTRAIT_HUD},\
 split=2[portrait][prev_port];\
-[prev_port]fps=1/10,scale=-2:480[preview];\
+[prev_port]fps=${PREVIEW_FPS},scale=-2:480[preview];\
 ${AUDIO_FILTER}"
     OUTPUT_ARGS+=(
       -map "[portrait]" -map "[audio]"
@@ -716,7 +692,7 @@ ${AUDIO_FILTER}"
     playback_control telemetry --generation "$GENERATION" > "$PROGRESS_PORT_FILE" &
     TELEMETRY_PID=$!
     PROGRESS_PORT=""
-    for attempt in {1..20}; do
+    for attempt in {1..100}; do
       read -r PROGRESS_PORT < "$PROGRESS_PORT_FILE" || true
       if [[ "$PROGRESS_PORT" =~ ^[0-9]+$ ]]; then
         PROGRESS_ARGS=(-progress "udp://127.0.0.1:${PROGRESS_PORT}?pkt_size=1024&connect=0")
@@ -724,9 +700,12 @@ ${AUDIO_FILTER}"
       fi
       sleep 0.05
     done
+    if [[ ${#PROGRESS_ARGS[@]} -eq 0 ]]; then
+      echo "WARNING: Playback telemetry unavailable; timestamp recovery may be stale."
+    fi
   fi
   set +e
-  ffmpeg -y -re -i "$VIDEO" "${EXTRA_INPUTS[@]}" \
+  ffmpeg -y -re -ss "${RESUME_SECONDS:-0}" -i "$VIDEO" "${EXTRA_INPUTS[@]}" \
     "${PROGRESS_ARGS[@]}" \
     -filter_complex "$FILTER_COMPLEX" \
     "${OUTPUT_ARGS[@]}" </dev/null &
@@ -781,6 +760,9 @@ ${AUDIO_FILTER}"
       continue
     fi
     echo "  ERROR: ffmpeg exited with status $FFMPEG_STATUS — handling pending stop/restart"
+  fi
+  if [[ "${CONTROL_ENABLED:-false}" == true && ( "$SKIPPED" == true || $FFMPEG_STATUS -eq 0 ) ]]; then
+    playback_control complete
   fi
 
   # Failed playback must retain its bookmark so a restart retries the same video.

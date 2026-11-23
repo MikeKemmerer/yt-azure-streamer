@@ -232,6 +232,45 @@ function youtubePreview(schedule, now = Date.now() / 1000) {
   };
 }
 
+function validateOutputSelection(parsed, defaults = null) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw Object.assign(new Error('Invalid output selection'), { status: 400 });
+  }
+  const streams = parsed.streams === undefined ? defaults : parsed.streams;
+  if (!Array.isArray(streams) || streams.length < 1 || streams.length > 2 ||
+      streams.some(stream => !['landscape', 'portrait'].includes(stream)) ||
+      new Set(streams).size !== streams.length) {
+    throw Object.assign(new Error('Select horizontal, vertical, or both outputs'), { status: 400 });
+  }
+  return streams;
+}
+
+function selectManualOutputs(streams) {
+  if (readMode() === 'local') {
+    const schedule = readSchedule();
+    for (const profile of streams) {
+      const name = schedule.streams?.[profile]?.stream_key_name ||
+        (profile === 'portrait' ? 'youtube-stream-key-portrait' : 'youtube-stream-key');
+      if (typeof name !== 'string' || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
+        throw Object.assign(new Error(`Invalid ${profile} stream key configuration`), { status: 400 });
+      }
+      let key;
+      try { key = fs.readFileSync(`/etc/yt/secrets/${name}`, 'utf8').trim(); } catch {}
+      if (!key) throw Object.assign(new Error(`Configure the ${profile} stream key before activating it`), { status: 409 });
+    }
+  }
+  fs.writeFileSync('/run/streamer-manual-override', '');
+  for (const [profile, file] of [['landscape', ACTIVE_LANDSCAPE], ['portrait', ACTIVE_PORTRAIT]]) {
+    if (streams.includes(profile)) fs.writeFileSync(file, '');
+    else {
+      try { fs.unlinkSync(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+  }
+  for (const file of ['/run/streamer-manual-stop', QUEUE_HOLD]) {
+    try { fs.unlinkSync(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+}
+
 function listVideoFiles() {
   try {
     return fs.readdirSync(VIDEO_DIR)
@@ -324,8 +363,23 @@ function writeAtomic(file, content) {
   fs.renameSync(temporary, file);
 }
 
-function wrapOverlayText(text, maxLine) {
+function wrapOverlayText(text, maxLine, maxLines = 2) {
   if (text.length <= maxLine) return text;
+  if (maxLines > 2) {
+    let remaining = text;
+    const result = [];
+    for (let count = Math.min(maxLines, Math.ceil(text.length / maxLine)); count > 1; count--) {
+      const target = Math.floor(remaining.length / count);
+      let split = -1;
+      for (let i = 1; i < remaining.length - 1; i++) {
+        if (remaining[i] === ' ' && (split < 0 || Math.abs(i - target) <= Math.abs(split - target))) split = i;
+      }
+      const boundary = split < 0 ? target : split;
+      result.push(remaining.slice(0, boundary));
+      remaining = remaining.slice(boundary + (split < 0 ? 0 : 1));
+    }
+    return [...result, remaining].join('\n');
+  }
   const midpoint = Math.floor(text.length / 2);
   for (let distance = 0; distance < text.length; distance++) {
     const forward = midpoint + distance;
@@ -369,7 +423,7 @@ function syncActivePlaylist(videos) {
     : '';
   const overlayText = displayTitle ? `Up Next: ${displayTitle}` : '';
   writeAtomic(UPNEXT_FILE, wrapOverlayText(overlayText, 55));
-  writeAtomic(PORT_UPNEXT_FILE, wrapOverlayText(overlayText, 22));
+  writeAtomic(PORT_UPNEXT_FILE, wrapOverlayText(overlayText, 40, 3));
 
   return { updated: true, pending: false, nextFile };
 }
@@ -564,14 +618,14 @@ function streamerSnapshot(props, probe = false) {
         Number.isFinite(sample.elapsed) && now && typeof now.file === 'string' &&
         path.basename(now.file) === result.nowFile && now.duration) {
       result.progress = {
-        elapsed: Math.min(sample.elapsed, now.duration), duration: now.duration,
+        elapsed: Math.min(sample.elapsed + (Number.isFinite(now.offsetSeconds) ? now.offsetSeconds : 0), now.duration), duration: now.duration,
         measured: true, speed: sample.speed,
         advancing: result.playbackHealth.status === 'healthy'
       };
     }
   } else if (active && now && now.startedAt && now.duration) {
     result.progress = {
-      elapsed: Math.min(Math.floor(Date.now() / 1000) - now.startedAt, now.duration),
+      elapsed: Math.min(Math.floor(Date.now() / 1000) - now.startedAt + (Number.isFinite(now.offsetSeconds) ? now.offsetSeconds : 0), now.duration),
       duration: now.duration
     };
   }
@@ -937,32 +991,25 @@ const server = http.createServer(async (req, res) => {
 
     // ─── POST /api/streamer/start ──────────────────────────────────
     if (req.method === 'POST' && req.url === '/api/streamer/start') {
-      // Set manual override so the scheduler won't auto-stop
-      try { fs.writeFileSync('/run/streamer-manual-override', ''); } catch {};
-      // Clear manual stop in case user is re-starting after a manual stop
-      try { fs.unlinkSync('/run/streamer-manual-stop'); } catch {};
-      try { fs.unlinkSync(QUEUE_HOLD); } catch {}
-      // Parse which streams to activate (default: both)
-      let streams = ['landscape', 'portrait'];
-      try {
-        const body = await readBody(req);
-        const parsed = JSON.parse(body);
-        if (Array.isArray(parsed.streams)) {
-          streams = parsed.streams.filter(s => ['landscape', 'portrait'].includes(s));
-        }
-      } catch { /* use defaults */ }
-      // Write stream signal files
-      try { fs.unlinkSync(ACTIVE_LANDSCAPE); } catch {}
-      try { fs.unlinkSync(ACTIVE_PORTRAIT); } catch {}
-      if (streams.includes('landscape')) {
-        try { fs.writeFileSync(ACTIVE_LANDSCAPE, ''); } catch {}
-      }
-      if (streams.includes('portrait')) {
-        try { fs.writeFileSync(ACTIVE_PORTRAIT, ''); } catch {}
-      }
+      const streams = validateOutputSelection(JSON.parse(await readBody(req) || '{}'), ['landscape', 'portrait']);
+      selectManualOutputs(streams);
       execFile('systemctl', ['start', 'streamer.service'], { timeout: 15000 }, (err) => {
         if (err) return jsonResponse(res, 500, { error: 'Failed to start streamer' });
         jsonResponse(res, 200, { ok: true, active: true, streams });
+      });
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/streamer/outputs') {
+      const streams = validateOutputSelection(JSON.parse(await readBody(req)));
+      if (!isStreamerActive()) return jsonResponse(res, 409, { error: 'Streamer is stopped; select outputs and use Start' });
+      if (fs.existsSync('/run/streamer-stop-after-current') || fs.existsSync('/run/streamer-restart-requested')) {
+        return jsonResponse(res, 409, { error: 'Cancel the pending stop or restart before changing outputs' });
+      }
+      selectManualOutputs(streams);
+      execFile('systemctl', ['restart', 'streamer.service'], { timeout: 30000 }, err => {
+        if (err) return jsonResponse(res, 500, { error: 'Outputs selected, but streamer restart failed; check service status' });
+        jsonResponse(res, 200, { ok: true, streams, restarting: true });
       });
       return;
     }
@@ -1634,7 +1681,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 if (require.main === module) {
-  server.listen(config.port, () => {
+  server.listen(config.port, process.env.YT_BACKEND_HOST || '0.0.0.0', () => {
     console.log(`Backend listening on port ${config.port}`);
   });
 }
@@ -1647,5 +1694,6 @@ module.exports = {
   playbackHealth,
   writeEvent,
   validateYouTubeConfig,
-  youtubeFingerprint
+  youtubeFingerprint,
+  validateOutputSelection
 };
