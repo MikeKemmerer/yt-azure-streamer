@@ -1267,9 +1267,8 @@ async function uploadFile(file) {
       });
       let data;
       try { data = await res.json(); } catch {
-        showStatus(status, 'Update applied — server restarted.', true);
-        output.textContent = 'The server restarted to apply the update. This page will reload shortly.';
-        setTimeout(() => location.reload(), 3000);
+        showStatus(status, 'Update result could not be confirmed.', false);
+        output.textContent = 'The server returned no readable update result. Check for updates again to confirm the installed version.';
         return;
       }
       output.textContent = data.output || data.error || 'No output';
@@ -1281,9 +1280,8 @@ async function uploadFile(file) {
         setTimeout(() => location.reload(true), 6000);
       }
     } catch (e) {
-      showStatus(status, 'Update applied — server restarted.', true);
-      output.textContent = 'Connection lost during update (server restarted). This page will reload shortly.';
-      setTimeout(() => location.reload(), 3000);
+      showStatus(status, 'Update result could not be confirmed.', false);
+      output.textContent = `Connection lost during update: ${e.message}. Check for updates again to confirm the installed version.`;
       return;
     } finally {
       actions.style.display = 'none';

@@ -507,7 +507,7 @@ const server = http.createServer(async (req, res) => {
 
       // Regenerate the ffmpeg playlist immediately
       try {
-        execFileSync('/usr/local/bin/generate-playlist.sh', [], { timeout: 15000 });
+        execFileSync('/usr/local/bin/generate-playlist.sh', [VIDEO_DIR, PLAYLIST_FILE], { timeout: 15000 });
       } catch {
         return jsonResponse(res, 500, { error: 'Playlist was saved but could not be regenerated' });
       }
@@ -1080,7 +1080,7 @@ const server = http.createServer(async (req, res) => {
         env: { ...process.env, HOME: '/root', GIT_TERMINAL_PROMPT: '0' }
       }, (err, stdout, stderr) => {
         const output = (stdout || '') + (stderr || '');
-        if (err && !stdout) {
+        if (err) {
           return jsonResponse(res, 500, { error: 'Update failed', output: output || err.message });
         }
         // Check if streamer-related files were updated (indicates restart needed)

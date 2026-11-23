@@ -32,6 +32,10 @@ STATE_FILE="/etc/yt/playlist-state.json"
 CONFIG_FILE="/etc/yt/schedule.json"
 RUNTIME_PLAYLIST_FILE="/run/streamer-playlist.json"
 SKIP_SIGNAL="/run/streamer-skip"
+STOP_SIGNAL="/run/streamer-stop-after-current"
+RESTART_SIGNAL="/run/streamer-restart-requested"
+MANUAL_STOP="/run/streamer-manual-stop"
+MANUAL_OVERRIDE="/run/streamer-manual-override"
 rm -f "$SKIP_SIGNAL"
 
 # --- Resolution lookup tables ---
@@ -723,34 +727,39 @@ ${AUDIO_FILTER}"
   if [[ "$SKIPPED" == true ]]; then
     echo "  Skip requested — advancing to the next video"
   elif [[ $FFMPEG_STATUS -ne 0 ]]; then
-    echo "  ERROR: ffmpeg exited with status $FFMPEG_STATUS — retrying the same video in 10 seconds"
-    sleep 10
-    continue
+    if [[ ! -f "$STOP_SIGNAL" && ! -f "$RESTART_SIGNAL" ]]; then
+      echo "  ERROR: ffmpeg exited with status $FFMPEG_STATUS — retrying the same video in 10 seconds"
+      sleep 10
+      continue
+    fi
+    echo "  ERROR: ffmpeg exited with status $FFMPEG_STATUS — handling pending stop/restart"
   fi
 
-  # Update bookmark after each video completes (or is interrupted)
-  python3 -c "
+  # Failed playback must retain its bookmark so a restart retries the same video.
+  if [[ $FFMPEG_STATUS -eq 0 || "$SKIPPED" == true ]]; then
+    python3 -c "
 import json, os, sys
 temporary = '$STATE_FILE.tmp'
 with open(temporary, 'w') as f:
     json.dump({'index': int(sys.argv[1]), 'file': sys.argv[2]}, f)
 os.replace(temporary, '$STATE_FILE')
 " "$INDEX" "$VIDEO"
-  echo "  Bookmark saved: index $INDEX"
+    echo "  Bookmark saved: index $INDEX"
+  fi
 
-  # Check for graceful restart signal (set by web UI after an update)
-  RESTART_SIGNAL="/run/streamer-restart-requested"
-  if [[ -f "$RESTART_SIGNAL" ]]; then
-    rm -f "$RESTART_SIGNAL"
-    echo "Restart signal detected — exiting for service restart."
+  # An explicit stop job suppresses Restart=always; the marker keeps the scheduler stopped.
+  if [[ -f "$STOP_SIGNAL" ]]; then
+    touch "$MANUAL_STOP"
+    rm -f "$MANUAL_OVERRIDE" "$STOP_SIGNAL" "$RESTART_SIGNAL"
+    echo "Stop-after-current signal detected — stopping streamer."
+    systemctl stop --no-block streamer.service
     exit 0
   fi
 
-  # Check for stop-after-current signal (set by web UI)
-  STOP_SIGNAL="/run/streamer-stop-after-current"
-  if [[ -f "$STOP_SIGNAL" ]]; then
-    rm -f "$STOP_SIGNAL"
-    echo "Stop-after-current signal detected — stopping streamer."
+  # Check for graceful restart signal (set by web UI after an update)
+  if [[ -f "$RESTART_SIGNAL" ]]; then
+    rm -f "$RESTART_SIGNAL"
+    echo "Restart signal detected — exiting for service restart."
     exit 0
   fi
 
