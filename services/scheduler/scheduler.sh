@@ -173,16 +173,20 @@ while true; do
       echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) Outside schedule — clearing manual stop"
       rm -f "$MANUAL_STOP"
     fi
-    rm -f "$ACTIVE_LANDSCAPE" "$ACTIVE_PORTRAIT"
-
     if stream_is_running; then
       if [[ -f "$MANUAL_OVERRIDE" ]]; then
-        # Streamer was started manually — leave it running
-        :
+        # Streamer was started manually — preserve its selected outputs. Older
+        # manual starts have no signals, so retain the landscape fallback.
+        if [[ ! -f "$ACTIVE_LANDSCAPE" && ! -f "$ACTIVE_PORTRAIT" ]]; then
+          touch "$ACTIVE_LANDSCAPE"
+        fi
       else
+        rm -f "$ACTIVE_LANDSCAPE" "$ACTIVE_PORTRAIT"
         echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) Outside schedule — stopping streamer..."
         systemctl stop streamer.service || true
       fi
+    elif [[ ! -f "$MANUAL_OVERRIDE" ]]; then
+      rm -f "$ACTIVE_LANDSCAPE" "$ACTIVE_PORTRAIT"
     fi
   fi
   sleep "$CHECK_INTERVAL"

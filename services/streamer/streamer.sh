@@ -30,6 +30,13 @@ fi
 PLAYLIST="/etc/yt/playlist.txt"
 STATE_FILE="/etc/yt/playlist-state.json"
 CONFIG_FILE="/etc/yt/schedule.json"
+RUNTIME_PLAYLIST_FILE="/run/streamer-playlist.json"
+SKIP_SIGNAL="/run/streamer-skip"
+STOP_SIGNAL="/run/streamer-stop-after-current"
+RESTART_SIGNAL="/run/streamer-restart-requested"
+MANUAL_STOP="/run/streamer-manual-stop"
+MANUAL_OVERRIDE="/run/streamer-manual-override"
+rm -f "$SKIP_SIGNAL"
 
 # --- Resolution lookup tables ---
 declare -A RES_HEIGHT=(
@@ -48,6 +55,8 @@ declare -A RES_AUDIO=(
   [144p]=96k  [240p]=96k  [360p]=128k [480p]=128k
   [720p]=128k [1080p]=192k [1440p]=192k [2160p]=256k
 )
+OUTPUT_FPS=30
+GOP_SIZE=$((OUTPUT_FPS * 2))
 
 echo "Streamer starting with prefix: $PREFIX"
 
@@ -247,6 +256,20 @@ if [[ $NUM_VIDEOS -eq 0 ]]; then
 fi
 echo "Playlist: $NUM_VIDEOS videos"
 
+# Freeze the exact in-memory order for the dashboard. Regenerating the saved
+# playlist while streaming must not change the displayed queue until restart.
+python3 - "$RUNTIME_PLAYLIST_FILE" "${VIDEOS[@]}" <<'PY'
+import json
+import os
+import sys
+
+path = sys.argv[1]
+temporary = path + ".tmp"
+with open(temporary, "w", encoding="utf-8") as output:
+    json.dump(sys.argv[2:], output)
+os.replace(temporary, path)
+PY
+
 # --- Read bookmark ---
 START_INDEX=0
 if [[ -f "$STATE_FILE" ]]; then
@@ -337,6 +360,10 @@ except: pass
   else
     echo "  Input ${INPUT_H}p <= max ${MAX_H}p — no scaling"
   fi
+  # YouTube ingest requires a steady cadence. Duplicate sparse source frames
+  # (including the historical 1 fps static-image videos) before output splits,
+  # then pace those duplicates so the FLV muxer does not release them in bursts.
+  SCALE_VF+=("fps=${OUTPUT_FPS}:start_time=0" "realtime")
 
   # --- Prepare title/upnext text files (used by landscape watermark and portrait overlays) ---
   MAX_LINE=55
@@ -472,7 +499,7 @@ except: pass
       LANDSCAPE_WM+=("drawtext=fontfile=${WM_FONT_SERIF}:text='${LANDSCAPE_LOWER_THIRD}':fontsize=h/32:fontcolor=white@0.9:shadowcolor=black@0.6:shadowx=2:shadowy=2:x=w/30:y=h-h/7")
     fi
     LANDSCAPE_WM+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${TITLE_FILE}:fontsize=${TITLE_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26:alpha=${ALPHA_MAIN}")
-    LANDSCAPE_WM+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${UPNEXT_FILE}:fontsize=${UPNEXT_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26:alpha=${ALPHA_NEXT}")
+    LANDSCAPE_WM+=("drawtext=fontfile=${WM_FONT_SANS}:textfile=${UPNEXT_FILE}:reload=${OUTPUT_FPS}:fontsize=${UPNEXT_FONTSIZE}:fontcolor=white:shadowcolor=black@0.8:shadowx=3:shadowy=3:x=w/30:y=h-h/7+h/26:alpha=${ALPHA_NEXT}")
   fi
 
   # Build -vf argument as an array (avoids word-splitting issues with spaces in text)
@@ -525,15 +552,8 @@ except: pass
   PORTRAIT_TITLE_OVERLAYS=""
   if [[ "$PORT_WATERMARK" == true && -f "$WM_FONT_SANS" ]]; then
     PORTRAIT_TITLE_OVERLAYS=",drawtext=fontfile=${WM_FONT_SANS}:textfile=${PORT_TITLE_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_MAIN}"
-    PORTRAIT_TITLE_OVERLAYS="${PORTRAIT_TITLE_OVERLAYS},drawtext=fontfile=${WM_FONT_SANS}:textfile=${PORT_UPNEXT_FILE}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT}"
+    PORTRAIT_TITLE_OVERLAYS="${PORTRAIT_TITLE_OVERLAYS},drawtext=fontfile=${WM_FONT_SANS}:textfile=${PORT_UPNEXT_FILE}:reload=${OUTPUT_FPS}:fontsize=${PORT_FONT_TITLE}:fontcolor=white@0.85:shadowcolor=black@0.8:shadowx=2:shadowy=2:x=(w-tw)/2:y=${PORT_Y_TITLE}:alpha=${ALPHA_NEXT}"
   fi
-
-  NOW_FILE="/run/streamer-now.json"
-  python3 -c "
-import json, sys
-with open('$NOW_FILE', 'w') as f:
-    json.dump({'file': sys.argv[1], 'startedAt': int(sys.argv[2]), 'duration': int(sys.argv[3])}, f)
-" "$VIDEO" "$(date +%s)" "${DURATION:-0}"
 
   # Build filter_complex: apply filters, split into stream + preview + optional portrait
   PREVIEW_LANDSCAPE="/opt/yt/web/frontend/stream-preview.jpg"
@@ -566,10 +586,10 @@ with open('$NOW_FILE', 'w') as f:
   if [[ -z "$HAS_AUDIO" ]]; then
     echo "  No audio stream — generating silence"
     EXTRA_INPUTS=("-f" "lavfi" "-t" "${DURATION:-0}" "-i" "anullsrc=r=44100:cl=stereo")
-    AUDIO_FILTER="[1:a]anull[audio]"
+    AUDIO_FILTER="[1:a]aresample=44100:async=1000:first_pts=0[audio]"
   else
     # Normalize audio loudness to -14 LUFS (YouTube standard) with -1 dBTP true peak
-    AUDIO_FILTER="[0:a:0]loudnorm=I=-14:TP=-1:LRA=11[audio]"
+    AUDIO_FILTER="[0:a:0]loudnorm=I=-14:TP=-1:LRA=11,aresample=44100:async=1000:first_pts=0[audio]"
   fi
 
   # --- Determine which streams are active ---
@@ -600,6 +620,15 @@ with open('$NOW_FILE', 'w') as f:
     continue
   fi
 
+  NOW_FILE="/run/streamer-now.json"
+  python3 -c "
+import json, os, sys
+temporary = '$NOW_FILE.tmp'
+with open(temporary, 'w') as f:
+    json.dump({'file': sys.argv[1], 'startedAt': int(sys.argv[2]), 'duration': int(sys.argv[3])}, f)
+os.replace(temporary, '$NOW_FILE')
+" "$VIDEO" "$(date +%s)" "${DURATION:-0}"
+
   # --- Build filter_complex and output args based on active streams ---
   OUTPUT_ARGS=()
 
@@ -615,13 +644,17 @@ ${AUDIO_FILTER};\
 [audio]asplit=2[audio_land][audio_port]"
     OUTPUT_ARGS+=(
       -map "[land]" -map "[audio_land]"
-      -c:v libx264 -preset veryfast -maxrate "$LAND_MAXRATE" -bufsize "$LAND_BUFSIZE"
-      -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
+      -c:v libx264 -preset veryfast -r "$OUTPUT_FPS" -fps_mode cfr
+      -b:v "$LAND_MAXRATE" -minrate "$LAND_MAXRATE" -maxrate "$LAND_MAXRATE" -bufsize "$LAND_BUFSIZE"
+      -g "$GOP_SIZE" -keyint_min "$GOP_SIZE" -sc_threshold 0
+      -x264-params "nal-hrd=cbr:force-cfr=1" -pix_fmt yuv420p
       -c:a aac -b:a "$LAND_AUDIO_BR" -ar 44100
       -f flv "$LANDSCAPE_RTMP"
       -map "[portrait]" -map "[audio_port]"
-      -c:v libx264 -preset veryfast -maxrate "$PORT_MAXRATE" -bufsize "$PORT_BUFSIZE"
-      -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
+      -c:v libx264 -preset veryfast -r "$OUTPUT_FPS" -fps_mode cfr
+      -b:v "$PORT_MAXRATE" -minrate "$PORT_MAXRATE" -maxrate "$PORT_MAXRATE" -bufsize "$PORT_BUFSIZE"
+      -g "$GOP_SIZE" -keyint_min "$GOP_SIZE" -sc_threshold 0
+      -x264-params "nal-hrd=cbr:force-cfr=1" -pix_fmt yuv420p
       -c:a aac -b:a "$PORT_AUDIO_BR" -ar 44100
       -f flv "$PORTRAIT_RTMP"
       -map "[preview_land]"
@@ -635,8 +668,10 @@ ${AUDIO_FILTER};\
     FILTER_COMPLEX="[0:v]${LANDSCAPE_VF_STRING}split=2[stream][prev];[prev]fps=1/10,scale=640:-2[preview];${AUDIO_FILTER}"
     OUTPUT_ARGS+=(
       -map "[stream]" -map "[audio]"
-      -c:v libx264 -preset veryfast -maxrate "$LAND_MAXRATE" -bufsize "$LAND_BUFSIZE"
-      -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
+      -c:v libx264 -preset veryfast -r "$OUTPUT_FPS" -fps_mode cfr
+      -b:v "$LAND_MAXRATE" -minrate "$LAND_MAXRATE" -maxrate "$LAND_MAXRATE" -bufsize "$LAND_BUFSIZE"
+      -g "$GOP_SIZE" -keyint_min "$GOP_SIZE" -sc_threshold 0
+      -x264-params "nal-hrd=cbr:force-cfr=1" -pix_fmt yuv420p
       -c:a aac -b:a "$LAND_AUDIO_BR" -ar 44100
       -f flv "$LANDSCAPE_RTMP"
       -map "[preview]"
@@ -652,8 +687,10 @@ split=2[portrait][prev_port];\
 ${AUDIO_FILTER}"
     OUTPUT_ARGS+=(
       -map "[portrait]" -map "[audio]"
-      -c:v libx264 -preset veryfast -maxrate "$PORT_MAXRATE" -bufsize "$PORT_BUFSIZE"
-      -pix_fmt yuv420p -force_key_frames "expr:gte(t,n_forced*2)"
+      -c:v libx264 -preset veryfast -r "$OUTPUT_FPS" -fps_mode cfr
+      -b:v "$PORT_MAXRATE" -minrate "$PORT_MAXRATE" -maxrate "$PORT_MAXRATE" -bufsize "$PORT_BUFSIZE"
+      -g "$GOP_SIZE" -keyint_min "$GOP_SIZE" -sc_threshold 0
+      -x264-params "nal-hrd=cbr:force-cfr=1" -pix_fmt yuv420p
       -c:a aac -b:a "$PORT_AUDIO_BR" -ar 44100
       -f flv "$PORTRAIT_RTMP"
       -map "[preview]"
@@ -661,36 +698,104 @@ ${AUDIO_FILTER}"
     )
   fi
 
-  # Always re-encode to guarantee keyframes every 2 seconds (YouTube requires ≤4s)
+  # Always re-encode at 30 fps CFR with a fixed two-second GOP.
+  set +e
   ffmpeg -y -re -i "$VIDEO" "${EXTRA_INPUTS[@]}" \
     -filter_complex "$FILTER_COMPLEX" \
-    "${OUTPUT_ARGS[@]}" </dev/null || true
+    "${OUTPUT_ARGS[@]}" </dev/null &
+  FFMPEG_PID=$!
+  SKIPPED=false
+  while kill -0 "$FFMPEG_PID" 2>/dev/null; do
+    if [[ -f "$SKIP_SIGNAL" ]]; then
+      rm -f "$SKIP_SIGNAL"
+      SKIPPED=true
+      kill -TERM "$FFMPEG_PID" 2>/dev/null
+      break
+    fi
+    sleep 1
+  done
+  wait "$FFMPEG_PID"
+  FFMPEG_STATUS=$?
+  set -e
 
-  # Update bookmark after each video completes (or is interrupted)
-  python3 -c "
-import json, sys
-with open('$STATE_FILE', 'w') as f:
+  # Consume a request that arrived just as ffmpeg finished.
+  if [[ -f "$SKIP_SIGNAL" ]]; then
+    rm -f "$SKIP_SIGNAL"
+    SKIPPED=true
+  fi
+
+  if [[ "$SKIPPED" == true ]]; then
+    echo "  Skip requested — advancing to the next video"
+  elif [[ $FFMPEG_STATUS -ne 0 ]]; then
+    if [[ ! -f "$STOP_SIGNAL" && ! -f "$RESTART_SIGNAL" ]]; then
+      echo "  ERROR: ffmpeg exited with status $FFMPEG_STATUS — retrying the same video in 10 seconds"
+      sleep 10
+      continue
+    fi
+    echo "  ERROR: ffmpeg exited with status $FFMPEG_STATUS — handling pending stop/restart"
+  fi
+
+  # Failed playback must retain its bookmark so a restart retries the same video.
+  if [[ $FFMPEG_STATUS -eq 0 || "$SKIPPED" == true ]]; then
+    python3 -c "
+import json, os, sys
+temporary = '$STATE_FILE.tmp'
+with open(temporary, 'w') as f:
     json.dump({'index': int(sys.argv[1]), 'file': sys.argv[2]}, f)
+os.replace(temporary, '$STATE_FILE')
 " "$INDEX" "$VIDEO"
-  echo "  Bookmark saved: index $INDEX"
+    echo "  Bookmark saved: index $INDEX"
+  fi
+
+  # An explicit stop job suppresses Restart=always; the marker keeps the scheduler stopped.
+  if [[ -f "$STOP_SIGNAL" ]]; then
+    touch "$MANUAL_STOP"
+    rm -f "$MANUAL_OVERRIDE" "$STOP_SIGNAL" "$RESTART_SIGNAL"
+    echo "Stop-after-current signal detected — stopping streamer."
+    systemctl stop --no-block streamer.service
+    exit 0
+  fi
 
   # Check for graceful restart signal (set by web UI after an update)
-  RESTART_SIGNAL="/run/streamer-restart-requested"
   if [[ -f "$RESTART_SIGNAL" ]]; then
     rm -f "$RESTART_SIGNAL"
     echo "Restart signal detected — exiting for service restart."
     exit 0
   fi
 
-  # Check for stop-after-current signal (set by web UI)
-  STOP_SIGNAL="/run/streamer-stop-after-current"
-  if [[ -f "$STOP_SIGNAL" ]]; then
-    rm -f "$STOP_SIGNAL"
-    echo "Stop-after-current signal detected — stopping streamer."
-    exit 0
+  # Adopt playlist changes only after the current video finishes.
+  UPDATED_VIDEOS=()
+  if [[ -f "$RUNTIME_PLAYLIST_FILE" ]]; then
+    mapfile -t UPDATED_VIDEOS < <(python3 - "$RUNTIME_PLAYLIST_FILE" <<'PY'
+import json
+import os
+import sys
+
+try:
+    playlist = json.load(open(sys.argv[1], encoding="utf-8"))
+    for item in playlist:
+        if isinstance(item, str) and os.path.isfile(item):
+            print(item)
+except (OSError, TypeError, ValueError):
+    pass
+PY
+)
   fi
 
-  # Advance to next video (wrap around)
-  INDEX=$(( (INDEX + 1) % NUM_VIDEOS ))
+  if [[ ${#UPDATED_VIDEOS[@]} -gt 0 ]]; then
+    NEXT_INDEX=0
+    for i in "${!UPDATED_VIDEOS[@]}"; do
+      if [[ "${UPDATED_VIDEOS[$i]}" == "$VIDEO" ]]; then
+        NEXT_INDEX=$(( (i + 1) % ${#UPDATED_VIDEOS[@]} ))
+        break
+      fi
+    done
+    VIDEOS=("${UPDATED_VIDEOS[@]}")
+    NUM_VIDEOS=${#VIDEOS[@]}
+    INDEX=$NEXT_INDEX
+    echo "  Reloaded active playlist: $NUM_VIDEOS videos, next index $INDEX"
+  else
+    INDEX=$(( (INDEX + 1) % NUM_VIDEOS ))
+  fi
 done
 

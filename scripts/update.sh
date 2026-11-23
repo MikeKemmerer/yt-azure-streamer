@@ -28,10 +28,10 @@ echo "Target branch: $BRANCH"
 
 # --- Pull latest code ---
 echo "Pulling latest from origin/$BRANCH..."
+BEFORE=$(git rev-parse HEAD)
 git fetch origin "$BRANCH"
 # Switch to the target branch (create local tracking branch if needed)
 git checkout "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH" "origin/$BRANCH"
-BEFORE=$(git rev-parse HEAD)
 git reset --hard "origin/$BRANCH"
 AFTER=$(git rev-parse HEAD)
 
@@ -49,13 +49,12 @@ echo "Changed files:"
 echo "$CHANGED"
 echo ""
 
-# --- Self-update: if this script changed, re-install and re-exec ---
+# --- Self-update: install the new copy, then finish this deployment pass ---
+# Re-executing here loses BEFORE/AFTER and exits as "already up to date" before
+# the other files changed by the same update are installed.
 if echo "$CHANGED" | grep -q "^scripts/update.sh$"; then
-  echo "Update script itself changed — re-installing and re-executing..."
+  echo "Update script itself changed — re-installing..."
   install -m 755 "$REPO_DIR/scripts/update.sh" "/usr/local/bin/yt-update.sh"
-  REEXEC_ARGS=(--branch "$BRANCH")
-  if [[ "$RESTART_STREAMER" == true ]]; then REEXEC_ARGS+=(--restart-streamer); fi
-  exec /usr/local/bin/yt-update.sh "${REEXEC_ARGS[@]}"
 fi
 
 # --- Re-install scripts if changed ---
