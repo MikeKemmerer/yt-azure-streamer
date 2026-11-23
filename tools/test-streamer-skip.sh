@@ -108,4 +108,30 @@ run_control_case() {
 run_control_case 0 stop
 run_control_case 42 stop
 run_control_case 42 restart
+
+SCHEDULER=$(sed -n '/^while true; do/,$p' "$ROOT_DIR/services/scheduler/scheduler.sh")
+QUEUE_HOLD="$WORK_DIR/queue-hold"
+YOUTUBE_OWNER="$WORK_DIR/youtube-owner.json"
+ACTIVE_LANDSCAPE="$WORK_DIR/landscape"
+ACTIVE_PORTRAIT="$WORK_DIR/portrait"
+CHECK_INTERVAL=1
+(
+  TICK=0
+  touch "$QUEUE_HOLD" "$MANUAL_STOP"
+  rm -f "$MANUAL_OVERRIDE" "$WORK_DIR/systemctl"
+  get_active_streams() {
+    if [[ "$TICK" == 1 ]]; then return 1; fi
+    echo landscape
+  }
+  update_stream_signals() { :; }
+  youtube_schedule_enabled() { return 1; }
+  stream_is_running() { return 1; }
+  systemctl() { echo "$*" >> "$WORK_DIR/systemctl"; }
+  sleep() {
+    TICK=$((TICK + 1))
+    if [[ "$TICK" == 3 ]]; then exit 0; fi
+  }
+  eval "$SCHEDULER"
+)
+[[ -f "$QUEUE_HOLD" && ! -f "$MANUAL_STOP" && ! -f "$WORK_DIR/systemctl" ]]
 echo "Streamer skip and deferred-control tests passed."

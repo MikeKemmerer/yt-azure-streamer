@@ -61,7 +61,9 @@ fi
 SCRIPTS_CHANGED=false
 declare -A SCRIPT_MAP=(
   ["services/streamer/streamer.sh"]="/usr/local/bin/streamer.sh"
+  ["services/streamer/streamer-control.py"]="/usr/local/bin/streamer-control.py"
   ["services/scheduler/scheduler.sh"]="/usr/local/bin/scheduler.sh"
+  ["services/scheduler/youtube-schedule.py"]="/usr/local/bin/youtube-schedule.py"
   ["scripts/schedule-sync.sh"]="/usr/local/bin/schedule-sync.sh"
   ["scripts/generate-playlist.sh"]="/usr/local/bin/generate-playlist.sh"
   ["scripts/setup-caddy-auth.sh"]="/usr/local/bin/setup-caddy-auth.sh"
@@ -82,6 +84,8 @@ UNITS_CHANGED=false
 declare -A UNIT_MAP=(
   ["systemd/streamer.service"]="/etc/systemd/system/streamer.service"
   ["systemd/scheduler.service"]="/etc/systemd/system/scheduler.service"
+  ["systemd/youtube-sync.service"]="/etc/systemd/system/youtube-sync.service"
+  ["systemd/youtube-sync.timer"]="/etc/systemd/system/youtube-sync.timer"
   ["systemd/schedule-sync.service"]="/etc/systemd/system/schedule-sync.service"
   ["systemd/schedule-sync.timer"]="/etc/systemd/system/schedule-sync.timer"
   ["systemd/caddy.service"]="/etc/systemd/system/caddy.service"
@@ -103,6 +107,11 @@ done
 if [[ "$UNITS_CHANGED" == true ]]; then
   echo "Reloading systemd daemon..."
   systemctl daemon-reload
+fi
+
+if [[ "$(cat /etc/yt/mode 2>/dev/null || true)" == "local" ]] &&
+   echo "$CHANGED" | grep -qE "^systemd/youtube-sync\.(service|timer)$"; then
+  systemctl enable --now youtube-sync.timer
 fi
 
 # --- Re-install Caddyfile if changed ---
@@ -136,7 +145,8 @@ fi
 if echo "$CHANGED" | grep -q "^services/streamer/" && [[ "$RESTART_STREAMER" == true ]]; then
   RESTART_LIST+=("streamer.service")
 elif echo "$CHANGED" | grep -q "^services/streamer/"; then
-  echo "NOTE: streamer.sh changed but streamer NOT restarted (pass --restart-streamer to force)."
+  echo "NOTE: streamer controls changed but streamer NOT restarted (pass --restart-streamer to force)."
+  echo "Live queue controls require the updated player; restart deliberately to reset temporary requests."
 fi
 
 for unit in "${RESTART_LIST[@]}"; do

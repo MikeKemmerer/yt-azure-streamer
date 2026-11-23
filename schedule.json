@@ -1,5 +1,10 @@
 {
   "timezone": "UTC",
+  "scheduleSource": "weekly",
+  "youtube": {
+    "channelId": "",
+    "rules": []
+  },
   "events": [
     {
       "name": "Stream Session",

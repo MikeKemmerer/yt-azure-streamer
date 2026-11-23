@@ -1,0 +1,16 @@
+[Unit]
+Description=Read-only YouTube broadcast schedule discovery
+After=network-online.target
+ConditionPathExists=/etc/yt/youtube-venv/bin/python
+ConditionPathExists=/etc/yt/secrets/youtube-oauth.json
+
+[Service]
+Type=oneshot
+ExecStart=/etc/yt/youtube-venv/bin/python /usr/local/bin/youtube-schedule.py sync
+TimeoutStartSec=90
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/yt

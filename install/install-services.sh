@@ -92,6 +92,7 @@ echo "# No auth configured — caddy-auth-setup.timer will populate this" > /etc
 
 echo "Installing service scripts into /usr/local/bin..."
 install -m 755 /opt/yt/services/streamer/streamer.sh  /usr/local/bin/streamer.sh
+install -m 755 /opt/yt/services/streamer/streamer-control.py /usr/local/bin/streamer-control.py
 install -m 755 /opt/yt/services/scheduler/scheduler.sh /usr/local/bin/scheduler.sh
 install -m 755 /opt/yt/scripts/schedule-sync.sh        /usr/local/bin/schedule-sync.sh
 install -m 755 /opt/yt/scripts/generate-playlist.sh    /usr/local/bin/generate-playlist.sh

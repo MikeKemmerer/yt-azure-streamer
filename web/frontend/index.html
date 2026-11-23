@@ -55,6 +55,16 @@
       <button id="streamer-skip" disabled>Skip ⏭</button>
     </div>
     <div id="streamer-action-status" class="status"></div>
+    <p id="playback-health" class="hint">Playback: unknown</p>
+    <p id="live-event-status" class="hint">Connecting live updates...</p>
+    <h3 class="section-subheading">Live Upcoming Queue</h3>
+    <p id="queue-description" class="hint">Waiting for player state.</p>
+    <ol id="live-queue-list" class="live-queue-list"></ol>
+    <div class="streamer-controls">
+      <button id="queue-clear" class="secondary" disabled>Clear Upcoming Queue</button>
+      <button id="queue-reset" class="secondary" disabled>Restore Saved Queue</button>
+    </div>
+    <div id="queue-action-status" class="status" aria-live="polite"></div>
   </div>
 
   <!-- ── Service Health ─────────────────────────────────────────── -->
@@ -70,6 +80,27 @@
       <span><strong>Next start:</strong> <span id="next-start">—</span></span>
       <span><strong>Next stop:</strong> <span id="next-stop">—</span></span>
     </div>
+    <details id="youtube-schedule-settings">
+      <summary>YouTube-driven scheduling (on-prem)</summary>
+      <div class="schedule-editor">
+        <label>Schedule source <select id="schedule-source">
+          <option value="weekly">Weekly schedule and overrides</option>
+          <option value="youtube">YouTube Studio broadcasts</option>
+        </select></label>
+        <label>YouTube channel ID <input id="youtube-channel" type="text" maxlength="100" placeholder="UC..."></label>
+        <p class="hint">Authorize read-only access on the host using the README setup instructions.
+          YouTube mode replaces weekly schedules and overrides while enabled. The saved playlist is unchanged.</p>
+        <p class="hint">Use the configured output's stream key and enable Auto-start and Auto-stop in Studio.
+          A dropout of roughly one minute can permanently end the event, including a long sermon transition or retry.</p>
+        <div id="youtube-rule-list"></div>
+        <button id="add-youtube-rule" class="secondary">+ Add Title Rule</button>
+        <button id="save-youtube-schedule">Save Source and Rules</button>
+        <button id="refresh-youtube-preview" class="secondary">Refresh Preview</button>
+        <div id="youtube-save-status" class="status"></div>
+        <div id="youtube-sync-status" class="hint"></div>
+        <div id="youtube-events"></div>
+      </div>
+    </details>
     <div id="schedule-events"></div>
 
     <!-- Overrides -->
@@ -212,8 +243,8 @@
 
   <!-- ── Playlist ───────────────────────────────────────────────── -->
   <div class="card">
-    <h2>Playlist</h2>
-    <p class="hint">Drag to reorder. Uncheck to exclude. Play next moves a video after the current item. Saving updates the active queue immediately.</p>
+    <h2>Saved Playlist</h2>
+    <p class="hint">Drag to reorder. Uncheck to exclude. Saving changes future rotation and restart order, not the current live queue. Queue next and Play now are temporary requests.</p>
     <div class="playlist-sort-controls">
       <span class="sort-label">Sort:</span>
       <button id="sort-name" class="secondary">By Name</button>
@@ -268,6 +299,7 @@
         <option value="streamer.service">streamer</option>
         <option value="scheduler.service">scheduler</option>
         <option value="schedule-sync.service">schedule-sync</option>
+        <option value="youtube-sync.service">YouTube schedule sync (local)</option>
         <option value="caddy.service">caddy</option>
         <option value="web-backend.service">web-backend</option>
         <option value="mnt-blobfuse2.mount">blobfuse2</option>

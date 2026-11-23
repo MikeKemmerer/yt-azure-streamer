@@ -12,6 +12,7 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const { execFile, execFileSync } = require('child_process');
+const { randomUUID, createHash } = require('crypto');
 
 const config = require('./config.json');
 
@@ -28,6 +29,10 @@ const ACTIVE_LANDSCAPE = '/run/streamer-active-landscape';
 const ACTIVE_PORTRAIT = '/run/streamer-active-portrait';
 const UPNEXT_FILE = '/tmp/streamer-upnext.txt';
 const PORT_UPNEXT_FILE = '/tmp/streamer-upnext-portrait.txt';
+const CONTROL_STATE = '/run/streamer-control-state.json';
+const CONTROL_REQUEST = '/run/streamer-control-request.json';
+const PROGRESS_FILE = '/run/streamer-progress.json';
+const QUEUE_HOLD = '/run/streamer-queue-hold';
 
 function readMode() {
   try { return fs.readFileSync(MODE_FILE, 'utf8').trim(); } catch { return 'azure'; }
@@ -61,7 +66,10 @@ function getServiceConfig() {
   const mode = readMode();
   if (mode === 'local') {
     const services = ['streamer.service', 'scheduler.service', 'caddy.service', 'web-backend.service'];
-    return { healthUnits: services, logServices: services };
+    return {
+      healthUnits: readSchedule().scheduleSource === 'youtube' ? [...services, 'youtube-sync.timer'] : services,
+      logServices: [...services, 'youtube-sync.service']
+    };
   }
   return {
     healthUnits: ['streamer.service', 'scheduler.service', 'schedule-sync.timer', 'caddy.service', 'web-backend.service', 'mnt-blobfuse2.mount'],
@@ -135,7 +143,93 @@ function readSchedule() {
 }
 
 function writeSchedule(schedule) {
-  fs.writeFileSync(SCHEDULE_FILE, JSON.stringify(schedule, null, 2) + '\n');
+  const temp = `${SCHEDULE_FILE}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temp, JSON.stringify(schedule, null, 2) + '\n');
+    fs.renameSync(temp, SCHEDULE_FILE);
+  } finally {
+    try { fs.unlinkSync(temp); } catch {}
+  }
+}
+
+function validateYouTubeConfig(value, required = true) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid YouTube configuration');
+  const channelId = typeof value.channelId === 'string' ? value.channelId.trim() : '';
+  if ((!channelId && required) || (channelId && !/^[A-Za-z0-9_-]{1,100}$/.test(channelId))) {
+    throw new Error('Configure a valid YouTube channel ID');
+  }
+  if (!Array.isArray(value.rules) || value.rules.length > 32 || (required && !value.rules.length)) {
+    throw new Error('Configure 1-32 title/output rules');
+  }
+  const seen = new Set();
+  const rules = value.rules.map(rule => {
+    if (!rule || typeof rule.title !== 'string' || !rule.title.trim() || rule.title.length > 200) {
+      throw new Error('Each rule needs a title of 1-200 characters');
+    }
+    const title = rule.title.trim();
+    const normalized = title.toLowerCase().replace(/\s+/gu, ' ');
+    if (seen.has(normalized)) throw new Error('Duplicate title rules');
+    seen.add(normalized);
+    if (!['landscape', 'portrait'].includes(rule.profile)) throw new Error('Select landscape or portrait');
+    const durationSeconds = rule.durationSeconds ?? 28800;
+    if (!Number.isInteger(durationSeconds) || durationSeconds < 60 || durationSeconds > 86400) {
+      throw new Error('Fallback duration must be 1 minute to 24 hours');
+    }
+    return { title, profile: rule.profile, durationSeconds };
+  });
+  return { channelId, rules };
+}
+
+function youtubeFingerprint(schedule) {
+  function sorted(value) {
+    if (Array.isArray(value)) return value.map(sorted);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.keys(value).sort().map(key => [key, sorted(value[key])]));
+    }
+    return value;
+  }
+  const relevant = Object.fromEntries(['scheduleSource', 'youtube', 'streams'].map(key => [key, schedule[key] ?? null]));
+  return createHash('sha256').update(JSON.stringify(sorted(relevant))).digest('hex');
+}
+
+function youtubePreview(schedule, now = Date.now() / 1000) {
+  const cache = readJsonFile('/etc/yt/youtube-schedule.json');
+  const sync = readJsonFile('/etc/yt/youtube-sync-status.json');
+  const owner = readJsonFile('/run/streamer-youtube-owner.json')?.owner;
+  const ownedEvents = Array.isArray(owner?.events) ? owner.events : [];
+  const deadline = ownedEvents.length ? Math.min(...ownedEvents.map(event => event.end)) : null;
+  const owned = Number.isFinite(deadline) && !fs.existsSync('/run/streamer-manual-override') ? {
+    broadcastIds: ownedEvents.map(event => String(event.id)),
+    end: new Date(deadline * 1000).toISOString(), stopping: owner.stopping === true
+  } : null;
+  const keys = {};
+  for (const profile of ['landscape', 'portrait']) {
+    const name = schedule.streams?.[profile]?.stream_key_name || (profile === 'portrait' ? 'youtube-stream-key-portrait' : 'youtube-stream-key');
+    keys[profile] = null;
+    if (typeof name === 'string' && name !== '.' && name !== '..' && !name.includes('/') && !name.includes('\\')) {
+      try { keys[profile] = fs.readFileSync(`/etc/yt/secrets/${name}`, 'utf8').replace(/\s+/gu, ''); } catch {}
+    }
+  }
+  const keyFingerprint = createHash('sha256').update(JSON.stringify(keys)).digest('hex');
+  const compatible = readMode() === 'local' && cache?.fingerprint === youtubeFingerprint(schedule) && cache?.keyFingerprint === keyFingerprint;
+  const ageSeconds = cache && Number.isFinite(cache.fetchedAt) ? Math.max(0, now - cache.fetchedAt) : null;
+  const fresh = compatible && ageSeconds !== null && now >= cache.fetchedAt && ageSeconds <= 600;
+  const events = (Array.isArray(cache?.events) ? cache.events : []).slice(0, 500).map(event => ({
+    id: String(event.id || ''), title: String(event.title || ''), profile: event.profile,
+    start: Number.isFinite(event.start) ? new Date(event.start * 1000).toISOString() : null,
+    end: Number.isFinite(event.end) ? new Date(event.end * 1000).toISOString() : null,
+    lifecycle: event.status,
+    errors: Array.isArray(event.errors) ? event.errors.map(String) : ['Invalid cached event'],
+    eligible: fresh && !event.errors?.length && event.status === 'ready' && event.end > now && now - event.start <= 600
+  }));
+  return {
+    available: readMode() === 'local',
+    authorized: fs.existsSync('/etc/yt/secrets/youtube-oauth.json'),
+    channelId: compatible ? cache.channelId : null,
+    fresh, ageSeconds, events, owned,
+    sync: sync ? { ok: sync.ok === true, checkedAt: sync.checkedAt, error: sync.error || null,
+      retryAt: sync.retryAt || null, callsToday: sync.callsToday ?? null } : null
+  };
 }
 
 function listVideoFiles() {
@@ -248,6 +342,14 @@ function wrapOverlayText(text, maxLine) {
 
 function syncActivePlaylist(videos) {
   if (!isStreamerActive()) return { updated: false, pending: false, nextFile: null };
+  const control = readControlState();
+  if (control) {
+    const action = submitControl({
+      id: `saved-${randomUUID()}`, operation: 'reset',
+      session: control.session, revision: control.revision
+    }, control);
+    return { updated: false, pending: true, nextFile: null, actionId: action.id };
+  }
 
   const now = readNowPlaying();
   const currentFile = now ? path.basename(now.file || '') : '';
@@ -311,8 +413,300 @@ function buildPlaybackPosition(active, playlist, state, now) {
   return position;
 }
 
+function readJsonFile(filename) {
+  try { return JSON.parse(fs.readFileSync(filename, 'utf8')); } catch { return null; }
+}
+
+function processMatches(pid, started) {
+  if (!Number.isInteger(pid) || pid <= 0 || typeof started !== 'string' || !started) return false;
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);
+    return fields[19] === started && !['Z', 'X'].includes(fields[0]);
+  } catch { return false; }
+}
+
+function readControlState() {
+  const state = readJsonFile(CONTROL_STATE);
+  if (!state || state.version !== 1 || state.stopped || !Number.isInteger(state.ownerPid) ||
+      typeof state.session !== 'string' || !Number.isInteger(state.revision) ||
+      !state.current || typeof state.current.file !== 'string' ||
+      !Array.isArray(state.upcoming) || state.upcoming.some(item => !item || typeof item.file !== 'string') ||
+      !Array.isArray(state.actions) || state.actions.some(item => !item || typeof item.id !== 'string')) return null;
+  if (!processMatches(state.ownerPid, state.ownerStart)) return null;
+  return state;
+}
+
+function submitControl(command, state) {
+  if (typeof command.id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(command.id)) {
+    throw Object.assign(new Error('Invalid action ID'), { status: 400 });
+  }
+  const previous = state.actions.find(action => action.id === command.id);
+  if (previous) return previous;
+  if (state.interrupt) {
+    throw Object.assign(new Error('A playback interruption is already pending'), { status: 409 });
+  }
+  if (command.session !== state.session || command.revision !== state.revision) {
+    throw Object.assign(new Error('Playback queue changed; reload before editing'), { status: 409 });
+  }
+  if (fs.existsSync(CONTROL_REQUEST)) {
+    const pending = readJsonFile(CONTROL_REQUEST);
+    if (pending && pending.id === command.id) return { id: command.id, status: 'accepted' };
+    throw Object.assign(new Error('Another action is pending; reload and retry'), { status: 409 });
+  }
+  if (fs.existsSync('/run/streamer-stop-after-current') ||
+      fs.existsSync('/run/streamer-restart-requested')) {
+    throw Object.assign(new Error('Stop or restart is pending'), { status: 409 });
+  }
+  writeAtomic(CONTROL_REQUEST, JSON.stringify(command));
+  return { id: command.id, status: 'accepted' };
+}
+
+function playbackHealth(current, sample, now, history = {}, processes = {}) {
+  const generation = current && current.generation;
+  if (history.generation !== generation) {
+    history.generation = generation;
+    history.elapsed = -1;
+    history.lastAdvance = current ? current.startedAt : now;
+    history.sampleAt = null;
+    history.slowSince = null;
+  }
+  const starting = current && now - current.startedAt < 20;
+  const valid = current && generation && sample && sample.generation === generation &&
+    Number.isFinite(sample.at) && Number.isFinite(sample.elapsed) && sample.elapsed >= 0 &&
+    Number.isFinite(sample.speed) && sample.speed >= 0 && sample.at <= now + 1;
+  const info = valid ? { age: Math.max(0, now - sample.at), speed: sample.speed } : {};
+  if (valid && sample.end) {
+    return { status: info.age <= 6 ? 'starting' : 'unknown', reason: 'video ended; awaiting player state', ...info };
+  }
+  if (processes.encoderAlive === false || processes.telemetryAlive === false || !valid) {
+    const reason = processes.encoderAlive === false ? 'encoder unavailable'
+      : processes.telemetryAlive === false ? 'telemetry reader unavailable' : 'waiting for valid progress';
+    return { status: starting ? 'starting' : 'unknown', reason, ...info };
+  }
+  if (info.age > 6) {
+    const stalled = !starting && current.onAir === true && info.age >= 15 &&
+      processes.encoderAlive === true && processes.telemetryAlive === true;
+    return {
+      status: stalled ? 'stalled' : starting ? 'starting' : 'unknown',
+      reason: stalled ? 'no new encoder progress' : 'waiting for fresh progress', ...info
+    };
+  }
+  if (sample.at !== history.sampleAt) {
+    if (sample.elapsed > history.elapsed) history.lastAdvance = sample.at;
+    history.elapsed = sample.elapsed;
+    history.sampleAt = sample.at;
+    if (sample.speed < 0.9) {
+      if (history.slowSince === null) history.slowSince = sample.at;
+    } else {
+      history.slowSince = null;
+    }
+  }
+  let status = 'healthy';
+  if (now - current.startedAt < 20) status = 'starting';
+  else if (now - history.lastAdvance >= 15) status = 'stalled';
+  else if (history.slowSince !== null && now - history.slowSince >= 20) status = 'slow';
+  return { status, ...info };
+}
+
+const healthHistory = {};
+function streamerSnapshot(props, probe = false) {
+  const active = props.ActiveState === 'active';
+  const control = active ? readControlState() : null;
+  const now = active ? readNowPlaying() : null;
+  const runtime = active ? readRuntimePlaylist() : [];
+  const saved = readPlaylistOrder();
+  const position = buildPlaybackPosition(
+    active, runtime.length ? runtime : saved, readPlaybackState(), now
+  );
+  if (control) {
+    position.nowPlaying = path.basename(control.current.file);
+    position.upNext = control.upcoming.slice(0, 5).map(item => path.basename(item.file));
+  }
+  const cfg = readPlaylistConfig();
+  const titles = new Map((cfg && Array.isArray(cfg.videos) ? cfg.videos : [])
+    .filter(video => video && video.title).map(video => [video.file, video.title]));
+  const displayName = filename => titles.get(filename) || filename.replace(/\.[^.]+$/, '');
+  const entered = new Date(props.ActiveEnterTimestamp || '');
+  const result = {
+    active, state: props.ActiveState || 'unknown',
+    uptimeSeconds: active && !isNaN(entered) ? Math.floor((Date.now() - entered.getTime()) / 1000) : null,
+    nowFile: position.nowPlaying,
+    nowPlaying: position.nowPlaying ? displayName(position.nowPlaying) : null,
+    upNext: position.upNext.map(filename => ({
+      file: filename, name: displayName(filename),
+      duration: probe ? probeDuration(path.join(VIDEO_DIR, filename)) : durationCache.get(filename) || 0
+    })),
+    activeStreams: {
+      landscape: fs.existsSync(ACTIVE_LANDSCAPE), portrait: fs.existsSync(ACTIVE_PORTRAIT)
+    },
+    stopPending: fs.existsSync('/run/streamer-stop-after-current'),
+    queueHold: fs.existsSync(QUEUE_HOLD),
+    progress: null, playbackHealth: { status: props.ActiveState === 'inactive' ? 'stopped' : 'unknown' },
+    queue: {
+      ready: !!control, session: control ? control.session : null,
+      revision: control ? control.revision : null,
+      explicitEmpty: control ? control.explicitEmpty : false,
+      items: control ? control.upcoming.map(item => ({
+        file: path.basename(item.file), name: displayName(path.basename(item.file))
+      })) : [],
+      actions: control ? control.actions : [],
+      pending: active ? readJsonFile(CONTROL_REQUEST) : null
+    }
+  };
+  if (control) {
+    const sample = readJsonFile(PROGRESS_FILE);
+    result.playbackHealth = playbackHealth(control.current, sample, Date.now() / 1000, healthHistory, {
+      encoderAlive: processMatches(control.current.encoderPid, control.current.encoderStart),
+      telemetryAlive: processMatches(control.current.telemetryPid, control.current.telemetryStart)
+    });
+    if (sample && sample.generation === control.current.generation &&
+        Number.isFinite(sample.elapsed) && now && typeof now.file === 'string' &&
+        path.basename(now.file) === result.nowFile && now.duration) {
+      result.progress = {
+        elapsed: Math.min(sample.elapsed, now.duration), duration: now.duration,
+        measured: true, speed: sample.speed,
+        advancing: result.playbackHealth.status === 'healthy'
+      };
+    }
+  } else if (active && now && now.startedAt && now.duration) {
+    result.progress = {
+      elapsed: Math.min(Math.floor(Date.now() / 1000) - now.startedAt, now.duration),
+      duration: now.duration
+    };
+  }
+  return result;
+}
+
+const eventClients = new Set();
+let servicePropsCache = null;
+let servicePropsAt = 0;
+let serviceCallbacks = [];
+function sampleServiceStatus(callback) {
+  if (servicePropsCache && Date.now() - servicePropsAt < 4000) {
+    callback(servicePropsCache);
+    return;
+  }
+  serviceCallbacks.push(callback);
+  if (serviceCallbacks.length > 1) return;
+  execFile('systemctl', ['show', 'streamer.service', '--property=ActiveState,ActiveEnterTimestamp'],
+    { timeout: 4000 }, (error, stdout = '') => {
+      const props = {};
+      for (const line of stdout.trim().split('\n')) {
+        const [key, ...value] = line.split('=');
+        props[key] = value.join('=');
+      }
+      servicePropsCache = error ? { ActiveState: 'unknown' } : props;
+      servicePropsAt = Date.now();
+      const callbacks = serviceCallbacks;
+      serviceCallbacks = [];
+      for (const waiting of callbacks) waiting(servicePropsCache);
+    });
+}
+
+let eventTimer = null;
+let eventTick = 0;
+let eventProps = null;
+let eventRefreshPending = false;
+function writeEvent(res, text) {
+  if (res.destroyed || res.writableLength > 65536 || !res.write(text)) {
+    eventClients.delete(res);
+    res.destroy();
+  }
+}
+
+function openEvents(req, res) {
+  if (eventClients.size >= 16) return jsonResponse(res, 503, { error: 'Too many event clients' });
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive', 'X-Accel-Buffering': 'no'
+  });
+  res.flushHeaders();
+  eventClients.add(res);
+  writeEvent(res, ': connected\n\n');
+  req.on('close', () => {
+    eventClients.delete(res);
+    if (!eventClients.size && eventTimer) { clearInterval(eventTimer); eventTimer = null; }
+  });
+  if (eventTimer) return;
+  eventTick = 0;
+  const tick = () => {
+    if (!eventClients.size) {
+      clearInterval(eventTimer);
+      eventTimer = null;
+      return;
+    }
+    if (eventTick % 5 === 0 && !eventRefreshPending) {
+      eventRefreshPending = true;
+      sampleServiceStatus(props => {
+        eventRefreshPending = false;
+        eventProps = props;
+      });
+    }
+    if (eventProps && eventTick % 2 === 0) {
+      const text = `event: snapshot\ndata: ${JSON.stringify(streamerSnapshot(eventProps))}\n\n`;
+      for (const client of eventClients) writeEvent(client, text);
+    } else if (eventTick % 15 === 0) {
+      for (const client of eventClients) writeEvent(client, ': heartbeat\n\n');
+    }
+    eventTick++;
+  };
+  eventTimer = setInterval(tick, 1000);
+  tick();
+}
+
 const server = http.createServer(async (req, res) => {
   try {
+    if (req.method === 'GET' && req.url === '/api/streamer/events') {
+      return openEvents(req, res);
+    }
+    if (req.method === 'POST' && req.url === '/api/streamer/queue') {
+      const command = JSON.parse(await readBody(req));
+      if (!command || typeof command !== 'object' || Array.isArray(command)) {
+        return jsonResponse(res, 400, { error: 'Expected a queue command object' });
+      }
+      if (!isStreamerActive()) return jsonResponse(res, 409, { error: 'Streamer is not running' });
+      const state = readControlState();
+      if (!state) return jsonResponse(res, 503, { error: 'Live controls require an updated, restarted streamer' });
+      const previous = state.actions.find(action => action.id === command.id);
+      if (previous) return jsonResponse(res, 200, { ok: true, action: previous });
+      if (!['replace', 'next', 'now', 'reset', 'skip'].includes(command.operation)) {
+        return jsonResponse(res, 400, { error: 'Unknown queue operation' });
+      }
+      const files = command.operation === 'replace' ? command.files
+        : ['next', 'now'].includes(command.operation) ? [command.file] : [];
+      if (!Array.isArray(files) || files.some(file => typeof file !== 'string') ||
+          new Set(files).size !== files.length) {
+        return jsonResponse(res, 400, { error: 'Queue must contain unique filenames' });
+      }
+      const current = path.basename(state.current.file);
+      if (files.includes(current)) return jsonResponse(res, 409, { error: 'That video is already playing' });
+      const available = new Set(listVideoFiles());
+      if (files.some(file => !available.has(file) || /[\r\n]/.test(file))) {
+        return jsonResponse(res, 400, { error: 'Video is unavailable' });
+      }
+      const action = submitControl({
+        id: command.id, operation: command.operation, session: command.session,
+        revision: command.revision, ...(command.operation === 'replace' ? { files } : {}),
+        ...(['next', 'now'].includes(command.operation) ? { file: command.file } : {})
+      }, state);
+      return jsonResponse(res, 202, { ok: true, action });
+    }
+    if (req.method === 'GET' && req.url === '/api/streamer/queue') {
+      return jsonResponse(res, 200, streamerSnapshot({
+        ActiveState: isStreamerActive() ? 'active' : 'inactive'
+      }).queue);
+    }
+    if (req.method === 'GET' && req.url.startsWith('/api/streamer/actions/')) {
+      const id = req.url.slice('/api/streamer/actions/'.length);
+      const state = isStreamerActive() ? readControlState() : null;
+      const pending = state ? readJsonFile(CONTROL_REQUEST) : null;
+      const action = state && state.actions.find(item => item.id === id);
+      if (!action && (!pending || pending.id !== id)) {
+        return jsonResponse(res, 404, { error: 'Action is unconfirmed or its session ended' });
+      }
+      return jsonResponse(res, 200, { action: action || { id, status: 'accepted' } });
+    }
     // ─── GET /api/info ─────────────────────────────────────────────
     if (req.method === 'GET' && req.url === '/api/info') {
       const prefix = readPrefix();
@@ -512,74 +906,31 @@ const server = http.createServer(async (req, res) => {
         return jsonResponse(res, 500, { error: 'Playlist was saved but could not be regenerated' });
       }
 
-      const runtime = syncActivePlaylist(videos);
+      let runtime;
+      try {
+        runtime = parsed.applyToLive === false
+          ? { updated: false, pending: false, nextFile: null } : syncActivePlaylist(videos);
+      } catch (error) {
+        return jsonResponse(res, error.status || 500, {
+          saved: true, error: `Playlist saved, but live application failed: ${error.message}`
+        });
+      }
       jsonResponse(res, 200, {
         ok: true,
         count: videos.length,
         videos,
         runtimeUpdated: runtime.updated,
         runtimePending: runtime.pending,
-        nextFile: runtime.nextFile
+        nextFile: runtime.nextFile,
+        actionId: runtime.actionId || null
       });
       return;
     }
 
     // ─── GET /api/streamer ──────────────────────────────────────────
     if (req.method === 'GET' && req.url === '/api/streamer') {
-      execFile('systemctl', ['show', 'streamer.service', '--property=ActiveState,ActiveEnterTimestamp'],
-        { timeout: 5000 }, (err, stdout) => {
-        const props = {};
-        for (const line of stdout.trim().split('\n')) {
-          const [k, ...v] = line.split('=');
-          props[k] = v.join('=');
-        }
-        const active = props.ActiveState === 'active';
-        let uptimeSeconds = null;
-        if (active && props.ActiveEnterTimestamp) {
-          const entered = new Date(props.ActiveEnterTimestamp);
-          if (!isNaN(entered)) uptimeSeconds = Math.floor((Date.now() - entered.getTime()) / 1000);
-        }
-        const savedPlaylist = readPlaylistOrder();
-        const runtimePlaylist = active ? readRuntimePlaylist() : [];
-        const playlist = active && runtimePlaylist.length > 0 ? runtimePlaylist : savedPlaylist;
-        const state = readPlaybackState();
-        const now = active ? readNowPlaying() : null;
-        const stopPending = fs.existsSync('/run/streamer-stop-after-current');
-        const activeStreams = {
-          landscape: fs.existsSync(ACTIVE_LANDSCAPE),
-          portrait: fs.existsSync(ACTIVE_PORTRAIT)
-        };
-        const result = { active, uptimeSeconds, nowPlaying: null, upNext: [], progress: null, stopPending, activeStreams };
-        const position = buildPlaybackPosition(active, playlist, state, now);
-        result.nowPlaying = position.nowPlaying;
-        result.upNext = position.upNext.map(name => ({
-          name, duration: probeDuration(path.join(VIDEO_DIR, name))
-        }));
-
-        // Progress of current video (from /run/streamer-now.json)
-        if (active && now && now.startedAt && now.duration) {
-          const elapsed = Math.floor(Date.now() / 1000) - now.startedAt;
-          result.progress = {
-            elapsed: Math.min(elapsed, now.duration),
-            duration: now.duration
-          };
-        }
-
-        // Resolve display titles from playlist config
-        const cfg = readPlaylistConfig();
-        const titleMap = new Map();
-        if (cfg && Array.isArray(cfg.videos)) {
-          for (const v of cfg.videos) {
-            if (v.title) titleMap.set(v.file, v.title);
-          }
-        }
-        const displayName = (filename) => titleMap.get(filename) || filename.replace(/\.[^.]+$/, '');
-        if (result.nowPlaying) result.nowPlaying = displayName(result.nowPlaying);
-        result.upNext = result.upNext.map(item => ({
-          ...item, name: displayName(item.name)
-        }));
-
-        jsonResponse(res, 200, result);
+      sampleServiceStatus(props => {
+        jsonResponse(res, 200, streamerSnapshot(props, true));
       });
       return;
     }
@@ -590,6 +941,7 @@ const server = http.createServer(async (req, res) => {
       try { fs.writeFileSync('/run/streamer-manual-override', ''); } catch {};
       // Clear manual stop in case user is re-starting after a manual stop
       try { fs.unlinkSync('/run/streamer-manual-stop'); } catch {};
+      try { fs.unlinkSync(QUEUE_HOLD); } catch {}
       // Parse which streams to activate (default: both)
       let streams = ['landscape', 'portrait'];
       try {
@@ -644,10 +996,18 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       try {
+        const state = readControlState();
+        if (state) {
+          const action = submitControl({
+            id: `skip-${randomUUID()}`, operation: 'skip',
+            session: state.session, revision: state.revision
+          }, state);
+          return jsonResponse(res, 202, { ok: true, action });
+        }
         writeAtomic('/run/streamer-skip', '');
         jsonResponse(res, 200, { ok: true });
-      } catch {
-        jsonResponse(res, 500, { error: 'Failed to write skip signal' });
+      } catch (error) {
+        jsonResponse(res, error.status || 500, { error: error.message || 'Failed to submit skip signal' });
       }
       return;
     }
@@ -736,6 +1096,10 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'GET' && req.url === '/api/schedule/youtube') {
+      return jsonResponse(res, 200, youtubePreview(readSchedule()));
+    }
+
     // ─── GET /api/schedule ─────────────────────────────────────────
     // Returns the full schedule with computed next start/stop times
     if (req.method === 'GET' && req.url === '/api/schedule') {
@@ -792,7 +1156,16 @@ const server = http.createServer(async (req, res) => {
       } catch {
         todayLocal = now.toISOString().slice(0, 10);
       }
+      if (schedule.scheduleSource === 'youtube' && readMode() === 'local') {
+        const preview = youtubePreview(schedule);
+        const upcoming = preview.events.filter(event => event.eligible).sort((a, b) => a.start.localeCompare(b.start));
+        nextStart = upcoming[0]?.start || null;
+        nextStop = preview.owned?.end || upcoming[0]?.end || null;
+      }
       jsonResponse(res, 200, {
+        scheduleSource: schedule.scheduleSource || 'weekly',
+        youtube: schedule.youtube || { channelId: '', rules: [] },
+        youtubeAvailable: readMode() === 'local',
         timezone: schedule.timezone || 'UTC',
         events: schedule.events || [],
         overrides: (schedule.overrides || []).filter(o => o.date >= todayLocal),
@@ -813,6 +1186,30 @@ const server = http.createServer(async (req, res) => {
         return jsonResponse(res, 400, { error: 'Invalid JSON' });
       }
       const schedule = readSchedule();
+      if (parsed.scheduleSource !== undefined || parsed.youtube !== undefined) {
+        const source = parsed.scheduleSource ?? schedule.scheduleSource ?? 'weekly';
+        if (!['weekly', 'youtube'].includes(source)) return jsonResponse(res, 400, { error: 'Invalid schedule source' });
+        if (source === 'youtube' && readMode() !== 'local') {
+          return jsonResponse(res, 400, { error: 'YouTube scheduling is currently available in local mode only' });
+        }
+        if (readMode() === 'local' && source !== (schedule.scheduleSource || 'weekly')) {
+          let serviceState;
+          try {
+            serviceState = execFileSync('systemctl', ['show', '-p', 'ActiveState', '--value', 'streamer.service'], { timeout: 5000 }).toString().trim();
+          } catch {
+            return jsonResponse(res, 503, { error: 'Cannot verify streamer state before changing schedule source' });
+          }
+          if (!['inactive', 'failed'].includes(serviceState)) {
+            return jsonResponse(res, 409, { error: 'Stop the streamer before changing schedule source' });
+          }
+        }
+        try {
+          schedule.youtube = validateYouTubeConfig(parsed.youtube ?? schedule.youtube ?? { channelId: '', rules: [] }, source === 'youtube');
+        } catch (error) {
+          return jsonResponse(res, 400, { error: error.message });
+        }
+        schedule.scheduleSource = source;
+      }
       if (parsed.timezone !== undefined) {
         schedule.timezone = String(parsed.timezone);
       }
@@ -833,7 +1230,7 @@ const server = http.createServer(async (req, res) => {
 
       // In local mode, scheduler.service reads schedule.json directly — no sync needed
       if (readMode() === 'local') {
-        return jsonResponse(res, 200, { ok: true, synced: true });
+        return jsonResponse(res, 200, { ok: true, synced: true, mode: 'local' });
       }
 
       // Trigger immediate sync to Azure Automation Account
@@ -1232,7 +1629,7 @@ const server = http.createServer(async (req, res) => {
 
     jsonResponse(res, 404, { error: 'Not found' });
   } catch (e) {
-    jsonResponse(res, 500, { error: e.message });
+    jsonResponse(res, e.status || (e instanceof SyntaxError ? 400 : 500), { error: e.message });
   }
 });
 
@@ -1246,5 +1643,9 @@ module.exports = {
   buildPlaybackPosition,
   buildRuntimePlaylist,
   moveVideoNext,
-  wrapOverlayText
+  wrapOverlayText,
+  playbackHealth,
+  writeEvent,
+  validateYouTubeConfig,
+  youtubeFingerprint
 };

@@ -362,7 +362,9 @@ fi
 
 info "Installing scripts to /usr/local/bin..."
 install -m 755 "$SCRIPT_DIR/services/streamer/streamer.sh"   /usr/local/bin/streamer.sh
+install -m 755 "$SCRIPT_DIR/services/streamer/streamer-control.py" /usr/local/bin/streamer-control.py
 install -m 755 "$SCRIPT_DIR/services/scheduler/scheduler.sh" /usr/local/bin/scheduler.sh
+install -m 755 "$SCRIPT_DIR/services/scheduler/youtube-schedule.py" /usr/local/bin/youtube-schedule.py
 install -m 755 "$SCRIPT_DIR/scripts/generate-playlist.sh"    /usr/local/bin/generate-playlist.sh
 install -m 755 "$SCRIPT_DIR/scripts/update.sh"               /usr/local/bin/yt-update.sh
 
@@ -393,6 +395,8 @@ ok "Scripts installed."
 info "Installing systemd units..."
 install -m 644 "$SCRIPT_DIR/systemd/streamer-local.service" /etc/systemd/system/streamer.service
 install -m 644 "$SCRIPT_DIR/systemd/scheduler.service"      /etc/systemd/system/scheduler.service
+install -m 644 "$SCRIPT_DIR/systemd/youtube-sync.service"   /etc/systemd/system/youtube-sync.service
+install -m 644 "$SCRIPT_DIR/systemd/youtube-sync.timer"     /etc/systemd/system/youtube-sync.timer
 install -m 644 "$SCRIPT_DIR/systemd/caddy.service"          /etc/systemd/system/caddy.service
 install -m 644 "$SCRIPT_DIR/systemd/web-backend.service"    /etc/systemd/system/web-backend.service
 
@@ -420,6 +424,7 @@ fi
 info "Enabling services..."
 systemctl enable streamer.service
 systemctl enable scheduler.service
+systemctl enable youtube-sync.timer
 systemctl enable caddy.service
 systemctl enable web-backend.service
 
@@ -427,6 +432,7 @@ info "Starting services..."
 systemctl start web-backend.service
 systemctl start caddy.service
 systemctl start scheduler.service
+systemctl start youtube-sync.timer
 # Note: scheduler will start/stop streamer based on schedule
 
 ok "Services started."

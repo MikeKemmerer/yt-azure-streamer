@@ -6,7 +6,11 @@ const {
   buildPlaybackPosition,
   buildRuntimePlaylist,
   moveVideoNext,
-  wrapOverlayText
+  wrapOverlayText,
+  playbackHealth,
+  writeEvent,
+  validateYouTubeConfig,
+  youtubeFingerprint
 } = require('../web/backend/server');
 
 const runtimePlaylist = ['alpha.mp4', 'beta.mp4', 'gamma.mp4'];
@@ -114,7 +118,9 @@ function loadBackend(dependencies) {
     module: { exports: {} },
     process,
     console,
-    Buffer
+    Buffer,
+    setInterval: dependencies.setInterval || setInterval,
+    clearInterval: dependencies.clearInterval || clearInterval
   });
   return handler;
 }
@@ -219,6 +225,84 @@ async function testLocalPlaylistSave() {
   assert.deepStrictEqual(generatorArgs, ['/mnt/sermons', '/etc/yt/playlist.txt']);
 }
 
+async function testYouTubeScheduleRoutes() {
+  const settings = {
+    channelId: 'UC-test',
+    rules: [{ title: 'Sermons & Speakers', profile: 'landscape', durationSeconds: 28800 }]
+  };
+  assert.deepStrictEqual(validateYouTubeConfig(settings), settings);
+  assert.throws(() => validateYouTubeConfig({ ...settings, rules: [...settings.rules, { ...settings.rules[0], title: '  sermons   & speakers ' }] }), /Duplicate/);
+  assert.throws(() => validateYouTubeConfig({ ...settings, rules: [{ ...settings.rules[0], durationSeconds: true }] }), /duration/);
+  const schedule = { timezone: 'UTC', events: [{ name: 'Weekly' }], stream: { shuffle: true } };
+  const files = new Map([
+    ['/etc/yt/mode', 'local'],
+    ['/etc/yt/schedule.json', JSON.stringify(schedule)],
+    ['/etc/yt/secrets/youtube-oauth.json', 'private-fixture'],
+    ['/etc/yt/secrets/youtube-stream-key', 'private-main-key'],
+    ['/etc/yt/secrets/youtube-stream-key-portrait', 'private-portrait-key']
+  ]);
+  let serviceState = 'inactive';
+  const handler = loadBackend({
+    fs: {
+      readFileSync(file) {
+        if (!files.has(file)) throw new Error('Missing');
+        return files.get(file);
+      },
+      writeFileSync(file, data) { files.set(file, data); },
+      renameSync(from, to) { files.set(to, files.get(from)); files.delete(from); },
+      unlinkSync(file) { files.delete(file); },
+      existsSync(file) { return files.has(file); }
+    },
+    child_process: {
+      execFile() { throw new Error('Local saves must not invoke Azure'); },
+      execFileSync() { return serviceState; }
+    }
+  });
+  const result = await invokeRoute(handler, 'PUT', '/api/schedule', { scheduleSource: 'youtube', youtube: settings });
+  assert.strictEqual(result.status, 200);
+  const saved = JSON.parse(files.get('/etc/yt/schedule.json'));
+  assert.deepStrictEqual(saved.events, schedule.events);
+  assert.deepStrictEqual(saved.stream, schedule.stream);
+  assert.strictEqual(saved.scheduleSource, 'youtube');
+  serviceState = 'active';
+  const switching = await invokeRoute(handler, 'PUT', '/api/schedule', { scheduleSource: 'weekly' });
+  assert.strictEqual(switching.status, 409);
+  serviceState = 'inactive';
+  const invalid = await invokeRoute(handler, 'PUT', '/api/schedule', { youtube: { ...settings, rules: [] } });
+  assert.strictEqual(invalid.status, 400);
+  const now = Date.now() / 1000;
+  files.set('/etc/yt/youtube-schedule.json', JSON.stringify({
+    fingerprint: youtubeFingerprint(saved), channelId: 'UC-test', fetchedAt: now,
+    keyFingerprint: require('crypto').createHash('sha256').update(JSON.stringify({ landscape: 'private-main-key', portrait: 'private-portrait-key' })).digest('hex'),
+    events: [{ id: 'broadcast-one', title: '<show>', profile: 'landscape', start: now + 60, end: now + 28800, errors: [], status: 'ready' }]
+  }));
+  const preview = await invokeRoute(handler, 'GET', '/api/schedule/youtube');
+  assert.strictEqual(preview.status, 200);
+  assert.strictEqual(preview.body.fresh, true);
+  assert.strictEqual(preview.body.events[0].eligible, true);
+  assert.strictEqual(JSON.stringify(preview.body).includes('private-fixture'), false);
+  assert.strictEqual(JSON.stringify(preview.body).includes('private-main-key'), false);
+  files.set('/etc/yt/secrets/youtube-stream-key', 'changed-key');
+  assert.strictEqual((await invokeRoute(handler, 'GET', '/api/schedule/youtube')).body.fresh, false,
+    'changing ingestion credentials must invalidate eligibility immediately');
+  files.set('/etc/yt/secrets/youtube-stream-key', 'private-main-key');
+  const old = JSON.parse(files.get('/etc/yt/youtube-schedule.json'));
+  old.fetchedAt = now - 601;
+  files.set('/etc/yt/youtube-schedule.json', JSON.stringify(old));
+  const stale = await invokeRoute(handler, 'GET', '/api/schedule/youtube');
+  assert.strictEqual(stale.body.fresh, false);
+  assert.strictEqual(stale.body.events[0].eligible, false);
+  files.set('/run/streamer-youtube-owner.json', JSON.stringify({
+    owner: { events: [{ id: 'broadcast-one', end: now + 3600 }] }
+  }));
+  const owned = await invokeRoute(handler, 'GET', '/api/schedule');
+  assert.strictEqual(owned.body.nextStop, new Date((now + 3600) * 1000).toISOString(),
+    'an owned deadline must remain visible during discovery outages');
+  files.set('/etc/yt/mode', 'azure');
+  const unavailable = await invokeRoute(handler, 'PUT', '/api/schedule', { scheduleSource: 'youtube', youtube: settings });
+  assert.strictEqual(unavailable.status, 400);
+}
+
 async function testUnconfirmedUpdate(fetch) {
   const fs = require('fs');
   const vm = require('vm');
@@ -245,6 +329,227 @@ async function testUnconfirmedUpdate(fetch) {
   assert.strictEqual(message, 'Update result could not be confirmed.');
 }
 
+function liveBackend(options = {}) {
+  const state = {
+    version: 1, session: 'session-one', revision: 3, ownerPid: 4242, ownerStart: '777',
+    current: {
+      file: '/mnt/blobfuse2/alpha.mp4', generation: 'generation-one', startedAt: 1, onAir: true,
+      encoderPid: 4243, encoderStart: '888', telemetryPid: 4244, telemetryStart: '999'
+    },
+    upcoming: [{ file: '/mnt/blobfuse2/beta.mp4', ordinary: true }],
+    explicitEmpty: false, actions: [], ...options.state
+  };
+  const stat = Array(20).fill('0');
+  stat[0] = 'S';
+  stat[19] = '777';
+  const files = new Map([
+    ['/run/streamer-control-state.json', JSON.stringify(state)],
+    ['/proc/4242/stat', `4242 (bash) ${stat.join(' ')}`],
+    ['/proc/4243/stat', `4243 (ffmpeg) ${stat.map((value, index) => index === 19 ? '888' : value).join(' ')}`],
+    ['/proc/4244/stat', `4244 (python) ${stat.map((value, index) => index === 19 ? '999' : value).join(' ')}`],
+    ['/etc/yt/playlist.txt', "file '/mnt/blobfuse2/alpha.mp4'\nfile '/mnt/blobfuse2/beta.mp4'\n"],
+    ['/run/streamer-now.json', JSON.stringify({ file: state.current.file, startedAt: 1, duration: 100 })]
+  ]);
+  const calls = [];
+  const handler = loadBackend({
+    fs: {
+      readFileSync(filename) {
+        if (!files.has(filename)) throw new Error('Missing file');
+        return files.get(filename);
+      },
+      existsSync(filename) { return files.has(filename); },
+      readdirSync() { return ['alpha.mp4', 'beta.mp4', 'gamma.mp4']; },
+      writeFileSync(filename, text) { files.set(filename, text); },
+      renameSync(from, to) { files.set(to, files.get(from)); files.delete(from); },
+      unlinkSync(filename) { files.delete(filename); }
+    },
+    child_process: {
+      execFileSync(command) {
+        calls.push(command);
+        if (command === 'systemctl' && options.active === false) throw new Error('Stopped');
+        return '10';
+      },
+      execFile(command, args, opts, callback) {
+        calls.push(command);
+        callback(options.serviceError ? new Error('systemctl unavailable') : null, 'ActiveState=active\n');
+      }
+    },
+    setInterval: options.setInterval,
+    clearInterval: options.clearInterval
+  });
+  const command = { id: 'edit-one', operation: 'replace', files: ['beta.mp4'], session: state.session, revision: state.revision };
+  return { state, files, calls, handler, command };
+}
+
+async function testLiveCommands() {
+  const fixture = liveBackend();
+  const { handler, command, files } = fixture;
+  const submit = changes => invokeRoute(handler, 'POST', '/api/streamer/queue', { ...command, ...changes });
+  assert.strictEqual((await submit({ revision: 0 })).status, 409);
+  assert.strictEqual((await submit({ files: ['beta.mp4', 'beta.mp4'] })).status, 400);
+  assert.strictEqual((await submit({ files: ['../beta.mp4'] })).status, 400);
+  assert.strictEqual((await submit({ files: ['alpha.mp4'] })).status, 409);
+  assert.strictEqual((await invokeRoute(handler, 'POST', '/api/streamer/queue', null)).status, 400);
+  const accepted = await submit({});
+  assert.strictEqual(accepted.status, 202);
+  assert.strictEqual(accepted.body.action.status, 'accepted');
+  assert.strictEqual(JSON.parse(files.get('/run/streamer-control-request.json')).revision, 3);
+  assert.strictEqual(files.has('/run/streamer-playlist.json'), false, 'backend must not write applied player state');
+  assert.strictEqual(files.has('/etc/yt/playlist-config.json'), false, 'live edits must not persist');
+  assert.strictEqual((await submit({ id: 'other-client' })).status, 409);
+  assert.strictEqual((await submit({})).status, 202, 'retrying the same pending action is idempotent');
+  const lookup = await invokeRoute(handler, 'GET', '/api/streamer/actions/edit-one');
+  assert.strictEqual(lookup.body.action.status, 'accepted');
+  files.delete('/run/streamer-control-request.json');
+  fixture.state.actions = [{ id: command.id, status: 'applied', operation: 'now' }];
+  files.set('/run/streamer-control-state.json', JSON.stringify(fixture.state));
+  assert.strictEqual((await submit({ operation: 'now', file: 'alpha.mp4' })).status, 200,
+    'an already-applied action must not interrupt twice');
+  files.set('/proc/4242/stat', 'different process');
+  assert.strictEqual((await submit({ id: 'new-command' })).status, 503);
+  const stopped = liveBackend({ active: false });
+  assert.strictEqual((await invokeRoute(stopped.handler, 'POST', '/api/streamer/queue', stopped.command)).status, 409);
+}
+
+async function testLiveSnapshotAndSavedOnly() {
+  const fixture = liveBackend({ state: { upcoming: [], explicitEmpty: true } });
+  const response = await invokeRoute(fixture.handler, 'GET', '/api/streamer');
+  assert.deepStrictEqual(response.body.upNext, [], 'an intentional empty queue must not fall back to saved rotation');
+  assert.strictEqual(response.body.queue.explicitEmpty, true);
+  const saved = await invokeRoute(fixture.handler, 'PUT', '/api/videos', {
+    videos: [{ file: 'beta.mp4', enabled: true }], applyToLive: false
+  });
+  assert.strictEqual(saved.status, 200);
+  assert.strictEqual(fixture.files.has('/run/streamer-control-request.json'), false);
+  const applied = await invokeRoute(fixture.handler, 'PUT', '/api/videos', {
+    videos: [{ file: 'beta.mp4', enabled: true }]
+  });
+  assert.strictEqual(applied.status, 200);
+  assert.strictEqual(applied.body.runtimeUpdated, false);
+  assert.strictEqual(applied.body.runtimePending, true);
+  assert.strictEqual(JSON.parse(fixture.files.get('/run/streamer-control-request.json')).operation, 'reset');
+  const unavailable = liveBackend({ serviceError: true });
+  const unknown = await invokeRoute(unavailable.handler, 'GET', '/api/streamer');
+  assert.strictEqual(unknown.body.state, 'unknown');
+  assert.strictEqual(unknown.body.playbackHealth.status, 'unknown',
+    'failed operational sampling must not claim playback is stopped or healthy');
+}
+
+function testMeasuredHealth() {
+  const current = { generation: 'new', startedAt: 100 };
+  const history = {};
+  const sample = (at, elapsed, speed = 1) => ({ generation: 'new', at, elapsed, speed });
+  assert.strictEqual(playbackHealth(current, sample(105, 5), 105, history).status, 'starting');
+  assert.strictEqual(playbackHealth(current, sample(121, 21), 121, history).status, 'healthy');
+  assert.strictEqual(playbackHealth(current, sample(130, 21), 130, history).status, 'healthy');
+  assert.strictEqual(playbackHealth(current, sample(137, 21), 137, history).status, 'stalled');
+  assert.strictEqual(playbackHealth(current, sample(150, 40, 0.7), 150, history).status, 'healthy');
+  assert.strictEqual(playbackHealth(current, sample(171, 51, 0.7), 171, history).status, 'slow');
+  assert.strictEqual(playbackHealth(current, sample(172, 52), 172, history).status, 'healthy');
+  assert.strictEqual(playbackHealth(current, sample(172, 52), 180, history).status, 'unknown');
+  assert.strictEqual(playbackHealth(current, { ...sample(180, 1), generation: 'previous' }, 180, history).status, 'unknown');
+  assert.strictEqual(playbackHealth({ generation: 'restarted', startedAt: 180 }, null, 181, history).status, 'starting');
+}
+
+function testStaleProgressAndCollectorFailure() {
+  const current = { generation: 'new', startedAt: 100, onAir: true };
+  const sample = { generation: 'new', at: 121, elapsed: 21, speed: 1 };
+  const alive = { encoderAlive: true, telemetryAlive: true };
+  assert.strictEqual(playbackHealth(current, sample, 122, {}, alive).status, 'healthy');
+  assert.strictEqual(playbackHealth(current, sample, 129, {}, alive).status, 'unknown',
+    'briefly stale progress must not immediately claim a stall');
+  assert.strictEqual(playbackHealth(current, sample, 140, {}, alive).status, 'stalled',
+    'a running encoder with a live collector and no fresh progress must report a stall');
+  assert.strictEqual(playbackHealth(current, sample, 140, {}, { ...alive, telemetryAlive: false }).status, 'unknown');
+  assert.strictEqual(playbackHealth(current, { ...sample, at: 140 }, 140, {},
+    { ...alive, encoderAlive: false }).status, 'unknown', 'a dead encoder must not look healthy from its final sample');
+  assert.notStrictEqual(playbackHealth(current, { ...sample, end: true }, 140, {}, alive).status, 'stalled',
+    'finite completion is not a stall');
+  assert.strictEqual(playbackHealth({ ...current, generation: 'next' }, sample, 140, {}, alive).status, 'unknown');
+}
+
+async function testProcessIdentityHealth() {
+  const fixture = liveBackend();
+  const progress = { generation: 'generation-one', at: Date.now() / 1000 - 25, elapsed: 21, speed: 1 };
+  fixture.files.set('/run/streamer-progress.json', JSON.stringify(progress));
+  const snapshot = () => invokeRoute(fixture.handler, 'GET', '/api/streamer');
+  const stalled = await snapshot();
+  assert.strictEqual(stalled.body.playbackHealth.status, 'stalled');
+  assert(stalled.body.playbackHealth.age >= 25);
+  const reader = fixture.files.get('/proc/4244/stat');
+  fixture.files.set('/proc/4244/stat', reader.replace('(python) S', '(python) Z'));
+  assert.strictEqual((await snapshot()).body.playbackHealth.status, 'unknown', 'zombie collectors are not live');
+  fixture.files.set('/proc/4244/stat', reader.replace(/999$/, '1000'));
+  assert.strictEqual((await snapshot()).body.playbackHealth.status, 'unknown', 'reused PIDs must not imply a live collector');
+  fixture.files.set('/proc/4244/stat', reader);
+  fixture.files.delete('/proc/4243/stat');
+  fixture.files.set('/run/streamer-progress.json', JSON.stringify({ ...progress, at: Date.now() / 1000 }));
+  assert.strictEqual((await snapshot()).body.playbackHealth.status, 'unknown', 'old samples cannot mask an exited encoder');
+}
+
+function testPlaybackHealthFeedback() {
+  const source = require('fs').readFileSync(require.resolve('../web/frontend/app.js'), 'utf8');
+  const start = source.indexOf('function renderStreamerStatus(data) {');
+  const end = source.indexOf('function renderLiveQueue(', start);
+  assert(start >= 0 && end > start);
+  for (const health of [
+    { status: 'stalled', speed: 1, age: 25.9, reason: 'no new encoder progress' },
+    { status: 'unknown', reason: 'telemetry reader unavailable' }
+  ]) {
+    const elements = new Map();
+    require('vm').runInNewContext(source.slice(start, end) + '\nrenderStreamerStatus(data);', {
+      data: { active: true, nowPlaying: null, upNext: [], playbackHealth: health },
+      document: {
+        getElementById(id) {
+          if (!elements.has(id)) elements.set(id, { style: {}, classList: { add() {}, remove() {} } });
+          return elements.get(id);
+        }
+      },
+      renderLiveQueue() {}, stopProgressTicker() {}, fmtDuration() { return ''; }
+    });
+    const text = elements.get('playback-health').textContent;
+    assert(text.includes(health.status) && text.includes(health.reason));
+    if (health.age !== undefined) assert(text.includes('sample 25s old'));
+    assert(!text.includes('NaN') && !text.includes('undefined'));
+  }
+}
+
+async function testSharedEvents() {
+  let tick;
+  let intervalCount = 0;
+  let cleared = 0;
+  const fixture = liveBackend({
+    setInterval(callback) { tick = callback; intervalCount++; return 1; },
+    clearInterval() { cleared++; }
+  });
+  const connect = async () => {
+    const req = new (require('events').EventEmitter)();
+    Object.assign(req, { method: 'GET', url: '/api/streamer/events' });
+    const writes = [];
+    const res = {
+      writableLength: 0, writeHead(status) { assert.strictEqual(status, 200); },
+      flushHeaders() {}, write(text) { writes.push(text); return true; }, destroy() {}
+    };
+    await fixture.handler(req, res);
+    return { req, writes };
+  };
+  const first = await connect();
+  const second = await connect();
+  tick();
+  tick();
+  assert.strictEqual(intervalCount, 1, 'multiple clients must share one observer');
+  assert.strictEqual(fixture.calls.filter(command => command === 'systemctl').length, 1);
+  assert.strictEqual(fixture.calls.includes('ffprobe'), false, 'events must not invoke ffprobe');
+  assert(first.writes.some(text => text.startsWith('event: snapshot')));
+  assert(second.writes.some(text => text.startsWith('event: snapshot')));
+  first.req.emit('close');
+  second.req.emit('close');
+  assert.strictEqual(cleared, 1);
+  let destroyed = false;
+  writeEvent({ writableLength: 0, write() { return false; }, destroy() { destroyed = true; } }, 'event');
+  assert.strictEqual(destroyed, true, 'slow clients must be disconnected rather than queued indefinitely');
+}
+
 (async () => {
   await testSkipRoute(true, false);
   await testSkipRoute(false, false);
@@ -253,6 +558,14 @@ async function testUnconfirmedUpdate(fetch) {
   await testUpdateResult(new Error('Updater exited 1'), '');
   await testUpdateResult(null, 'Update complete\n');
   await testLocalPlaylistSave();
+  await testYouTubeScheduleRoutes();
+  await testLiveCommands();
+  await testLiveSnapshotAndSavedOnly();
+  testMeasuredHealth();
+  testStaleProgressAndCollectorFailure();
+  await testProcessIdentityHealth();
+  testPlaybackHealthFeedback();
+  await testSharedEvents();
   await testUnconfirmedUpdate(async () => { throw new Error('Network unavailable'); });
   await testUnconfirmedUpdate(async () => ({
     async json() { throw new Error('Unreadable response'); }

@@ -1,0 +1,10 @@
+[Unit]
+Description=Check YouTube broadcast schedules every minute
+
+[Timer]
+OnBootSec=30
+OnUnitInactiveSec=60
+Unit=youtube-sync.service
+
+[Install]
+WantedBy=timers.target

@@ -13,6 +13,8 @@ SCHEDULE_FILE="/etc/yt/schedule.json"
 CHECK_INTERVAL=30  # seconds between checks
 MANUAL_OVERRIDE="/run/streamer-manual-override"
 MANUAL_STOP="/run/streamer-manual-stop"
+QUEUE_HOLD="/run/streamer-queue-hold"
+YOUTUBE_OWNER="/run/streamer-youtube-owner.json"
 ACTIVE_LANDSCAPE="/run/streamer-active-landscape"
 ACTIVE_PORTRAIT="/run/streamer-active-portrait"
 
@@ -148,7 +150,59 @@ update_stream_signals() {
   fi
 }
 
+youtube_schedule_enabled() {
+  [[ "$(cat /etc/yt/mode 2>/dev/null || true)" == "local" ]] || return 1
+  python3 - "$SCHEDULE_FILE" <<'PYEOF'
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        enabled = json.load(f).get("scheduleSource", "weekly") == "youtube"
+except (OSError, ValueError):
+    enabled = False
+sys.exit(0 if enabled else 1)
+PYEOF
+}
+
+youtube_schedule_tick() {
+  local result command profiles service_state
+  local -a args=(decide)
+  service_state=$(systemctl show -p ActiveState --value streamer.service 2>/dev/null) || return 0
+  case "$service_state" in
+    active|activating|deactivating|reloading) args+=(--running) ;;
+    inactive|failed) ;;
+    *) return 0 ;;
+  esac
+  # Failure to read/decide must not be interpreted as an instruction to stop.
+  result=$(python3 /usr/local/bin/youtube-schedule.py "${args[@]}") || return 0
+  read -r command profiles <<< "$result"
+  case "$command" in
+    START)
+      update_stream_signals "$profiles"
+      systemctl start streamer.service || true
+      ;;
+    KEEP) update_stream_signals "$profiles" ;;
+    STOP)
+      rm -f "$ACTIVE_LANDSCAPE" "$ACTIVE_PORTRAIT"
+      systemctl stop streamer.service || true
+      ;;
+    IDLE)
+      rm -f "$MANUAL_STOP" "$ACTIVE_LANDSCAPE" "$ACTIVE_PORTRAIT"
+      ;;
+    MANUAL)
+      if stream_is_running && [[ ! -f "$ACTIVE_LANDSCAPE" && ! -f "$ACTIVE_PORTRAIT" ]]; then
+        touch "$ACTIVE_LANDSCAPE"
+      fi
+      ;;
+  esac
+}
+
 while true; do
+  if youtube_schedule_enabled; then
+    youtube_schedule_tick
+    sleep "$CHECK_INTERVAL"
+    continue
+  fi
+  rm -f "$YOUTUBE_OWNER"
   ACTIVE_STREAMS=""
   if ACTIVE_STREAMS=$(get_active_streams); then
     # Inside a schedule window — clear any manual override (schedule takes over)
@@ -161,7 +215,7 @@ while true; do
     update_stream_signals "$ACTIVE_STREAMS"
 
     # Respect manual stop — user explicitly stopped during this window
-    if [[ -f "$MANUAL_STOP" ]]; then
+    if [[ -f "$MANUAL_STOP" || -f "$QUEUE_HOLD" ]]; then
       :
     elif ! stream_is_running; then
       echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) Schedule active (streams: $ACTIVE_STREAMS) — starting streamer..."

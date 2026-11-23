@@ -261,6 +261,71 @@ sudo /usr/local/bin/schedule-sync.sh
 
 ---
 
+## YouTube-driven scheduling (on-prem only)
+
+In local mode, **Schedule > YouTube-driven scheduling** can replace weekly schedules/overrides with scheduled YouTube Studio broadcasts. Configure exact title rules (case and extra whitespace are ignored), a landscape or portrait output, and a fallback duration. The default fallback is **eight hours after the scheduled start**; a valid YouTube scheduled end takes precedence. The existing saved playlist/resume position is used, without modifying the library.
+
+This integration is **read-only**. In Studio, bind each event to the output's configured stream key and enable **Auto-start and Auto-stop**. Local RTMP starts at the due time; YouTube goes live after receiving the input. Local checks, media opening/Blobfuse, and YouTube processing introduce delay, so publication is not frame-accurate.
+
+**Important:** Auto-stop can irreversibly end the broadcast after roughly a minute without input. A long per-sermon reconnect, encoder retry, or network/storage outage may therefore end an eight-hour show prematurely. Use an unlisted multi-sermon trial before enabling production scheduling. This does not introduce a continuous encoder or write-enabled lifecycle control.
+
+### One-time read-only authorization
+
+The host must already have the local installation, be awake/network-connected, and have its media mount ready. Do not run the dedicated-host installer blindly on a shared kiosk.
+
+1. Enable the YouTube Data API in your Google Cloud project. Create an OAuth **Desktop app** client and download its client JSON outside the repository.
+2. Configure the consent screen for unattended use. External applications left in **Testing** generally receive refresh authorizations that expire after seven days for these scopes; review Google's publishing/verification requirements. Tokens can also be revoked or expire later.
+3. On the installed Linux host, create an isolated environment and install the declared OAuth dependencies. `python3-venv` must be available:
+
+```bash
+sudo python3 -m venv /etc/yt/youtube-venv
+sudo /etc/yt/youtube-venv/bin/pip install -r /opt/yt/services/scheduler/youtube-requirements.txt
+sudo /etc/yt/youtube-venv/bin/python /usr/local/bin/youtube-schedule.py authorize --client-file /path/to/client.json
+```
+
+For a headless host, first establish SSH forwarding from the browser workstation:
+
+```bash
+ssh -L 8765:127.0.0.1:8765 your-user@your-streamer-host
+```
+
+Run authorization on the host and open the printed Google authorization URL in the workstation browser. The callback listens only on host loopback port 8765. Choose the intended channel/Brand Account. Credentials are saved with mode 0600 under `/etc/yt/secrets/youtube-oauth.json`; never commit or share either credential JSON. The application requests only `youtube.readonly`.
+
+4. Enter the authorized channel ID and title/output rules in the schedule UI. Set the configured landscape/portrait keys using the existing stream-key UI. Stop the streamer before switching schedule sources, then switch to YouTube and verify the preview.
+5. Local installation/updating installs `youtube-sync.service` and enables `youtube-sync.timer`. The timer runs approximately once per minute; it skips until the OAuth environment/credentials exist and the source is enabled. The existing scheduler checks local windows every 30 seconds.
+
+```bash
+sudo systemctl status youtube-sync.timer
+sudo journalctl -u youtube-sync.service -n 50
+```
+
+The preview shows channel lifecycle separately from encoder health, matching windows, validation errors, and discovery freshness. Refresh Preview reads the latest cache; it does not force more Google requests. Requests are bounded, paginated, backed off on errors, and locally capped at 8,000/day using YouTube's Pacific-time reset boundary. This cap is not knowledge of other applications' use of the project's quota.
+
+### Scheduling safeguards
+
+- No new starts from discovery older than ten minutes, or more than ten minutes after the scheduled start. An already-owned session retains its end deadline during discovery failures. The deadline is a **hard stop**, even mid-sermon.
+- Manual start remains a manual session; automatic deadlines do not stop it. Manual stop and explicit-empty queue hold win. A stopped/completed event is suppressed rather than repeatedly relaunched.
+- A confirmed completed/revoked/deleted event ends only its owned local session. An API failure never means cancellation. Source/rule changes invalidate the discovery cache.
+- Wrong channels/keys, missing readiness/Auto-start/Auto-stop, and ambiguous bindings are rejected. **Other upcoming/active events sharing the same ingestion key can also auto-start**, so they block eligibility even if their titles/times differ. Arrange dedicated bindings or keep only the intended auto-start event on that key.
+- Paired landscape/portrait events must have distinct validated keys and identical windows. Same-output overlaps and staggered dual-output windows are rejected; outputs still share one saved video rotation.
+- Disable YouTube mode to return to the preserved weekly schedule/overrides. No VM power operations are added in local mode.
+
+Derived snapshots/status/quota accounting live under `/etc/yt/youtube-*.json`; temporary ownership/suppression lives under `/run/streamer-youtube-owner.json`. Restarting the backend does not reset ownership. After a reboot, stale discovery cannot launch an event, and an already-live unrelated broadcast is not taken over.
+
+Focused offline verification:
+
+```bash
+python3 tools/test-youtube-schedule.py
+node tools/test-streamer-state.js
+bash tools/test-streamer-skip.sh
+```
+
+### Deferred Azure extension
+
+A deallocated VM cannot discover new broadcasts. An independent **timer-triggered Azure Function**, or scheduled Automation watcher runbook, could reuse the eligibility rules and reconcile one-time VM start/deallocate runbooks. It must also publish dated streaming windows to durable storage for the VM's scheduler to obtain after boot; updating power schedules alone is insufficient.
+
+That external controller needs protected Google OAuth credentials plus its own narrowly scoped Azure managed identity. VM power windows must be the union of all valid events with measured boot/mount lead time and stop padding. It must preserve manual sessions and unrelated schedules, reconcile cancellations idempotently, and replace rather than compete with the VM's existing `schedule-sync` power-schedule owner. No Function code, cloud infrastructure, or deployment is included here.
+
 ## Cost Model
 
 All costs approximate (West US 2, pay-as-you-go, 2026 pricing):
@@ -348,17 +413,31 @@ The web UI is protected by HTTP basic auth. Credentials are set during deploymen
 
 | Card | Description |
 |---|---|
-| **Streamer** | Live status indicator (green/grey dot), stream uptime, now-playing title with progress bar, up-next queue, manual Start / Stop / Stop After Current / Skip buttons |
+| **Streamer** | Live status, measured playback progress/health, temporary drag-and-drop upcoming queue, acknowledged Queue Next / Play Now / Skip, and manual start/stop controls |
 | **Service Health** | At-a-glance status of all 6 systemd units (streamer, scheduler, schedule-sync, caddy, web-backend, blobfuse2) |
 | **Schedule** | Next start/stop times, event table, inline editor to add/remove/edit events with day-of-week checkboxes and timezone |
 | **System** | VM uptime, memory usage, disk usage |
 | **Storage** | Video file count and total size on the blobfuse2 mount |
 | **Stream Key** | Update the YouTube stream key stored in Key Vault (takes effect on next stream start) |
 | **Stream Settings** | Max resolution selector (144p–2160p), shuffle toggle, watermark (lower-third title) toggle |
-| **Playlist** | Touch-friendly drag-and-drop reorder (SortableJS), confirmed Play Next actions, per-video enable/disable checkboxes, inline title editing, search filter, Select All / Deselect All, sort by name / sort by date / shuffle buttons, and active queue/overlay updates on save |
+| **Saved Playlist** | Permanent order, enabled videos and titles, search and sorting; saving leaves the live upcoming queue unchanged |
 | **Logs** | Service log viewer with service selector (streamer, scheduler, schedule-sync, caddy, web-backend, blobfuse2), configurable line count (50–500), dark terminal-style output |
 | **Update** | Two-step update: check for changes first, then apply — re-deploys changed scripts, units, and frontend files without interrupting a live stream. Auto-reloads frontend after successful update |
 | **Deployment Info** | JSON dump of prefix, storage account, automation account, key vault, and hostname |
+
+### Live queue behavior
+
+Queue Next, drag reorder, and removal change only the upcoming pass; the current sermon keeps playing. Play Now asks for confirmation, interrupts only the current ffmpeg child, and briefly reconnects RTMP. The requested video then returns to the ordinary upcoming queue, omitting the interrupted sermon and the request's previous pending occurrence.
+
+Natural queue exhaustion refills from the saved playlist. Explicitly clearing the queue instead finishes the current sermon and stops, with a transient hold that prevents scheduled starts until manual Start. Restart and VM reboot discard temporary queue edits/requests and restore saved/bookmarked ordering; backend restart alone preserves the playback session. A reboot also clears the empty-queue hold.
+
+Restore Saved Queue applies the saved ordering to upcoming playback without interrupting the current sermon. Removing a sermon is temporary; disable it in Saved Playlist to exclude it from future refills. Saving the library updates future refills but does not silently replace pending live edits.
+
+Action acceptance is not proof of playback. The UI waits for player acknowledgement; Play Now and Skip require fresh encoder progress on the selected next video. Conflicting edits reload actual state. Unknown or unconfirmed results do not mean success.
+
+Live status uses authenticated same-origin SSE with polling fallback. Encoder health is report-only: measured progress, sustained speed, startup grace, and sample freshness distinguish healthy/slow/stalled/unknown. The UI shows sample age and uncertainty reasons. Encoder/reader process-start identities distinguish a running encoder with missing progress from a failed telemetry reader or reused PID; completed videos are not reported as stalls. Telemetry uses a small loopback UDP reader so reader failure cannot block ffmpeg. No extra encoder, GPU, or recovery policy is added.
+
+For an installed-host update, deploy backend, streamer, helper, and scheduler together and deliberately restart the streamer with the updater's `--restart-streamer` option. The default updater still does not interrupt playback. New live controls remain unavailable until an updated player is running, and restart resets session edits.
 
 ### API Endpoints
 
@@ -368,6 +447,10 @@ All endpoints are served under `/api/` and require authentication.
 |---|---|---|
 | `GET` | `/api/info` | Deployment metadata |
 | `GET` | `/api/streamer` | Streamer status, uptime, now-playing, up-next |
+| `GET` | `/api/streamer/events` | Advisory SSE snapshots; refresh authoritative status on reconnect |
+| `GET` | `/api/streamer/queue` | Applied session queue, revision, pending action and recent acknowledgements |
+| `POST` | `/api/streamer/queue` | Submit `replace`, `next`, `now`, `reset` or `skip` with `id`, `session`, `revision`, and `files`/`file` as applicable; acceptance returns HTTP 202 |
+| `GET` | `/api/streamer/actions/{id}` | Player acknowledgement; missing/session-ended actions are unconfirmed |
 | `POST` | `/api/streamer/start` | Start the streamer service |
 | `POST` | `/api/streamer/stop` | Stop the streamer service |
 | `POST` | `/api/streamer/skip` | Skip to the next video (kills current ffmpeg) |
@@ -378,11 +461,12 @@ All endpoints are served under `/api/` and require authentication.
 | `GET` | `/api/settings` | Read max_resolution and shuffle from schedule.json |
 | `PUT` | `/api/settings` | Update max_resolution and shuffle |
 | `GET` | `/api/videos` | List videos with enabled/order from playlist config |
-| `PUT` | `/api/videos` | Save playlist config, optionally move a video next, and update the active queue/overlay |
+| `PUT` | `/api/videos` | Save playlist config; `applyToLive: false` saves only (used by the UI); legacy callers can also request live application |
 | `GET` | `/api/health` | Systemd unit states for all services |
 | `GET` | `/api/logs` | Journalctl output for a given service (query: `service`, `lines`) |
 | `GET` | `/api/schedule` | Read schedule with next start/stop times |
-| `PUT` | `/api/schedule` | Update schedule.json and immediately sync to Azure Automation |
+| `GET` | `/api/schedule/youtube` | Cached read-only eligibility/lifecycle/freshness preview; no credentials or ingestion keys |
+| `PUT` | `/api/schedule` | Update schedule.json; Azure mode syncs Automation, local mode supports opt-in `scheduleSource: "youtube"` and `youtube: {channelId, rules: [{title, profile, durationSeconds}]}` |
 | `POST` | `/api/update/check` | Fetch latest from GitHub and report what would change |
 | `GET` | `/api/storage` | Video file count and total size |
 | `GET` | `/api/system` | VM uptime, memory, and disk stats |

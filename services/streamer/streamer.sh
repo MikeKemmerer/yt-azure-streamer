@@ -36,7 +36,24 @@ STOP_SIGNAL="/run/streamer-stop-after-current"
 RESTART_SIGNAL="/run/streamer-restart-requested"
 MANUAL_STOP="/run/streamer-manual-stop"
 MANUAL_OVERRIDE="/run/streamer-manual-override"
-rm -f "$SKIP_SIGNAL"
+CONTROL_HELPER="/usr/local/bin/streamer-control.py"
+CONTROL_REQUEST="/run/streamer-control-request.json"
+ON_AIR_SIGNAL="/run/streamer-onair.json"
+QUEUE_HOLD="/run/streamer-queue-hold"
+PROGRESS_PORT_FILE="/run/streamer-progress-port.txt"
+CONTROL_ENABLED=true
+TELEMETRY_PID=""
+playback_control() { python3 "$CONTROL_HELPER" "$@"; }
+cleanup_telemetry() {
+  if [[ -n "$TELEMETRY_PID" ]]; then
+    kill -TERM "$TELEMETRY_PID" 2>/dev/null || true
+    wait "$TELEMETRY_PID" 2>/dev/null || true
+    TELEMETRY_PID=""
+  fi
+  rm -f "$PROGRESS_PORT_FILE"
+}
+trap cleanup_telemetry EXIT
+rm -f "$SKIP_SIGNAL" "$QUEUE_HOLD"
 
 # --- Resolution lookup tables ---
 declare -A RES_HEIGHT=(
@@ -256,20 +273,6 @@ if [[ $NUM_VIDEOS -eq 0 ]]; then
 fi
 echo "Playlist: $NUM_VIDEOS videos"
 
-# Freeze the exact in-memory order for the dashboard. Regenerating the saved
-# playlist while streaming must not change the displayed queue until restart.
-python3 - "$RUNTIME_PLAYLIST_FILE" "${VIDEOS[@]}" <<'PY'
-import json
-import os
-import sys
-
-path = sys.argv[1]
-temporary = path + ".tmp"
-with open(temporary, "w", encoding="utf-8") as output:
-    json.dump(sys.argv[2:], output)
-os.replace(temporary, path)
-PY
-
 # --- Read bookmark ---
 START_INDEX=0
 if [[ -f "$STATE_FILE" ]]; then
@@ -323,8 +326,15 @@ SCALE_FILTER="scale=-2:'min(ih,${MAX_H})':force_original_aspect_ratio=decrease"
 
 # --- Stream loop ---
 INDEX=$START_INDEX
+mapfile -t CONTROL_PLAYBACK < <(playback_control init --index "$START_INDEX" --owner "$$" --video-dir "$VIDEO_DIR")
+if [[ ${#CONTROL_PLAYBACK[@]} -ne 3 ]]; then
+  echo "ERROR: Could not initialize playback controls"
+  exit 1
+fi
 while true; do
-  VIDEO="${VIDEOS[$INDEX]}"
+  VIDEO="${CONTROL_PLAYBACK[0]}"
+  CURRENT_ORDINARY="${CONTROL_PLAYBACK[1]}"
+  INDEX="${CONTROL_PLAYBACK[2]}"
   BASENAME=$(basename "$VIDEO")
   TITLE="${BASENAME%.*}"  # filename without extension (default)
 
@@ -699,13 +709,43 @@ ${AUDIO_FILTER}"
   fi
 
   # Always re-encode at 30 fps CFR with a fixed two-second GOP.
+  PROGRESS_ARGS=()
+  if [[ "${CONTROL_ENABLED:-false}" == true ]]; then
+    GENERATION=$(playback_control prepare)
+    : > "$PROGRESS_PORT_FILE"
+    playback_control telemetry --generation "$GENERATION" > "$PROGRESS_PORT_FILE" &
+    TELEMETRY_PID=$!
+    PROGRESS_PORT=""
+    for attempt in {1..20}; do
+      read -r PROGRESS_PORT < "$PROGRESS_PORT_FILE" || true
+      if [[ "$PROGRESS_PORT" =~ ^[0-9]+$ ]]; then
+        PROGRESS_ARGS=(-progress "udp://127.0.0.1:${PROGRESS_PORT}?pkt_size=1024&connect=0")
+        break
+      fi
+      sleep 0.05
+    done
+  fi
   set +e
   ffmpeg -y -re -i "$VIDEO" "${EXTRA_INPUTS[@]}" \
+    "${PROGRESS_ARGS[@]}" \
     -filter_complex "$FILTER_COMPLEX" \
     "${OUTPUT_ARGS[@]}" </dev/null &
   FFMPEG_PID=$!
+  if [[ "${CONTROL_ENABLED:-false}" == true ]]; then
+    playback_control launched --encoder-pid "$FFMPEG_PID" --telemetry-pid "${TELEMETRY_PID:-0}" || true
+  fi
   SKIPPED=false
   while kill -0 "$FFMPEG_PID" 2>/dev/null; do
+    if [[ "${CONTROL_ENABLED:-false}" == true && -f "$CONTROL_REQUEST" ]]; then
+      if [[ "$(playback_control command)" == interrupt ]]; then
+        SKIPPED=true
+        kill -TERM "$FFMPEG_PID" 2>/dev/null
+        break
+      fi
+    fi
+    if [[ "${CONTROL_ENABLED:-false}" == true && -f "$ON_AIR_SIGNAL" ]]; then
+      playback_control confirm || true
+    fi
     if [[ -f "$SKIP_SIGNAL" ]]; then
       rm -f "$SKIP_SIGNAL"
       SKIPPED=true
@@ -717,6 +757,14 @@ ${AUDIO_FILTER}"
   wait "$FFMPEG_PID"
   FFMPEG_STATUS=$?
   set -e
+  if [[ "${CONTROL_ENABLED:-false}" == true ]]; then cleanup_telemetry; fi
+
+  if [[ "${CONTROL_ENABLED:-false}" == true && -f "$ON_AIR_SIGNAL" ]]; then
+    playback_control confirm || true
+  fi
+  if [[ "${CONTROL_ENABLED:-false}" == true && -f "$CONTROL_REQUEST" ]]; then
+    if [[ "$(playback_control command)" == interrupt ]]; then SKIPPED=true; fi
+  fi
 
   # Consume a request that arrived just as ffmpeg finished.
   if [[ -f "$SKIP_SIGNAL" ]]; then
@@ -736,7 +784,7 @@ ${AUDIO_FILTER}"
   fi
 
   # Failed playback must retain its bookmark so a restart retries the same video.
-  if [[ $FFMPEG_STATUS -eq 0 || "$SKIPPED" == true ]]; then
+  if [[ ( $FFMPEG_STATUS -eq 0 || "$SKIPPED" == true ) && "${CURRENT_ORDINARY:-true}" == true ]]; then
     python3 -c "
 import json, os, sys
 temporary = '$STATE_FILE.tmp'
@@ -764,38 +812,17 @@ os.replace(temporary, '$STATE_FILE')
   fi
 
   # Adopt playlist changes only after the current video finishes.
-  UPDATED_VIDEOS=()
-  if [[ -f "$RUNTIME_PLAYLIST_FILE" ]]; then
-    mapfile -t UPDATED_VIDEOS < <(python3 - "$RUNTIME_PLAYLIST_FILE" <<'PY'
-import json
-import os
-import sys
-
-try:
-    playlist = json.load(open(sys.argv[1], encoding="utf-8"))
-    for item in playlist:
-        if isinstance(item, str) and os.path.isfile(item):
-            print(item)
-except (OSError, TypeError, ValueError):
-    pass
-PY
-)
+  mapfile -t CONTROL_PLAYBACK < <(playback_control next)
+  if [[ "${CONTROL_PLAYBACK[0]:-}" == STOP ]]; then
+    touch "$QUEUE_HOLD"
+    rm -f "$MANUAL_OVERRIDE"
+    echo "Upcoming queue exhausted by operator — stopping until manual start."
+    systemctl stop --no-block streamer.service
+    exit 0
   fi
-
-  if [[ ${#UPDATED_VIDEOS[@]} -gt 0 ]]; then
-    NEXT_INDEX=0
-    for i in "${!UPDATED_VIDEOS[@]}"; do
-      if [[ "${UPDATED_VIDEOS[$i]}" == "$VIDEO" ]]; then
-        NEXT_INDEX=$(( (i + 1) % ${#UPDATED_VIDEOS[@]} ))
-        break
-      fi
-    done
-    VIDEOS=("${UPDATED_VIDEOS[@]}")
-    NUM_VIDEOS=${#VIDEOS[@]}
-    INDEX=$NEXT_INDEX
-    echo "  Reloaded active playlist: $NUM_VIDEOS videos, next index $INDEX"
-  else
-    INDEX=$(( (INDEX + 1) % NUM_VIDEOS ))
+  if [[ ${#CONTROL_PLAYBACK[@]} -ne 3 ]]; then
+    echo "ERROR: Could not select the next video"
+    exit 1
   fi
 done
 

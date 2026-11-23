@@ -61,13 +61,26 @@ async function loadInfo() {
 let progressState = { elapsed: 0, duration: 0, lastSync: 0 };
 let progressInterval = null;
 let lastVideoEndRefresh = 0;
+let liveQueue = { ready: false, items: [], actions: [] };
+let pendingQueueAction = null;
+let queueSortable = null;
+let queueDragging = false;
+let renderedQueue = '';
+let liveEventsConnected = false;
+let lastPreviewRefresh = 0;
+let lastPreviewFile = '';
+let liveCurrentFile = '';
+let liveQueueHold = false;
 
 function startProgressTicker() {
   if (progressInterval) return;
   progressInterval = setInterval(() => {
     if (progressState.duration <= 0) return;
     const now = Date.now();
-    const elapsed = progressState.elapsed + (now - progressState.lastSync) / 1000;
+    const sinceSync = (now - progressState.lastSync) / 1000;
+    const elapsed = progressState.elapsed + (progressState.measured
+      ? progressState.advancing ? Math.min(sinceSync, 3) * (progressState.speed || 1) : 0
+      : sinceSync);
     const clamped = Math.min(elapsed, progressState.duration);
     const pct = Math.min(100, (clamped / progressState.duration) * 100);
     document.getElementById('progress-bar').style.width = pct + '%';
@@ -86,7 +99,13 @@ function stopProgressTicker() {
 
 async function refreshStreamerStatus() {
   try {
-    const data = await api('/api/streamer');
+    renderStreamerStatus(await api('/api/streamer'));
+  } catch {
+    document.getElementById('streamer-label').textContent = 'Unknown';
+  }
+}
+
+function renderStreamerStatus(data) {
     const indicator = document.getElementById('streamer-indicator');
     const label = document.getElementById('streamer-label');
     const uptimeEl = document.getElementById('streamer-uptime');
@@ -107,9 +126,17 @@ async function refreshStreamerStatus() {
     const previewPort = document.getElementById('preview-img-portrait');
 
     indicator.className = 'indicator ' + (data.active ? 'on' : 'off');
-    label.textContent = data.active ? 'Streaming' : 'Stopped';
+    label.textContent = data.state === 'unknown' ? 'Unknown' : data.active ? 'Streaming' : 'Stopped';
+    document.getElementById('playback-health').textContent = 'Playback: ' +
+      (data.playbackHealth ? data.playbackHealth.status : 'unknown') +
+      (data.playbackHealth && Number.isFinite(data.playbackHealth.speed)
+        ? ` (${data.playbackHealth.speed.toFixed(2)}x)` : '') +
+      (data.playbackHealth && Number.isFinite(data.playbackHealth.age)
+        ? ` - sample ${Math.floor(data.playbackHealth.age)}s old` : '') +
+      (data.playbackHealth && data.playbackHealth.reason ? ` - ${data.playbackHealth.reason}` : '');
+    renderLiveQueue(data.queue || { ready: false, items: [], actions: [] }, data.nowFile, data.queueHold);
     uptimeEl.textContent = data.active && data.uptimeSeconds ? '(' + fmtDuration(data.uptimeSeconds) + ')' : '';
-    startBtn.disabled = data.active;
+    startBtn.disabled = data.active || data.state === 'unknown';
     stopBtn.disabled = !data.active;
     document.getElementById('streamer-skip').disabled = !data.active;
     const stopAfterBtn = document.getElementById('streamer-stop-after');
@@ -132,11 +159,13 @@ async function refreshStreamerStatus() {
         activeStreamsEl.style.display = '';
         const hasLand = data.activeStreams.landscape;
         const hasPort = data.activeStreams.portrait;
+        const hadLand = landBadge.style.display !== 'none';
+        const hadPort = portBadge.style.display !== 'none';
         landBadge.style.display = hasLand ? '' : 'none';
         portBadge.style.display = hasPort ? '' : 'none';
         // Default: show all active previews
-        if (hasLand) landBadge.classList.add('active');
-        if (hasPort) portBadge.classList.add('active');
+        if (hasLand && !hadLand) landBadge.classList.add('active');
+        if (hasPort && !hadPort) portBadge.classList.add('active');
         // Click toggles which preview is visible
         landBadge.onclick = () => {
           landBadge.classList.toggle('active');
@@ -151,7 +180,7 @@ async function refreshStreamerStatus() {
       }
       // Progress + preview
       if (data.progress && data.progress.duration > 0) {
-        progressState = { elapsed: data.progress.elapsed, duration: data.progress.duration, lastSync: Date.now() };
+        progressState = { ...data.progress, lastSync: Date.now() };
         const pct = Math.min(100, (data.progress.elapsed / data.progress.duration) * 100);
         progressBar.style.width = pct + '%';
         progressElapsed.textContent = fmtDuration(data.progress.elapsed);
@@ -166,22 +195,27 @@ async function refreshStreamerStatus() {
       }
       // Load preview images for active streams
       const ts = Date.now();
+      const refreshPreview = ts - lastPreviewRefresh >= 5000 || data.nowFile !== lastPreviewFile;
+      if (refreshPreview) {
+        lastPreviewRefresh = ts;
+        lastPreviewFile = data.nowFile;
+      }
       const showLand = data.activeStreams ? data.activeStreams.landscape : true;
       const showPort = data.activeStreams ? data.activeStreams.portrait : false;
       preview.style.display = '';  // Show container; individual imgs control visibility
-      if (showLand) {
+      if (showLand && refreshPreview) {
         previewLand.src = '/stream-preview.jpg?' + ts;
         previewLand.onload = () => { previewLand.style.display = ''; };
         previewLand.onerror = () => { previewLand.style.display = 'none'; };
-      } else {
+      } else if (!showLand) {
         previewLand.style.display = 'none';
         previewLand.removeAttribute('src');
       }
-      if (showPort) {
+      if (showPort && refreshPreview) {
         previewPort.src = '/stream-preview-portrait.jpg?' + ts;
         previewPort.onload = () => { previewPort.style.display = ''; };
         previewPort.onerror = () => { previewPort.style.display = 'none'; };
-      } else {
+      } else if (!showPort) {
         previewPort.style.display = 'none';
         previewPort.removeAttribute('src');
       }
@@ -209,10 +243,132 @@ async function refreshStreamerStatus() {
     } else {
       upNext.style.display = 'none';
     }
-  } catch {
-    document.getElementById('streamer-label').textContent = 'Unknown';
-  }
 }
+
+function renderLiveQueue(queue, current = liveCurrentFile, hold = liveQueueHold) {
+  liveQueue = queue;
+  liveCurrentFile = current;
+  liveQueueHold = hold;
+  const status = document.getElementById('queue-action-status');
+  if (pendingQueueAction) {
+    const action = (queue.actions || []).find(item => item.id === pendingQueueAction.id);
+    if (action && ['applied', 'rejected', 'unconfirmed'].includes(action.status)) {
+      showStatus(status, action.status === 'applied'
+        ? `${pendingQueueAction.label}: ${action.operation === 'now' || action.operation === 'skip' ? 'confirmed on air' : 'applied'}.`
+        : action.error || 'Action is unconfirmed or rejected.', action.status === 'applied');
+      pendingQueueAction = null;
+    } else if (queue.session !== pendingQueueAction.session ||
+        Date.now() - pendingQueueAction.at > 30000) {
+      showStatus(status, 'Action is unconfirmed; reload actual playback before retrying.', false, true);
+      pendingQueueAction = null;
+    }
+  }
+  const disabled = !queue.ready || !!queue.pending || !!pendingQueueAction;
+  document.getElementById('queue-clear').disabled = disabled;
+  document.getElementById('queue-reset').disabled = disabled;
+  document.querySelectorAll('[data-live-file]').forEach(button => {
+    button.disabled = disabled || button.dataset.liveFile === current;
+  });
+  document.getElementById('queue-description').textContent = hold
+    ? 'Queue was emptied. Start manually to restore the saved playlist.'
+    : !queue.ready ? 'Live queue requires a running, updated streamer.'
+    : queue.explicitEmpty ? 'Current sermon will finish, then streaming will stop until manual start.'
+    : 'Temporary upcoming pass. Natural exhaustion refills from the saved playlist.';
+  const signature = JSON.stringify([queue.session, queue.revision, queue.ready, disabled, queue.items]);
+  if (queueDragging || renderedQueue === signature) return;
+  renderedQueue = signature;
+  const list = document.getElementById('live-queue-list');
+  list.innerHTML = '';
+  for (const item of queue.items || []) {
+    const li = document.createElement('li');
+    li.dataset.file = item.file;
+    const grip = document.createElement('span');
+    grip.className = 'grip';
+    grip.textContent = '::';
+    const title = document.createElement('span');
+    title.className = 'queue-title';
+    title.textContent = item.name || item.file;
+    const remove = document.createElement('button');
+    remove.className = 'secondary';
+    remove.textContent = 'Remove';
+    remove.disabled = disabled;
+    remove.addEventListener('click', () => submitQueueAction('replace', {
+      files: liveQueue.items.filter(queued => queued.file !== item.file).map(queued => queued.file)
+    }, 'Queue removal'));
+    li.append(grip, title, remove);
+    list.appendChild(li);
+  }
+  if (queueSortable) queueSortable.destroy();
+  let expected;
+  queueSortable = new Sortable(list, {
+    handle: '.grip', animation: 150, disabled,
+    onStart() {
+      queueDragging = true;
+      expected = { session: liveQueue.session, revision: liveQueue.revision };
+    },
+    onEnd() {
+      queueDragging = false;
+      const files = [...list.children].map(item => item.dataset.file);
+      renderedQueue = '';
+      submitQueueAction('replace', { files }, 'Queue reorder', expected);
+    }
+  });
+}
+
+async function submitQueueAction(operation, values = {}, label = 'Queue change', expected = liveQueue) {
+  const status = document.getElementById('queue-action-status');
+  if (!liveQueue.ready || pendingQueueAction || liveQueue.pending) {
+    showStatus(status, 'Live controls are unavailable or another action is pending.', false);
+    return;
+  }
+  const id = `ui-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  pendingQueueAction = { id, session: expected.session, at: Date.now(), label };
+  renderLiveQueue(liveQueue);
+  showStatus(status, `${label}: waiting for player acknowledgement...`, true, true);
+  try {
+    await api('/api/streamer/queue', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, operation, session: expected.session, revision: expected.revision, ...values })
+    });
+  } catch (error) {
+    pendingQueueAction = null;
+    showStatus(status, `${error.message} The requested change is not confirmed.`, false, true);
+  }
+  await refreshStreamerStatus();
+}
+
+document.getElementById('queue-clear').addEventListener('click', () => {
+  if (confirm('Remove all upcoming sermons? The current sermon will finish, then streaming will stop until manual start.')) {
+    submitQueueAction('replace', { files: [] }, 'Clear queue');
+  }
+});
+document.getElementById('queue-reset').addEventListener('click', () => {
+  submitQueueAction('reset', {}, 'Restore saved queue');
+});
+
+function connectPlaybackEvents() {
+  if (typeof EventSource === 'undefined') return;
+  const events = new EventSource('/api/streamer/events');
+  events.onopen = () => {
+    liveEventsConnected = true;
+    document.getElementById('live-event-status').textContent = 'Live updates connected';
+    refreshStreamerStatus();
+  };
+  events.addEventListener('snapshot', event => {
+    try { renderStreamerStatus(JSON.parse(event.data)); } catch { refreshStreamerStatus(); }
+  });
+  events.onerror = () => {
+    liveEventsConnected = false;
+    document.getElementById('live-event-status').textContent = 'Live updates disconnected; polling';
+  };
+  window.addEventListener('pagehide', () => {
+    liveEventsConnected = false;
+    events.close();
+  }, { once: true });
+}
+window.addEventListener('pageshow', event => {
+  if (event.persisted) connectPlaybackEvents();
+});
 
 document.getElementById('streamer-start').addEventListener('click', async () => {
   const status = document.getElementById('streamer-action-status');
@@ -235,6 +391,10 @@ document.getElementById('streamer-stop').addEventListener('click', async () => {
 });
 
 document.getElementById('streamer-skip').addEventListener('click', async () => {
+  if (liveQueue.ready) {
+    await submitQueueAction('skip', {}, 'Skip');
+    return;
+  }
   const status = document.getElementById('streamer-action-status');
   try {
     document.getElementById('streamer-skip').disabled = true;
@@ -483,25 +643,23 @@ function renderVideoList(filter) {
 
     const playNextBtn = document.createElement('button');
     playNextBtn.className = 'video-play-next-btn secondary';
-    playNextBtn.textContent = 'Play next';
-    playNextBtn.title = 'Move this video after the current video and save the playlist';
+    playNextBtn.textContent = 'Queue next';
+    playNextBtn.dataset.liveFile = v.file;
+    playNextBtn.disabled = !liveQueue.ready || !!liveQueue.pending || !!pendingQueueAction || v.file === liveCurrentFile;
+    playNextBtn.title = 'Move into the temporary upcoming queue without saving the playlist';
     playNextBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const currentTitle = v.title || v.file.replace(/\.[^.]+$/, '');
-      const confirmed = confirm(`Play "${currentTitle}" next? This will reorder and save the playlist.`);
-      if (!confirmed) return;
-
-      const status = document.getElementById('playlist-status');
-      playNextBtn.disabled = true;
-      try {
-        const result = await savePlaylist(v.file);
-        const suffix = result.runtimeUpdated
-          ? ' Up Next and the live overlay were updated.'
-          : result.runtimePending ? ' The streamer is still starting; save again when Now Playing appears.' : '';
-        showStatus(status, `"${currentTitle}" will play next.${suffix}`, true);
-      } catch (error) {
-        playNextBtn.disabled = false;
-        showStatus(status, error.message, false);
+      await submitQueueAction('next', { file: v.file }, 'Queue next');
+    });
+    const playNowBtn = document.createElement('button');
+    playNowBtn.className = 'video-play-next-btn secondary';
+    playNowBtn.textContent = 'Play now';
+    playNowBtn.dataset.liveFile = v.file;
+    playNowBtn.disabled = playNextBtn.disabled;
+    playNowBtn.addEventListener('click', () => {
+      const title = v.title || v.file.replace(/\.[^.]+$/, '');
+      if (confirm(`Play "${title}" now? This interrupts the current sermon, briefly reconnects the stream, and continues with the next queued sermon afterward.`)) {
+        submitQueueAction('now', { file: v.file }, 'Play now');
       }
     });
 
@@ -509,6 +667,7 @@ function renderVideoList(filter) {
     li.appendChild(cb);
     li.appendChild(nameBlock);
     li.appendChild(playNextBtn);
+    li.appendChild(playNowBtn);
     li.appendChild(num);
 
     list.appendChild(li);
@@ -545,9 +704,8 @@ function renderVideoList(filter) {
   });
 }
 
-async function savePlaylist(playNext) {
-  const body = { videos: videoData };
-  if (playNext) body.playNext = playNext;
+async function savePlaylist() {
+  const body = { videos: videoData, applyToLive: false };
   const result = await api('/api/videos', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -563,10 +721,7 @@ document.getElementById('save-playlist').addEventListener('click', async () => {
   const status = document.getElementById('playlist-status');
   try {
     const result = await savePlaylist();
-    const suffix = result.runtimeUpdated
-      ? ' Up Next and the live overlay were updated.'
-      : result.runtimePending ? ' The streamer is still starting; save again when Now Playing appears.' : '';
-    showStatus(status, `Playlist saved and regenerated.${suffix}`, true);
+    showStatus(status, 'Saved playlist updated. The current live queue is unchanged; use Restore Saved Queue to apply it.', true);
   } catch (e) { showStatus(status, e.message, false); }
 });
 
@@ -759,8 +914,93 @@ async function loadSchedule() {
     renderScheduleEvents();
     renderScheduleEditor();
     renderOverrides(data.overrides || []);
+    youtubeSettings = data.youtube || { channelId: '', rules: [] };
+    document.getElementById('schedule-source').value = data.scheduleSource || 'weekly';
+    document.getElementById('youtube-channel').value = youtubeSettings.channelId;
+    for (const id of ['schedule-source', 'youtube-channel', 'add-youtube-rule', 'save-youtube-schedule']) {
+      document.getElementById(id).disabled = !data.youtubeAvailable;
+    }
+    renderYouTubeRules();
+    loadYouTubePreview();
   } catch {}
 }
+
+let youtubeSettings = { channelId: '', rules: [] };
+
+function collectYouTubeRules() {
+  youtubeSettings = {
+    channelId: document.getElementById('youtube-channel').value.trim(),
+    rules: Array.from(document.querySelectorAll('.youtube-rule')).map(row => ({
+      title: row.querySelector('[data-title]').value,
+      profile: row.querySelector('[data-profile]').value,
+      durationSeconds: Math.round(Number(row.querySelector('[data-hours]').value) * 3600)
+    }))
+  };
+}
+
+function renderYouTubeRules() {
+  const list = document.getElementById('youtube-rule-list');
+  list.innerHTML = youtubeSettings.rules.map((rule, index) => `
+    <div class="youtube-rule">
+      <label>Exact title <input data-title maxlength="200" value="${esc(rule.title)}"></label>
+      <label>Output <select data-profile>
+        <option value="landscape" ${rule.profile === 'landscape' ? 'selected' : ''}>landscape</option>
+        <option value="portrait" ${rule.profile === 'portrait' ? 'selected' : ''}>portrait</option>
+      </select></label>
+      <label>Fallback hours <input data-hours type="number" min="0.017" max="24" step="any" value="${esc(String((rule.durationSeconds || 28800) / 3600))}"></label>
+      <button class="secondary" data-remove-rule="${index}">Remove</button>
+    </div>`).join('');
+  list.querySelectorAll('[data-remove-rule]').forEach(button => button.addEventListener('click', () => {
+    collectYouTubeRules();
+    youtubeSettings.rules.splice(Number(button.dataset.removeRule), 1);
+    renderYouTubeRules();
+  }));
+}
+
+async function loadYouTubePreview() {
+  const status = document.getElementById('youtube-sync-status');
+  try {
+    const data = await api('/api/schedule/youtube');
+    const age = data.ageSeconds === null ? 'no successful snapshot' : `${Math.round(data.ageSeconds / 60)} min old`;
+    status.textContent = !data.available ? 'Available in local mode only.' :
+      `${data.authorized ? 'Credentials configured' : 'Authorization required'}; ${data.fresh ? 'fresh discovery' : 'not eligible for new starts'} (${age}). ${data.sync?.error || ''}`;
+    if (data.available && data.owned) {
+      status.textContent += ` Owned session ${data.owned.stopping ? 'stopping' : `ends ${fmtDate(data.owned.end)}`}.`;
+    }
+    const rows = data.events.map(event => {
+      const feedback = event.errors.length ? event.errors.join('; ') :
+        event.eligible ? 'Eligible' : `Not eligible for a new start (${event.lifecycle || 'unknown'})`;
+      return `<tr><td><a href="https://www.youtube.com/watch?v=${encodeURIComponent(event.id)}" target="_blank" rel="noopener noreferrer">${esc(event.title)}</a></td>
+        <td>${esc(event.profile)}</td><td>${esc(fmtDate(event.start))}</td><td>${esc(fmtDate(event.end))}</td>
+        <td>${esc(event.lifecycle || 'unknown')}; ${esc(feedback)}</td></tr>`;
+    }).join('');
+    document.getElementById('youtube-events').innerHTML = rows ?
+      `<table class="schedule-table"><tr><th>Broadcast</th><th>Output</th><th>Start</th><th>End</th><th>Status</th></tr>${rows}</table>` :
+      '<p class="hint">No matching broadcasts in the last successful discovery.</p>';
+  } catch (error) { status.textContent = error.message; }
+}
+
+document.getElementById('add-youtube-rule').addEventListener('click', () => {
+  collectYouTubeRules();
+  youtubeSettings.rules.push({ title: '', profile: 'landscape', durationSeconds: 28800 });
+  renderYouTubeRules();
+});
+document.getElementById('refresh-youtube-preview').addEventListener('click', loadYouTubePreview);
+document.getElementById('save-youtube-schedule').addEventListener('click', async () => {
+  const button = document.getElementById('save-youtube-schedule');
+  const status = document.getElementById('youtube-save-status');
+  collectYouTubeRules();
+  button.disabled = true;
+  try {
+    await api('/api/schedule', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scheduleSource: document.getElementById('schedule-source').value, youtube: youtubeSettings })
+    });
+    showStatus(status, 'Saved. YouTube discovery runs on the host timer; manual stops and queue hold still take priority.', true);
+    loadSchedule();
+  } catch (error) { showStatus(status, error.message, false); }
+  finally { button.disabled = false; }
+});
 
 function renderScheduleEvents() {
   const el = document.getElementById('schedule-events');
@@ -847,7 +1087,7 @@ document.getElementById('save-schedule').addEventListener('click', async () => {
   const btn = document.getElementById('save-schedule');
   collectScheduleEdits();
   btn.disabled = true;
-  showStatus(status, 'Saving and syncing to Azure\u2026', true, true);
+  showStatus(status, 'Saving schedule\u2026', true, true);
   try {
     const result = await api('/api/schedule', {
       method: 'PUT',
@@ -857,7 +1097,7 @@ document.getElementById('save-schedule').addEventListener('click', async () => {
     if (result.syncError) {
       showStatus(status, `Schedule saved, but Azure sync failed: ${result.syncError}`, false);
     } else {
-      showStatus(status, 'Schedule saved and synced to Azure.', true);
+      showStatus(status, result.mode === 'local' ? 'Schedule saved.' : 'Schedule saved and synced to Azure.', true);
     }
     loadSchedule();
   } catch (e) { showStatus(status, e.message, false); }
@@ -1348,6 +1588,8 @@ loadSchedule();
 loadSystem();
 loadStorage();
 
-setInterval(() => { refreshStreamerStatus(); }, 5000);
+connectPlaybackEvents();
+setInterval(() => { if (!liveEventsConnected) refreshStreamerStatus(); }, 5000);
 setInterval(() => { loadHealth(); }, 10000);
 setInterval(() => { loadSystem(); loadStorage(); }, 60000);
+setInterval(loadYouTubePreview, 60000);
