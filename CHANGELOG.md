@@ -6,6 +6,9 @@
 
 ### Features
 
+- **Play Next playlist action** — each playlist item can be confirmed as the
+	next video. The action enables and moves it after the current item, saves the
+	playlist, and updates the dashboard and live video overlay immediately.
 - **Stop After Current** — new button in the Streamer card that gracefully stops the stream after the current video finishes (no mid-stream cut). Toggles to "Cancel" when a stop is pending.
 - **Immediate schedule sync** — saving the schedule from the web UI now triggers `schedule-sync.sh` immediately instead of waiting up to 10 minutes for the timer.
 - **Diff-based schedule sync** — `schedule-sync.sh` now fetches existing Azure Automation schedules first and only creates/updates/deletes what actually changed. Unchanged schedules are left alone, making saves near-instant.
@@ -31,6 +34,28 @@
 
 ### Fixes
 
+- **Active playlist saves** — saving a changed playlist now updates the running
+	queue and dashboard Up Next list without interrupting the current video. The
+	streamer adopts the new order when the current video completes.
+- **Static-video audio continuity** — pace duplicated frames in real time before
+	FLV muxing and rebase/resample audio onto a continuous 44.1 kHz clock. This
+	prevents choppy YouTube audio from historical 1 fps videos with 96 kHz AAC.
+- **Static-video YouTube ingest** — normalize every landscape and portrait RTMP
+	output to 30 fps CFR, strict resolution-specific CBR with x264 HRD filler,
+	and fixed two-second GOPs. Historical 1 fps cover-art videos now produce a
+	steady ingest stream instead of retaining their sparse source cadence.
+- **Branch-switch updates** — capture the previous commit before checkout and
+	finish deploying all changed files after self-updating. Selecting a new branch
+	no longer exits early while leaving `/usr/local/bin` on the old code.
+- **Now-playing queue accuracy** — publish the streamer's frozen in-memory
+	playlist and use it with the atomic now-playing file while active. Playlist
+	edits and stale bookmarks no longer change the displayed queue or predict the
+	wrong next video.
+- **Failed-output playlist skipping** — retry the same video after an FFmpeg or
+	RTMP failure instead of bookmarking it and racing through the entire queue.
+- **Manual dual-stream signals** — preserve explicitly selected output signals
+	outside scheduled windows so the scheduler does not leave a manually started
+	stream with no output.
 - **jobSchedule ID lookup** — Azure jobSchedules API returns the GUID in `properties.jobScheduleId`, not a top-level `name` field.
 - **Duplicate `esc()` function** — removed redundant declaration that shadowed the global helper.
 - **Apostrophes in filenames** — ffmpeg concat playlist escaping now handles single quotes correctly.

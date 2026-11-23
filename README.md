@@ -218,7 +218,25 @@ Edit `/etc/yt/schedule.json` on the VM to define when streams happen:
 
 **Resolution behavior:** Videos at or below `max_resolution` are passed through without re-encoding. Videos above it are downscaled. Videos are never upsampled.
 
-**Encoding details:** The streamer uses `libx264` with `veryfast` preset and forced keyframes every 2 seconds (`-force_key_frames "expr:gte(t,n_forced*2)"`). This satisfies YouTube's requirement of keyframe interval ≤ 4 seconds for stable ingest.
+**Encoding details:** Every RTMP output is normalized to 30 fps CFR before the
+landscape/portrait split. This duplicates frames from sparse sources such as the
+historical 1 fps static-image videos without spatially upscaling them. Each
+output uses `libx264` with the `veryfast` preset, its resolution-specific target
+as `b:v`, `minrate`, and `maxrate`, x264 CBR HRD filler, and a fixed 60-frame
+(two-second) GOP with scene-cut keyframes disabled. This keeps frame cadence,
+bitrate, and keyframe delivery stable for YouTube ingest even when the picture
+does not change.
+
+Run the offline cadence/CBR regression test with:
+
+```bash
+bash tools/test-static-video-cfr.sh
+```
+
+The test generates temporary 1 fps fixtures with audio and generated silence,
+plus a normal 30 fps control. It validates simultaneous landscape and portrait
+FLV outputs for frame count, timestamps, audio, CBR packet windows, and
+two-second keyframes, then removes all generated media.
 
 **Shuffle behavior:** When `shuffle` is `true`, the playlist is randomized instead of sorted. The random order is written to disk and preserved across streamer restarts — it only changes when the playlist is regenerated (i.e. when the streamer is started fresh after new files are added or removed).
 
@@ -337,7 +355,7 @@ The web UI is protected by HTTP basic auth. Credentials are set during deploymen
 | **Storage** | Video file count and total size on the blobfuse2 mount |
 | **Stream Key** | Update the YouTube stream key stored in Key Vault (takes effect on next stream start) |
 | **Stream Settings** | Max resolution selector (144p–2160p), shuffle toggle, watermark (lower-third title) toggle |
-| **Playlist** | Touch-friendly drag-and-drop reorder (SortableJS), per-video enable/disable checkboxes, inline title editing, search filter, Select All / Deselect All, sort by name / sort by date / shuffle buttons, instant playlist regeneration on save |
+| **Playlist** | Touch-friendly drag-and-drop reorder (SortableJS), confirmed Play Next actions, per-video enable/disable checkboxes, inline title editing, search filter, Select All / Deselect All, sort by name / sort by date / shuffle buttons, and active queue/overlay updates on save |
 | **Logs** | Service log viewer with service selector (streamer, scheduler, schedule-sync, caddy, web-backend, blobfuse2), configurable line count (50–500), dark terminal-style output |
 | **Update** | Two-step update: check for changes first, then apply — re-deploys changed scripts, units, and frontend files without interrupting a live stream. Auto-reloads frontend after successful update |
 | **Deployment Info** | JSON dump of prefix, storage account, automation account, key vault, and hostname |
@@ -360,7 +378,7 @@ All endpoints are served under `/api/` and require authentication.
 | `GET` | `/api/settings` | Read max_resolution and shuffle from schedule.json |
 | `PUT` | `/api/settings` | Update max_resolution and shuffle |
 | `GET` | `/api/videos` | List videos with enabled/order from playlist config |
-| `PUT` | `/api/videos` | Save playlist config and regenerate ffmpeg playlist |
+| `PUT` | `/api/videos` | Save playlist config, optionally move a video next, and update the active queue/overlay |
 | `GET` | `/api/health` | Systemd unit states for all services |
 | `GET` | `/api/logs` | Journalctl output for a given service (query: `service`, `lines`) |
 | `GET` | `/api/schedule` | Read schedule with next start/stop times |

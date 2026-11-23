@@ -47,6 +47,10 @@ async function loadInfo() {
     if (versionEl && data.version) {
       versionEl.textContent = `${data.branch || 'main'} @ ${data.version}`;
     }
+    // Show VM controls only in Azure mode
+    if (data.mode === 'azure') {
+      document.getElementById('vm-controls').style.display = '';
+    }
   } catch {
     document.getElementById('info').textContent = 'Error loading info';
   }
@@ -99,7 +103,8 @@ async function refreshStreamerStatus() {
     const upNextLabel = document.getElementById('up-next-label');
     const upNextList = document.getElementById('up-next-list');
     const preview = document.getElementById('stream-preview');
-    const previewImg = document.getElementById('preview-img');
+    const previewLand = document.getElementById('preview-img-landscape');
+    const previewPort = document.getElementById('preview-img-portrait');
 
     indicator.className = 'indicator ' + (data.active ? 'on' : 'off');
     label.textContent = data.active ? 'Streaming' : 'Stopped';
@@ -119,6 +124,31 @@ async function refreshStreamerStatus() {
     if (data.active && data.nowPlaying) {
       nowTitle.textContent = data.nowPlaying;
       nowPlaying.style.display = '';
+      // Active stream badges — clickable to toggle preview
+      const activeStreamsEl = document.getElementById('active-streams');
+      const landBadge = document.getElementById('stream-badge-landscape');
+      const portBadge = document.getElementById('stream-badge-portrait');
+      if (data.activeStreams) {
+        activeStreamsEl.style.display = '';
+        const hasLand = data.activeStreams.landscape;
+        const hasPort = data.activeStreams.portrait;
+        landBadge.style.display = hasLand ? '' : 'none';
+        portBadge.style.display = hasPort ? '' : 'none';
+        // Default: show all active previews
+        if (hasLand) landBadge.classList.add('active');
+        if (hasPort) portBadge.classList.add('active');
+        // Click toggles which preview is visible
+        landBadge.onclick = () => {
+          landBadge.classList.toggle('active');
+          previewLand.style.display = landBadge.classList.contains('active') && previewLand.src ? '' : 'none';
+        };
+        portBadge.onclick = () => {
+          portBadge.classList.toggle('active');
+          previewPort.style.display = portBadge.classList.contains('active') && previewPort.src ? '' : 'none';
+        };
+      } else {
+        activeStreamsEl.style.display = 'none';
+      }
       // Progress + preview
       if (data.progress && data.progress.duration > 0) {
         progressState = { elapsed: data.progress.elapsed, duration: data.progress.duration, lastSync: Date.now() };
@@ -134,14 +164,33 @@ async function refreshStreamerStatus() {
         progressTime.style.display = 'none';
         stopProgressTicker();
       }
-      previewImg.src = '/stream-preview.jpg?' + Date.now();
-      previewImg.onload = () => { preview.style.display = ''; };
-      previewImg.onerror = () => { preview.style.display = 'none'; };
+      // Load preview images for active streams
+      const ts = Date.now();
+      const showLand = data.activeStreams ? data.activeStreams.landscape : true;
+      const showPort = data.activeStreams ? data.activeStreams.portrait : false;
+      preview.style.display = '';  // Show container; individual imgs control visibility
+      if (showLand) {
+        previewLand.src = '/stream-preview.jpg?' + ts;
+        previewLand.onload = () => { previewLand.style.display = ''; };
+        previewLand.onerror = () => { previewLand.style.display = 'none'; };
+      } else {
+        previewLand.style.display = 'none';
+        previewLand.removeAttribute('src');
+      }
+      if (showPort) {
+        previewPort.src = '/stream-preview-portrait.jpg?' + ts;
+        previewPort.onload = () => { previewPort.style.display = ''; };
+        previewPort.onerror = () => { previewPort.style.display = 'none'; };
+      } else {
+        previewPort.style.display = 'none';
+        previewPort.removeAttribute('src');
+      }
     } else {
       nowPlaying.style.display = 'none';
       preview.style.display = 'none';
       progressBarContainer.style.display = 'none';
       progressTime.style.display = 'none';
+      document.getElementById('active-streams').style.display = 'none';
       stopProgressTicker();
     }
 
@@ -248,21 +297,24 @@ document.getElementById('restart-streamer').addEventListener('click', async () =
   finally { btn.disabled = false; }
 });
 
-/* ── Stream Key ──────────────────────────────────────────────────── */
+/* ── Stream Keys (inline in settings) ─────────────────────────────── */
 
-document.getElementById('stream-key-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const status = document.getElementById('stream-key-status');
-  const input = document.getElementById('stream-key-input');
-  try {
-    await api('/api/stream-key', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ streamKey: input.value })
-    });
-    input.value = '';
-    showStatus(status, 'Stream key updated.', true);
-  } catch (e) { showStatus(status, e.message, false); }
+document.querySelectorAll('.stream-key-btn').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const status = document.getElementById('settings-status');
+    const profile = btn.dataset.profile;
+    const input = btn.closest('.stream-key-inline').querySelector('input');
+    if (!input.value) return;
+    try {
+      await api('/api/stream-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ streamKey: input.value, profile })
+      });
+      input.value = '';
+      showStatus(status, `Stream key updated (${profile}).`, true);
+    } catch (e) { showStatus(status, e.message, false); }
+  });
 });
 
 /* ── Settings ────────────────────────────────────────────────────── */
@@ -270,9 +322,19 @@ document.getElementById('stream-key-form').addEventListener('submit', async (e) 
 async function loadSettings() {
   try {
     const data = await api('/api/settings');
-    document.getElementById('max-resolution').value = data.max_resolution;
     document.getElementById('shuffle-toggle').checked = data.shuffle;
-    document.getElementById('watermark-toggle').checked = data.watermark;
+    document.getElementById('branding-name').value = data.branding_name || '';
+    document.getElementById('branding-location').value = data.branding_location || '';
+    // Per-stream settings
+    const land = data.streams?.landscape || {};
+    const port = data.streams?.portrait || {};
+    document.getElementById('land-max-resolution').value = land.max_resolution || data.max_resolution || '720p';
+    document.getElementById('land-watermark-toggle').checked = land.watermark ?? data.watermark ?? false;
+    document.getElementById('port-max-resolution').value = port.max_resolution || '1080p';
+    document.getElementById('port-watermark-toggle').checked = port.watermark ?? false;
+    // Update legend labels with configured names
+    if (land.name) document.getElementById('landscape-legend').textContent = land.name;
+    if (port.name) document.getElementById('portrait-legend').textContent = port.name;
   } catch { /* use defaults */ }
 }
 
@@ -284,9 +346,19 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        max_resolution: document.getElementById('max-resolution').value,
         shuffle: document.getElementById('shuffle-toggle').checked,
-        watermark: document.getElementById('watermark-toggle').checked
+        branding_name: document.getElementById('branding-name').value.trim(),
+        branding_location: document.getElementById('branding-location').value.trim(),
+        streams: {
+          landscape: {
+            max_resolution: document.getElementById('land-max-resolution').value,
+            watermark: document.getElementById('land-watermark-toggle').checked
+          },
+          portrait: {
+            max_resolution: document.getElementById('port-max-resolution').value,
+            watermark: document.getElementById('port-watermark-toggle').checked
+          }
+        }
       })
     });
     showStatus(status, 'Settings saved.', true);
@@ -409,9 +481,34 @@ function renderVideoList(filter) {
     num.className = 'video-num';
     num.textContent = '#' + (i + 1);
 
+    const playNextBtn = document.createElement('button');
+    playNextBtn.className = 'video-play-next-btn secondary';
+    playNextBtn.textContent = 'Play next';
+    playNextBtn.title = 'Move this video after the current video and save the playlist';
+    playNextBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const currentTitle = v.title || v.file.replace(/\.[^.]+$/, '');
+      const confirmed = confirm(`Play "${currentTitle}" next? This will reorder and save the playlist.`);
+      if (!confirmed) return;
+
+      const status = document.getElementById('playlist-status');
+      playNextBtn.disabled = true;
+      try {
+        const result = await savePlaylist(v.file);
+        const suffix = result.runtimeUpdated
+          ? ' Up Next and the live overlay were updated.'
+          : result.runtimePending ? ' The streamer is still starting; save again when Now Playing appears.' : '';
+        showStatus(status, `"${currentTitle}" will play next.${suffix}`, true);
+      } catch (error) {
+        playNextBtn.disabled = false;
+        showStatus(status, error.message, false);
+      }
+    });
+
     li.appendChild(grip);
     li.appendChild(cb);
     li.appendChild(nameBlock);
+    li.appendChild(playNextBtn);
     li.appendChild(num);
 
     list.appendChild(li);
@@ -448,15 +545,28 @@ function renderVideoList(filter) {
   });
 }
 
+async function savePlaylist(playNext) {
+  const body = { videos: videoData };
+  if (playNext) body.playNext = playNext;
+  const result = await api('/api/videos', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (Array.isArray(result.videos)) videoData = result.videos;
+  renderVideoList(document.getElementById('playlist-search').value);
+  await refreshStreamerStatus();
+  return result;
+}
+
 document.getElementById('save-playlist').addEventListener('click', async () => {
   const status = document.getElementById('playlist-status');
   try {
-    await api('/api/videos', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ videos: videoData })
-    });
-    showStatus(status, 'Playlist saved and regenerated.', true);
+    const result = await savePlaylist();
+    const suffix = result.runtimeUpdated
+      ? ' Up Next and the live overlay were updated.'
+      : result.runtimePending ? ' The streamer is still starting; save again when Now Playing appears.' : '';
+    showStatus(status, `Playlist saved and regenerated.${suffix}`, true);
   } catch (e) { showStatus(status, e.message, false); }
 });
 
@@ -620,8 +730,8 @@ async function loadHealth() {
 
 let scheduleData = { timezone: 'UTC', events: [] };
 
-function populateTimezoneDropdown(selectedTz) {
-  const select = document.getElementById('schedule-tz');
+function populateTimezoneDropdown(selectId, selectedTz) {
+  const select = document.getElementById(selectId);
   if (select.options.length === 0) {
     const timezones = ['UTC'].concat(Intl.supportedValuesOf('timeZone').filter(t => t !== 'UTC'));
     for (const tz of timezones) {
@@ -634,8 +744,9 @@ function populateTimezoneDropdown(selectedTz) {
   if (selectedTz) select.value = selectedTz;
 }
 
-// Populate timezone options immediately so the dropdown is never empty
-populateTimezoneDropdown('UTC');
+// Populate timezone options immediately so the dropdowns are never empty
+populateTimezoneDropdown('schedule-tz', 'UTC');
+populateTimezoneDropdown('override-tz', 'UTC');
 
 async function loadSchedule() {
   try {
@@ -643,9 +754,11 @@ async function loadSchedule() {
     scheduleData = { timezone: data.timezone, events: data.events };
     document.getElementById('next-start').textContent = fmtDate(data.nextStart);
     document.getElementById('next-stop').textContent = fmtDate(data.nextStop);
-    populateTimezoneDropdown(data.timezone);
+    populateTimezoneDropdown('schedule-tz', data.timezone);
+    populateTimezoneDropdown('override-tz', data.timezone);
     renderScheduleEvents();
     renderScheduleEditor();
+    renderOverrides(data.overrides || []);
   } catch {}
 }
 
@@ -655,9 +768,25 @@ function renderScheduleEvents() {
     el.innerHTML = '<p class="hint">No events configured.</p>';
     return;
   }
-  let html = '<table class="schedule-table"><tr><th>Name</th><th>Days</th><th>Start</th><th>Stop</th></tr>';
+  const now = new Date();
+  const dayAbbrs = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const todayAbbr = dayAbbrs[now.getDay()];
+  const nowMins = now.getHours() * 60 + now.getMinutes();
+
+  let html = '<table class="schedule-table"><tr><th>Name</th><th>Days</th><th>Start</th><th>Stop</th><th>Streams</th></tr>';
   for (const e of scheduleData.events) {
-    html += `<tr><td>${esc(e.name)}</td><td>${e.days.join(', ')}</td><td>${e.start}</td><td>${e.stop}</td></tr>`;
+    const streams = (e.streams || ['landscape']).join(', ');
+    // Check if this event is currently active
+    let isActive = false;
+    if (e.days && e.days.includes(todayAbbr) && e.start && e.stop) {
+      const [sh, sm] = e.start.split(':').map(Number);
+      const [eh, em] = e.stop.split(':').map(Number);
+      const startMins = sh * 60 + sm;
+      const stopMins = eh * 60 + em;
+      isActive = nowMins >= startMins && nowMins < stopMins;
+    }
+    const cls = isActive ? ' class="active-event"' : '';
+    html += `<tr${cls}><td>${esc(e.name)}</td><td>${e.days.join(', ')}</td><td>${e.start}</td><td>${e.stop}</td><td>${esc(streams)}</td></tr>`;
   }
   html += '</table>';
   el.innerHTML = html;
@@ -668,7 +797,9 @@ const ALL_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 function renderScheduleEditor() {
   const list = document.getElementById('schedule-event-list');
   list.innerHTML = '';
+  const ALL_STREAMS = ['landscape', 'portrait'];
   scheduleData.events.forEach((evt, i) => {
+    const evtStreams = evt.streams || ['landscape'];
     const div = document.createElement('div');
     div.className = 'event-editor';
     div.innerHTML = `
@@ -677,6 +808,9 @@ function renderScheduleEditor() {
       <input type="time" value="${evt.stop}" data-field="stop">
       <div class="day-checks">${ALL_DAYS.map(d =>
         `<label class="day-label"><input type="checkbox" value="${d}" ${evt.days.includes(d) ? 'checked' : ''}>${d}</label>`
+      ).join('')}</div>
+      <div class="stream-checks">${ALL_STREAMS.map(s =>
+        `<label class="stream-label"><input type="checkbox" value="${s}" data-stream ${evtStreams.includes(s) ? 'checked' : ''}>${s}</label>`
       ).join('')}</div>
       <button class="secondary remove-event" data-idx="${i}">&#10005;</button>
     `;
@@ -697,13 +831,14 @@ function collectScheduleEdits() {
     name: div.querySelector('[data-field="name"]').value,
     start: div.querySelector('[data-field="start"]').value,
     stop: div.querySelector('[data-field="stop"]').value,
-    days: Array.from(div.querySelectorAll('.day-checks input:checked')).map(cb => cb.value)
-  })).filter(e => e.name && e.start && e.stop && e.days.length);
+    days: Array.from(div.querySelectorAll('.day-checks input:checked')).map(cb => cb.value),
+    streams: Array.from(div.querySelectorAll('[data-stream]:checked')).map(cb => cb.value)
+  })).filter(e => e.name && e.start && e.stop && e.days.length && e.streams.length);
 }
 
 document.getElementById('add-event').addEventListener('click', () => {
   collectScheduleEdits();
-  scheduleData.events.push({ name: 'New Event', start: '18:00', stop: '20:00', days: ['Mon', 'Wed', 'Fri'] });
+  scheduleData.events.push({ name: 'New Event', start: '18:00', stop: '20:00', days: ['Mon', 'Wed', 'Fri'], streams: ['landscape'] });
   renderScheduleEditor();
 });
 
@@ -727,6 +862,111 @@ document.getElementById('save-schedule').addEventListener('click', async () => {
     loadSchedule();
   } catch (e) { showStatus(status, e.message, false); }
   finally { btn.disabled = false; }
+});
+
+/* ── Schedule Overrides ──────────────────────────────────────────── */
+
+function renderOverrides(overrides) {
+  const el = document.getElementById('override-list');
+  if (!overrides.length) {
+    el.innerHTML = '<p class="hint">No upcoming overrides.</p>';
+    return;
+  }
+  let html = '<table class="schedule-table"><tr><th>Date</th><th>Name</th><th>Start</th><th>Stop</th><th>Streams</th><th>TZ</th><th></th></tr>';
+  for (const o of overrides) {
+    const startCell = o.startNow ? `<em>now</em> (${esc(o.start)})` : (o.start ? esc(o.start) : '<em>skip</em>');
+    const stopCell  = o.stop  ? esc(o.stop)  : '<em>skip</em>';
+    const tzCell    = o.timezone ? esc(o.timezone) : '<em>default</em>';
+    const streamsCell = (o.streams || ['landscape']).join(', ');
+    html += `<tr>
+      <td>${esc(o.date)}</td>
+      <td>${esc(o.name || '')}</td>
+      <td>${startCell}</td>
+      <td>${stopCell}</td>
+      <td>${esc(streamsCell)}</td>
+      <td>${tzCell}</td>
+      <td><button class="secondary override-delete-btn" data-date="${esc(o.date)}">Remove</button></td>
+    </tr>`;
+  }
+  html += '</table>';
+  el.innerHTML = html;
+  el.querySelectorAll('.override-delete-btn').forEach(btn => {
+    btn.addEventListener('click', () => deleteOverride(btn.dataset.date));
+  });
+}
+
+async function deleteOverride(date) {
+  const status = document.getElementById('override-status');
+  try {
+    await api(`/api/overrides?date=${encodeURIComponent(date)}`, { method: 'DELETE' });
+    showStatus(status, 'Override removed.', true);
+    loadSchedule();
+  } catch (e) { showStatus(status, e.message, false); }
+}
+
+document.getElementById('override-skip').addEventListener('change', () => {
+  const skip = document.getElementById('override-skip').checked;
+  document.getElementById('override-times').style.display = skip ? 'none' : '';
+  document.getElementById('override-streams').style.display = skip ? 'none' : '';
+  if (skip) document.getElementById('override-start-now').checked = false;
+});
+
+document.getElementById('override-start-now').addEventListener('change', () => {
+  const startNow = document.getElementById('override-start-now').checked;
+  const startInput = document.getElementById('override-start');
+  const dateInput = document.getElementById('override-date');
+  if (startNow) {
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    startInput.value = `${hh}:${mm}`;
+    startInput.disabled = true;
+    dateInput.value = now.toISOString().slice(0, 10);
+  } else {
+    startInput.disabled = false;
+  }
+});
+
+document.getElementById('save-override').addEventListener('click', async () => {
+  const status = document.getElementById('override-status');
+  const date  = document.getElementById('override-date').value;
+  const name  = document.getElementById('override-name').value.trim();
+  const skip  = document.getElementById('override-skip').checked;
+  const startNow = document.getElementById('override-start-now').checked;
+  const start = skip ? null : document.getElementById('override-start').value;
+  const stop  = skip ? null : document.getElementById('override-stop').value;
+
+  if (!date) return showStatus(status, 'Please select a date.', false);
+  if (!skip && !stop) return showStatus(status, 'Please provide a Stop time.', false);
+  if (!skip && !startNow && !start) return showStatus(status, 'Please provide a Start time or check "Start now".', false);
+
+  // null start/stop signals "skip this day entirely" to the backend
+  const streams = Array.from(document.querySelectorAll('#override-streams input:checked')).map(cb => cb.value);
+  if (!skip && streams.length === 0) return showStatus(status, 'Please select at least one stream.', false);
+  const payload = { date, start, stop };
+  if (!skip) payload.streams = streams;
+  if (startNow) payload.startNow = true;
+  if (name) payload.name = name;
+  const overrideTz = document.getElementById('override-tz').value;
+  if (overrideTz && overrideTz !== scheduleData.timezone) payload.timezone = overrideTz;
+
+  showStatus(status, 'Saving and syncing to Azure\u2026', true, true);
+  try {
+    const result = await api('/api/overrides', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (result.syncError) {
+      showStatus(status, `Override saved, but Azure sync failed: ${result.syncError}`, false);
+    } else {
+      showStatus(status, 'Override saved and synced.', true);
+    }
+    document.getElementById('override-add-details').removeAttribute('open');
+    document.getElementById('override-start-now').checked = false;
+    document.getElementById('override-start').disabled = false;
+    loadSchedule();
+  } catch (e) { showStatus(status, e.message, false); }
 });
 
 /* ── System / Storage ────────────────────────────────────────────── */
@@ -759,6 +999,27 @@ async function loadStorage() {
     document.getElementById('storage-stats').textContent = 'Error';
   }
 }
+
+/* ── VM Deallocate ───────────────────────────────────────────────── */
+
+document.getElementById('vm-deallocate').addEventListener('click', async () => {
+  const confirmed = confirm(
+    'Are you sure you want to shut down and deallocate this VM?\n\n' +
+    'This will stop the stream, terminate all services, and deallocate the VM ' +
+    '(stopping billing). The VM will not restart until the next scheduled time ' +
+    'or manual intervention.'
+  );
+  if (!confirmed) return;
+
+  const status = document.getElementById('vm-status');
+  showStatus(status, 'Triggering VM deallocate…', true, true);
+  try {
+    const result = await api('/api/vm/deallocate', { method: 'POST' });
+    showStatus(status, result.message || 'Deallocate triggered.', true);
+  } catch (e) {
+    showStatus(status, e.message, false);
+  }
+});
 
 /* ── Logs ────────────────────────────────────────────────────────── */
 
@@ -860,9 +1121,70 @@ async function uploadFile(file) {
   const cancelBtn = document.getElementById('cancel-update');
   const restartBtn = document.getElementById('restart-streamer-btn');
   const restartBanner = document.getElementById('streamer-restart-banner');
+  const branchSelect = document.getElementById('update-branch');
+  const refreshBtn = document.getElementById('refresh-branches');
+
+  let cachedBranches = null;
+  let currentBranch = 'main';
+
+  function populateBranchDropdown(branches, current) {
+    branchSelect.innerHTML = '';
+    for (const b of branches) {
+      const opt = document.createElement('option');
+      opt.value = b;
+      opt.textContent = b;
+      if (b === current) opt.selected = true;
+      branchSelect.appendChild(opt);
+    }
+  }
+
+  // Initial populate: always get live branch from /api/info, use cached branch list if available
+  function initBranches() {
+    fetch('/api/info').then(r => r.json()).then(info => {
+      currentBranch = info.branch || 'main';
+      const stored = localStorage.getItem('cachedBranches');
+      if (stored) {
+        try {
+          const data = JSON.parse(stored);
+          cachedBranches = data.branches;
+          // Update cache with live branch
+          data.currentBranch = currentBranch;
+          localStorage.setItem('cachedBranches', JSON.stringify(data));
+          populateBranchDropdown(cachedBranches, currentBranch);
+          return;
+        } catch {}
+      }
+      const defaultList = ['main'];
+      if (currentBranch !== 'main') defaultList.push(currentBranch);
+      populateBranchDropdown(defaultList, currentBranch);
+    }).catch(() => {
+      populateBranchDropdown(['main'], 'main');
+    });
+  }
+
+  async function refreshBranches() {
+    refreshBtn.disabled = true;
+    refreshBtn.textContent = '…';
+    try {
+      const data = await api('/api/branches');
+      cachedBranches = data.branches;
+      currentBranch = data.currentBranch || 'main';
+      localStorage.setItem('cachedBranches', JSON.stringify({ branches: cachedBranches, currentBranch }));
+      populateBranchDropdown(cachedBranches, currentBranch);
+      showStatus(status, `${cachedBranches.length} branches loaded.`, true);
+    } catch (e) {
+      showStatus(status, 'Failed to refresh branches: ' + e.message, false);
+    } finally {
+      refreshBtn.disabled = false;
+      refreshBtn.textContent = '↻';
+    }
+  }
+
+  initBranches();
+  refreshBtn.addEventListener('click', refreshBranches);
 
   function getBranch() {
-    return document.getElementById('update-beta').checked ? 'beta' : 'main';
+    return branchSelect.value || 'main';
   }
 
   function resetUI() {
@@ -945,9 +1267,8 @@ async function uploadFile(file) {
       });
       let data;
       try { data = await res.json(); } catch {
-        showStatus(status, 'Update applied — server restarted.', true);
-        output.textContent = 'The server restarted to apply the update. This page will reload shortly.';
-        setTimeout(() => location.reload(), 3000);
+        showStatus(status, 'Update result could not be confirmed.', false);
+        output.textContent = 'The server returned no readable update result. Check for updates again to confirm the installed version.';
         return;
       }
       output.textContent = data.output || data.error || 'No output';
@@ -959,9 +1280,8 @@ async function uploadFile(file) {
         setTimeout(() => location.reload(true), 6000);
       }
     } catch (e) {
-      showStatus(status, 'Update applied — server restarted.', true);
-      output.textContent = 'Connection lost during update (server restarted). This page will reload shortly.';
-      setTimeout(() => location.reload(), 3000);
+      showStatus(status, 'Update result could not be confirmed.', false);
+      output.textContent = `Connection lost during update: ${e.message}. Check for updates again to confirm the installed version.`;
       return;
     } finally {
       actions.style.display = 'none';

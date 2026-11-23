@@ -27,8 +27,15 @@
     <div id="now-playing" class="now-playing" style="display:none">
       <strong>Now Playing:</strong> <span id="now-playing-title"></span>
     </div>
+    <div id="active-streams" class="active-streams" style="display:none">
+      <span id="stream-badge-landscape" class="stream-badge landscape" style="display:none">▶ Landscape</span>
+      <span id="stream-badge-portrait" class="stream-badge portrait" style="display:none">▶ Portrait</span>
+    </div>
     <div id="stream-preview" class="stream-preview" style="display:none">
-      <img id="preview-img" alt="Stream preview">
+      <div class="preview-images">
+        <img id="preview-img-landscape" alt="Landscape preview" style="display:none">
+        <img id="preview-img-portrait" alt="Portrait preview" style="display:none">
+      </div>
       <div id="progress-bar-container" class="progress-bar-container" style="display:none">
         <div id="progress-bar" class="progress-bar"></div>
       </div>
@@ -64,6 +71,35 @@
       <span><strong>Next stop:</strong> <span id="next-stop">—</span></span>
     </div>
     <div id="schedule-events"></div>
+
+    <!-- Overrides -->
+    <h3 class="section-subheading">One-Time Overrides</h3>
+    <div id="override-list"></div>
+    <details id="override-add-details">
+      <summary>Add Override</summary>
+      <div class="schedule-editor override-form">
+        <label>Date <input type="date" id="override-date"></label>
+        <label>Name <input type="text" id="override-name" placeholder="e.g. Special Vespers" size="22"></label>
+        <label>Timezone <select id="override-tz"></select></label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="override-skip"> Skip this day entirely (no stream)
+        </label>
+        <div id="override-times">
+          <label>Start <input type="time" id="override-start" value="18:00"></label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="override-start-now"> Start now
+          </label>
+          <label>Stop <input type="time" id="override-stop" value="20:00"></label>
+        </div>
+        <div id="override-streams" class="stream-checks">
+          <label class="stream-label"><input type="checkbox" value="landscape" id="override-stream-landscape" checked>landscape</label>
+          <label class="stream-label"><input type="checkbox" value="portrait" id="override-stream-portrait">portrait</label>
+        </div>
+        <button id="save-override">Save Override</button>
+      </div>
+    </details>
+    <div id="override-status" class="status"></div>
+
     <details>
       <summary>Edit Schedule</summary>
       <div class="schedule-editor">
@@ -81,6 +117,10 @@
     <div class="card" id="system-card">
       <h2>System</h2>
       <div id="system-stats">Loading...</div>
+      <div class="vm-controls" id="vm-controls" style="display:none">
+        <button id="vm-deallocate" class="danger">Shut Down VM</button>
+        <div id="vm-status" class="status"></div>
+      </div>
     </div>
     <div class="card" id="storage-card">
       <h2>Storage</h2>
@@ -88,42 +128,79 @@
     </div>
   </div>
 
-  <!-- ── Stream Key ─────────────────────────────────────────────── -->
-  <div class="card">
-    <h2>Stream Key</h2>
-    <p class="hint">Update the YouTube stream key stored in Key Vault. Takes effect on next stream start.</p>
-    <form id="stream-key-form">
-      <input type="password" id="stream-key-input" placeholder="Enter new stream key" autocomplete="off" minlength="4" maxlength="256" required>
-      <button type="submit">Update Key</button>
-    </form>
-    <div id="stream-key-status" class="status"></div>
-  </div>
-
   <!-- ── Stream Settings ────────────────────────────────────────── -->
   <div class="card">
     <h2>Stream Settings</h2>
     <form id="settings-form">
-      <label>
-        Max Resolution
-        <select id="max-resolution">
-          <option value="144p">144p</option>
-          <option value="240p">240p</option>
-          <option value="360p">360p</option>
-          <option value="480p">480p</option>
-          <option value="720p">720p</option>
-          <option value="1080p">1080p</option>
-          <option value="1440p">1440p</option>
-          <option value="2160p">2160p</option>
-        </select>
-      </label>
       <label class="checkbox-label">
         <input type="checkbox" id="shuffle-toggle">
         Shuffle playlist order
       </label>
-      <label class="checkbox-label">
-        <input type="checkbox" id="watermark-toggle">
-        Show title watermark (lower third)
-      </label>
+      <fieldset class="stream-fieldset">
+        <legend>Branding</legend>
+        <label>
+          Organization Name
+          <input type="text" id="branding-name" placeholder="e.g. Saint Demetrios Greek Orthodox Church" maxlength="200">
+        </label>
+        <label>
+          Location
+          <input type="text" id="branding-location" placeholder="e.g. Seattle, Washington" maxlength="200">
+        </label>
+      </fieldset>
+      <fieldset class="stream-fieldset">
+        <legend id="landscape-legend">Landscape</legend>
+        <label>
+          Max Resolution
+          <select id="land-max-resolution">
+            <option value="144p">144p</option>
+            <option value="240p">240p</option>
+            <option value="360p">360p</option>
+            <option value="480p">480p</option>
+            <option value="720p" selected>720p</option>
+            <option value="1080p">1080p</option>
+            <option value="1440p">1440p</option>
+            <option value="2160p">2160p</option>
+          </select>
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="land-watermark-toggle">
+          Show lower third
+        </label>
+        <label>
+          Stream Key
+          <div class="stream-key-inline">
+            <input type="password" id="land-stream-key" placeholder="Enter stream key" autocomplete="off" maxlength="256">
+            <button type="button" class="secondary stream-key-btn" data-profile="landscape">Update</button>
+          </div>
+        </label>
+      </fieldset>
+      <fieldset class="stream-fieldset">
+        <legend id="portrait-legend">Portrait</legend>
+        <label>
+          Max Resolution
+          <select id="port-max-resolution">
+            <option value="144p">144p</option>
+            <option value="240p">240p</option>
+            <option value="360p">360p</option>
+            <option value="480p">480p</option>
+            <option value="720p">720p</option>
+            <option value="1080p" selected>1080p</option>
+            <option value="1440p">1440p</option>
+            <option value="2160p">2160p</option>
+          </select>
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="port-watermark-toggle">
+          Show lower third
+        </label>
+        <label>
+          Stream Key
+          <div class="stream-key-inline">
+            <input type="password" id="port-stream-key" placeholder="Enter stream key" autocomplete="off" maxlength="256">
+            <button type="button" class="secondary stream-key-btn" data-profile="portrait">Update</button>
+          </div>
+        </label>
+      </fieldset>
       <button type="submit">Save Settings</button>
     </form>
     <div id="restart-wrapper" style="display:none">
@@ -136,7 +213,7 @@
   <!-- ── Playlist ───────────────────────────────────────────────── -->
   <div class="card">
     <h2>Playlist</h2>
-    <p class="hint">Drag to reorder. Uncheck to exclude from playlist. Changes are saved and the playlist is regenerated immediately.</p>
+    <p class="hint">Drag to reorder. Uncheck to exclude. Play next moves a video after the current item. Saving updates the active queue immediately.</p>
     <div class="playlist-sort-controls">
       <span class="sort-label">Sort:</span>
       <button id="sort-name" class="secondary">By Name</button>
@@ -211,9 +288,9 @@
     <h2>Update</h2>
     <p class="hint">Check for new code on GitHub and optionally deploy it.</p>
     <div class="update-controls">
-      <label class="checkbox-label">
-        <input type="checkbox" id="update-beta">
-        Use beta branch
+      <label>Branch
+        <select id="update-branch"></select>
+        <button id="refresh-branches" class="secondary" title="Refresh branch list">↻</button>
       </label>
       <button id="run-update">Check for Updates</button>
     </div>

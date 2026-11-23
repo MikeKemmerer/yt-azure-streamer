@@ -132,7 +132,8 @@ for event in schedule.get("events", []):
             continue
         day_idx = day_map[day_abbr]
         start_day, start_ph, start_pm = apply_padding(day_idx, start_h, start_m, -padding_min)
-        stop_day,  stop_ph,  stop_pm  = apply_padding(day_idx, stop_h,  stop_m,  +padding_min)
+        stop_base_day = (day_idx + 1) % 7 if (stop_h, stop_m) <= (start_h, start_m) else day_idx
+        stop_day,  stop_ph,  stop_pm  = apply_padding(stop_base_day, stop_h,  stop_m,  +padding_min)
 
         for kind, pd, h, m, runbook in [
             ("start", start_day, start_ph, start_pm, RUNBOOK_START),
@@ -147,6 +148,90 @@ for event in schedule.get("events", []):
                 "timezone": schedule.get("timezone", "UTC"),
                 "description": f"Auto-{kind} VM for '{event_name}' ({day_abbr})",
             }
+
+# ─── Process overrides ─────────────────────────────────────────────
+# For each override:
+#   1. Push conflicting recurring schedule's startTime forward by 7 days
+#   2. Create one-time schedules for the override date
+# desired_onetime[name] = { startTimeUtc, runbook, description }
+# pushed_schedules tracks which recurring schedules need their startTime bumped
+desired_onetime = {}
+pushed_schedules = {}  # sched_name -> override_date (the date to skip past)
+
+today = datetime.datetime.now(tz=tz).date()
+day_abbr_map = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
+
+for override in schedule.get("overrides", []):
+    o_date_str = override.get("date")
+    if not o_date_str:
+        continue
+    try:
+        o_date = datetime.date.fromisoformat(o_date_str)
+    except ValueError:
+        print(f"  WARNING: invalid override date '{o_date_str}', skipping")
+        continue
+
+    # Skip past overrides
+    if o_date < today:
+        continue
+
+    o_weekday = o_date.weekday()  # 0=Mon
+    o_day_abbr = day_abbr_map[o_weekday]
+
+    # Find which recurring schedules fall on this weekday and push them
+    for sched_name, info in list(desired.items()):
+        # Match by the original day abbreviation in the schedule name
+        if f"-{o_day_abbr}-" in sched_name:
+            pushed_schedules[sched_name] = o_date
+
+    # Create one-time schedules for this override (if it has start/stop times)
+    o_start = override.get("start")
+    o_stop = override.get("stop")
+    o_start_now = override.get("startNow", False)
+    if not o_stop:
+        # No stop time = skip day entirely (just push recurring, no one-time)
+        continue
+    if not o_start and not o_start_now:
+        continue
+
+    o_stop_h, o_stop_m = map(int, o_stop.split(":"))
+
+    # Use per-override timezone if specified, otherwise fall back to schedule timezone
+    o_tz_name = override.get("timezone")
+    o_tz = ZoneInfo(o_tz_name) if o_tz_name else tz
+
+    o_name = override.get("name", "override").replace(" ", "-")
+
+    # Build stop schedule (always needed)
+    stop_dt = datetime.datetime(o_date.year, o_date.month, o_date.day,
+                                 o_stop_h, o_stop_m, tzinfo=o_tz)
+
+    # Build start schedule only if not startNow
+    if not o_start_now:
+        o_start_h, o_start_m = map(int, o_start.split(":"))
+        start_dt = datetime.datetime(o_date.year, o_date.month, o_date.day,
+                                      o_start_h, o_start_m, tzinfo=o_tz)
+        if stop_dt <= start_dt:
+            stop_dt += datetime.timedelta(days=1)
+        start_dt -= datetime.timedelta(minutes=padding_min)
+        stop_dt += datetime.timedelta(minutes=padding_min)
+        start_utc = start_dt.astimezone(datetime.timezone.utc)
+        stop_utc = stop_dt.astimezone(datetime.timezone.utc)
+        desired_onetime[f"override-{o_date_str}-start"] = {
+            "startTimeUtc": start_utc.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+            "runbook": RUNBOOK_START,
+            "description": f"One-time start for '{o_name}' on {o_date_str}",
+        }
+    else:
+        # startNow: no start entry; stop still gets padding
+        stop_dt += datetime.timedelta(minutes=padding_min)
+        stop_utc = stop_dt.astimezone(datetime.timezone.utc)
+
+    desired_onetime[f"override-{o_date_str}-stop"] = {
+        "startTimeUtc": stop_utc.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+        "runbook": RUNBOOK_STOP,
+        "description": f"One-time stop for '{o_name}' on {o_date_str}",
+    }
 
 # ─── Fetch current state from Azure ────────────────────────────────
 print("Fetching current schedules from Azure...")
@@ -172,9 +257,9 @@ for sched in existing_data.get("value", []):
     # Only consider schedules that look like ours
     if not (name.endswith("-start") or name.endswith("-stop")):
         continue
-    props = sched.get("properties", {})
-    adv = props.get("advancedSchedule", {})
-    week_days = adv.get("weekDays", [])
+    props = sched.get("properties") or {}
+    adv = props.get("advancedSchedule") or {}
+    week_days = adv.get("weekDays") or []
     start_time = props.get("startTime", "")
     tz_name = props.get("timeZone", "UTC")
     # Parse hour:minute from startTime
@@ -198,7 +283,7 @@ to_create = []   # names that need to be created or updated
 to_delete = []   # names that should be removed
 
 for name in existing:
-    if name not in desired:
+    if name not in desired and not name.startswith("override-"):
         to_delete.append(name)
 
 for name, want in desired.items():
@@ -213,15 +298,32 @@ for name, want in desired.items():
             have["minute"] != want["minute"] or
             have["timezone"] != want["timezone"]):
             to_create.append(name)  # will delete + recreate
+        elif name in pushed_schedules:
+            # Schedule matches but needs startTime pushed forward — force recreate
+            to_create.append(name)
 
-if not to_create and not to_delete:
+# Check for one-time override schedules that need creation or cleanup
+onetime_to_create = []
+onetime_to_delete = []
+
+for name in existing:
+    if name.startswith("override-") and name not in desired_onetime:
+        onetime_to_delete.append(name)
+
+for name in desired_onetime:
+    if name not in existing:
+        onetime_to_create.append(name)
+
+has_changes = to_create or to_delete or onetime_to_create or onetime_to_delete
+if not has_changes:
     print("No changes needed — Azure schedules already match.")
     sys.exit(0)
 
-print(f"Changes: {len(to_create)} create/update, {len(to_delete)} delete")
+print(f"Changes: {len(to_create)} recurring create/update, {len(to_delete)} recurring delete, "
+      f"{len(onetime_to_create)} one-time create, {len(onetime_to_delete)} one-time delete")
 
 # ─── Apply deletes ─────────────────────────────────────────────────
-for name in to_delete:
+for name in to_delete + onetime_to_delete:
     print(f"  Removing: {name}")
     delete_job_schedules_for(name)
     subprocess.run(
@@ -229,7 +331,7 @@ for name in to_delete:
          "--url", f"{BASE_URL}/schedules/{name}?api-version=2023-11-01"],
         capture_output=True)
 
-# ─── Apply creates/updates ─────────────────────────────────────────
+# ─── Apply recurring creates/updates ──────────────────────────────
 for name in to_create:
     want = desired[name]
     # Delete existing first (idempotent upsert)
@@ -240,8 +342,22 @@ for name in to_create:
              "--url", f"{BASE_URL}/schedules/{name}?api-version=2023-11-01"],
             capture_output=True)
 
-    next_dt = next_occurrence(
-        az_days_full.index(want["weekDay"]), want["hour"], want["minute"], tz)
+    # If this schedule is pushed due to an override, compute startTime
+    # as the first occurrence AFTER the override date
+    if name in pushed_schedules:
+        override_date = pushed_schedules[name]
+        # Find next occurrence of this weekday after override_date
+        days_ahead = az_days_full.index(want["weekDay"]) - override_date.weekday()
+        if days_ahead <= 0:
+            days_ahead += 7
+        resume_date = override_date + datetime.timedelta(days=days_ahead)
+        start_dt = datetime.datetime(resume_date.year, resume_date.month, resume_date.day,
+                                      want["hour"], want["minute"], 0, tzinfo=tz)
+        next_dt = start_dt.astimezone(datetime.timezone.utc)
+    else:
+        next_dt = next_occurrence(
+            az_days_full.index(want["weekDay"]), want["hour"], want["minute"], tz)
+
     start_iso = next_dt.strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
     sched_body = json.dumps({"properties": {
@@ -267,8 +383,42 @@ for name in to_create:
        "--url", f"{BASE_URL}/jobSchedules/{js_id}?api-version=2023-11-01",
        "--body", js_body)
 
-    print(f"  ✓ {name}: {want['weekDay']} {want['hour']:02d}:{want['minute']:02d}")
+    pushed_note = " (pushed +7d for override)" if name in pushed_schedules else ""
+    print(f"  ✓ {name}: {want['weekDay']} {want['hour']:02d}:{want['minute']:02d}{pushed_note}")
+
+# ─── Apply one-time override schedules ────────────────────────────
+for name in onetime_to_create:
+    info = desired_onetime[name]
+    # Delete if somehow exists (idempotent)
+    if name in existing:
+        delete_job_schedules_for(name)
+        subprocess.run(
+            ["az", "rest", "--method", "DELETE",
+             "--url", f"{BASE_URL}/schedules/{name}?api-version=2023-11-01"],
+            capture_output=True)
+
+    sched_body = json.dumps({"properties": {
+        "description": info["description"],
+        "startTime": info["startTimeUtc"],
+        "frequency": "OneTime",
+        "timeZone": "UTC",
+    }})
+    az("rest", "--method", "PUT",
+       "--url", f"{BASE_URL}/schedules/{name}?api-version=2023-11-01",
+       "--body", sched_body)
+
+    # Link to runbook
+    js_id = str(uuid.uuid4())
+    js_body = json.dumps({"properties": {
+        "schedule": {"name": name},
+        "runbook": {"name": info["runbook"]},
+        "parameters": {"ResourceGroupName": RG, "VMName": VM}
+    }})
+    az("rest", "--method", "PUT",
+       "--url", f"{BASE_URL}/jobSchedules/{js_id}?api-version=2023-11-01",
+       "--body", js_body)
+
+    print(f"  ✓ {name}: one-time at {info['startTimeUtc']}")
 
 print("Schedule sync complete.")
 PYEOF
-
