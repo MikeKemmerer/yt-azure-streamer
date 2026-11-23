@@ -31,6 +31,8 @@ PLAYLIST="/etc/yt/playlist.txt"
 STATE_FILE="/etc/yt/playlist-state.json"
 CONFIG_FILE="/etc/yt/schedule.json"
 RUNTIME_PLAYLIST_FILE="/run/streamer-playlist.json"
+SKIP_SIGNAL="/run/streamer-skip"
+rm -f "$SKIP_SIGNAL"
 
 # --- Resolution lookup tables ---
 declare -A RES_HEIGHT=(
@@ -696,11 +698,31 @@ ${AUDIO_FILTER}"
   set +e
   ffmpeg -y -re -i "$VIDEO" "${EXTRA_INPUTS[@]}" \
     -filter_complex "$FILTER_COMPLEX" \
-    "${OUTPUT_ARGS[@]}" </dev/null
+    "${OUTPUT_ARGS[@]}" </dev/null &
+  FFMPEG_PID=$!
+  SKIPPED=false
+  while kill -0 "$FFMPEG_PID" 2>/dev/null; do
+    if [[ -f "$SKIP_SIGNAL" ]]; then
+      rm -f "$SKIP_SIGNAL"
+      SKIPPED=true
+      kill -TERM "$FFMPEG_PID" 2>/dev/null
+      break
+    fi
+    sleep 1
+  done
+  wait "$FFMPEG_PID"
   FFMPEG_STATUS=$?
   set -e
 
-  if [[ $FFMPEG_STATUS -ne 0 ]]; then
+  # Consume a request that arrived just as ffmpeg finished.
+  if [[ -f "$SKIP_SIGNAL" ]]; then
+    rm -f "$SKIP_SIGNAL"
+    SKIPPED=true
+  fi
+
+  if [[ "$SKIPPED" == true ]]; then
+    echo "  Skip requested — advancing to the next video"
+  elif [[ $FFMPEG_STATUS -ne 0 ]]; then
     echo "  ERROR: ffmpeg exited with status $FFMPEG_STATUS — retrying the same video in 10 seconds"
     sleep 10
     continue

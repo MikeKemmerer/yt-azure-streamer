@@ -101,4 +101,64 @@ assert.strictEqual(
   'overlay text must wrap near its midpoint using the streamer line limits'
 );
 
-console.log('Streamer state tests passed.');
+async function testSkipRoute(active, writeFails) {
+  const fs = require('fs');
+  const vm = require('vm');
+  let handler;
+  const writes = [];
+  const renames = [];
+  const fakeFs = {
+    readFileSync() { throw new Error('No installed configuration'); },
+    writeFileSync(file, content) {
+      if (writeFails) throw new Error('Permission denied');
+      writes.push({ file, content });
+    },
+    renameSync(from, to) { renames.push({ from, to }); }
+  };
+  const dependencies = {
+    fs: fakeFs,
+    http: { createServer(callback) { handler = callback; return {}; } },
+    path: require('path'),
+    child_process: {
+      execFile() { throw new Error('Skip must not kill unrelated processes'); },
+      execFileSync() {
+        if (!active) throw new Error('Inactive service');
+      }
+    },
+    './config.json': { port: 8080, prefixFile: '/etc/yt/nameprefix' }
+  };
+  vm.runInNewContext(fs.readFileSync(require.resolve('../web/backend/server'), 'utf8'), {
+    require(name) { return dependencies[name]; },
+    module: { exports: {} },
+    process,
+    console
+  });
+  const response = {};
+  await handler({ method: 'POST', url: '/api/streamer/skip' }, {
+    writeHead(status) { response.status = status; },
+    end(body) { response.body = JSON.parse(body); }
+  });
+  assert.strictEqual(response.status, !active ? 409 : writeFails ? 500 : 200);
+  if (active && !writeFails) {
+    assert.deepStrictEqual(response.body, { ok: true });
+    assert.strictEqual(writes.length, 1);
+    assert.strictEqual(writes[0].content, '');
+    assert.deepStrictEqual(renames, [{
+      from: writes[0].file,
+      to: '/run/streamer-skip'
+    }]);
+  } else {
+    assert.strictEqual(renames.length, 0);
+    assert.strictEqual(typeof response.body.error, 'string');
+  }
+}
+
+(async () => {
+  await testSkipRoute(true, false);
+  await testSkipRoute(false, false);
+  await testSkipRoute(true, true);
+  console.log('Streamer state tests passed.');
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

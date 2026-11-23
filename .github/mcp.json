@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "type": "local",
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"],
+      "tools": ["*"]
+    },
+    "azure-mcp": {
+      "type": "local",
+      "command": "npx",
+      "args": ["-y", "@azure/mcp@latest", "server", "start"],
+      "tools": ["*"]
+    }
+  }
+}

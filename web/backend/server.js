@@ -638,12 +638,17 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ─── POST /api/streamer/skip ───────────────────────────────────
-    // Kill the current ffmpeg stream process, causing the loop to advance
     if (req.method === 'POST' && req.url === '/api/streamer/skip') {
-      execFile('pkill', ['-f', 'ffmpeg.*flv.*rtmp'], { timeout: 5000 }, (err) => {
-        // pkill returns 1 if no process found — not a real error for us
+      if (!isStreamerActive()) {
+        jsonResponse(res, 409, { error: 'Streamer is not running' });
+        return;
+      }
+      try {
+        writeAtomic('/run/streamer-skip', '');
         jsonResponse(res, 200, { ok: true });
-      });
+      } catch {
+        jsonResponse(res, 500, { error: 'Failed to write skip signal' });
+      }
       return;
     }
 
