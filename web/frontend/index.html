@@ -98,8 +98,17 @@
           <option value="weekly">Weekly schedule and overrides</option>
           <option value="youtube">YouTube Studio broadcasts</option>
         </select></label>
+        <label>Discovery method <select id="youtube-provider">
+          <option value="api">Official API (Google authorization)</option>
+          <option value="yt-dlp">Public YouTube (yt-dlp; no Google sign-in)</option>
+        </select></label>
         <label>YouTube channel ID <input id="youtube-channel" type="text" maxlength="100" placeholder="UC..."></label>
-        <p class="hint">Authorize read-only access on the host using the README setup instructions.
+        <label id="youtube-public-checks" hidden><input id="youtube-studio-confirmed" type="checkbox">
+          I verified the output stream keys and Auto-start/Auto-stop settings in YouTube Studio.
+          Public discovery cannot verify these, see private broadcasts, or reliably read scheduled end times.
+        </label>
+        <p id="youtube-api-help" class="hint">For the official API, authorize read-only access on the host using the README setup instructions.</p>
+        <p class="hint">
           YouTube mode replaces weekly schedules and overrides while enabled. The saved playlist is unchanged.</p>
         <p class="hint">Use the configured output's stream key and enable Auto-start and Auto-stop in Studio.
           A dropout of roughly one minute can permanently end the event, including a long sermon transition or retry.</p>

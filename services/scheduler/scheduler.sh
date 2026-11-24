@@ -183,7 +183,9 @@ youtube_schedule_tick() {
     KEEP) update_stream_signals "$profiles" ;;
     STOP)
       rm -f "$ACTIVE_LANDSCAPE" "$ACTIVE_PORTRAIT"
-      systemctl stop streamer.service || true
+      if systemctl stop streamer.service; then
+        python3 /usr/local/bin/youtube-schedule.py stopped >/dev/null || true
+      fi
       ;;
     IDLE)
       rm -f "$MANUAL_STOP" "$ACTIVE_LANDSCAPE" "$ACTIVE_PORTRAIT"

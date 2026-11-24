@@ -998,7 +998,11 @@ async function loadSchedule() {
     youtubeSettings = data.youtube || { channelId: '', rules: [] };
     document.getElementById('schedule-source').value = data.scheduleSource || 'weekly';
     document.getElementById('youtube-channel').value = youtubeSettings.channelId;
-    for (const id of ['schedule-source', 'youtube-channel', 'add-youtube-rule', 'save-youtube-schedule']) {
+    document.getElementById('youtube-provider').value = youtubeSettings.provider || 'api';
+    document.getElementById('youtube-studio-confirmed').checked = youtubeSettings.manualStudioChecks === true;
+    document.getElementById('youtube-public-checks').hidden = youtubeSettings.provider !== 'yt-dlp';
+    document.getElementById('youtube-api-help').hidden = youtubeSettings.provider === 'yt-dlp';
+    for (const id of ['schedule-source', 'youtube-channel', 'youtube-provider', 'youtube-studio-confirmed', 'add-youtube-rule', 'save-youtube-schedule']) {
       document.getElementById(id).disabled = !data.youtubeAvailable;
     }
     renderYouTubeRules();
@@ -1011,6 +1015,8 @@ let youtubeSettings = { channelId: '', rules: [] };
 function collectYouTubeRules() {
   youtubeSettings = {
     channelId: document.getElementById('youtube-channel').value.trim(),
+    provider: document.getElementById('youtube-provider').value,
+    manualStudioChecks: document.getElementById('youtube-studio-confirmed').checked,
     rules: Array.from(document.querySelectorAll('.youtube-rule')).map(row => ({
       title: row.querySelector('[data-title]').value,
       profile: row.querySelector('[data-profile]').value,
@@ -1043,10 +1049,20 @@ async function loadYouTubePreview() {
   try {
     const data = await api('/api/schedule/youtube');
     const age = data.ageSeconds === null ? 'no successful snapshot' : `${Math.round(data.ageSeconds / 60)} min old`;
+    const connection = data.provider === 'yt-dlp' ? 'Public discovery; no Google sign-in required' :
+      data.authorized ? 'Credentials configured' : 'Google authorization required';
+    const runtime = Number.isFinite(data.sync?.durationSeconds) ? ` Last scan: ${data.sync.durationSeconds}s.` : '';
     status.textContent = !data.available ? 'Available in local mode only.' :
-      `${data.authorized ? 'Credentials configured' : 'Authorization required'}; ${data.fresh ? 'fresh discovery' : 'not eligible for new starts'} (${age}). ${data.sync?.error || ''}`;
+      `${connection}; ${data.fresh ? 'fresh discovery' : 'discovery unavailable or stale'} (${age}). ` +
+      `${data.enabled ? 'Automatic scheduling enabled.' : 'Preview only; Weekly schedule remains selected.'}${runtime} ${data.sync?.error || ''}`;
     if (data.available && data.owned) {
       status.textContent += ` Owned session ${data.owned.stopping ? 'stopping' : `ends ${fmtDate(data.owned.end)}`}.`;
+    }
+    if (data.control?.enabled) {
+      status.textContent += ` Rollover enabled; minimum disconnect ${data.control.minimumDisconnectSeconds}s, with verified old-event completion.`;
+      if (data.control.churchBlocked) status.textContent += ' Church service: paused until VLC-to-browser failover.';
+      else if (!data.control.calendarReady) status.textContent += ' Local calendar unavailable: new starts blocked.';
+      if (data.control.waiting) status.textContent += ' Waiting before a replacement broadcast can start.';
     }
     const rows = data.events.map(event => {
       const feedback = event.errors.length ? event.errors.join('; ') :
@@ -1057,7 +1073,11 @@ async function loadYouTubePreview() {
     }).join('');
     document.getElementById('youtube-events').innerHTML = rows ?
       `<table class="schedule-table"><tr><th>Broadcast</th><th>Output</th><th>Start</th><th>End</th><th>Status</th></tr>${rows}</table>` :
-      '<p class="hint">No matching broadcasts in the last successful discovery.</p>';
+      `<p class="hint">${data.ageSeconds === null ? 'No successful discovery yet.' : 'No matching broadcasts in the last successful discovery.'}</p>`;
+    if (data.activeBroadcasts?.length) {
+      document.getElementById('youtube-events').innerHTML += '<p class="hint">Publicly active now: ' +
+        data.activeBroadcasts.map(event => esc(event.title)).join('; ') + '. Existing live broadcasts are never taken over.</p>';
+    }
   } catch (error) { status.textContent = error.message; }
 }
 
@@ -1067,6 +1087,12 @@ document.getElementById('add-youtube-rule').addEventListener('click', () => {
   renderYouTubeRules();
 });
 document.getElementById('refresh-youtube-preview').addEventListener('click', loadYouTubePreview);
+document.getElementById('youtube-provider').addEventListener('change', () => {
+  document.getElementById('youtube-public-checks').hidden =
+    document.getElementById('youtube-provider').value !== 'yt-dlp';
+  document.getElementById('youtube-api-help').hidden =
+    document.getElementById('youtube-provider').value === 'yt-dlp';
+});
 document.getElementById('save-youtube-schedule').addEventListener('click', async () => {
   const button = document.getElementById('save-youtube-schedule');
   const status = document.getElementById('youtube-save-status');
@@ -1077,7 +1103,7 @@ document.getElementById('save-youtube-schedule').addEventListener('click', async
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scheduleSource: document.getElementById('schedule-source').value, youtube: youtubeSettings })
     });
-    showStatus(status, 'Saved. YouTube discovery runs on the host timer; manual stops and queue hold still take priority.', true);
+    showStatus(status, 'Saved. Discovery runs in the background; preview refresh reads its cache. Manual stops and queue hold still take priority.', true);
     loadSchedule();
   } catch (error) { showStatus(status, error.message, false); }
   finally { button.disabled = false; }

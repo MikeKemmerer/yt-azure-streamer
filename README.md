@@ -304,14 +304,49 @@ ssh -L 8765:127.0.0.1:8765 your-user@your-streamer-host
 Run authorization on the host and open the printed Google authorization URL in the workstation browser. The callback listens only on host loopback port 8765. Choose the intended channel/Brand Account. Credentials are saved with mode 0600 under `/etc/yt/secrets/youtube-oauth.json`; never commit or share either credential JSON. The application requests only `youtube.readonly`.
 
 4. Enter the authorized channel ID and title/output rules in the schedule UI. Set the configured landscape/portrait keys using the existing stream-key UI. Stop the streamer before switching schedule sources, then switch to YouTube and verify the preview.
-5. Local installation/updating installs `youtube-sync.service` and enables `youtube-sync.timer`. The timer runs approximately once per minute; it skips until the OAuth environment/credentials exist and the source is enabled. The existing scheduler checks local windows every 30 seconds.
+5. Local installation/updating installs `youtube-sync.service` and enables `youtube-sync.timer`. The timer runs approximately once per minute; the Python environment is required and the official API provider runs only while the YouTube source is enabled. Missing authorization is reported in discovery status. The existing scheduler checks local windows every 30 seconds.
 
 ```bash
 sudo systemctl status youtube-sync.timer
 sudo journalctl -u youtube-sync.service -n 50
 ```
 
-The preview shows channel lifecycle separately from encoder health, matching windows, validation errors, and discovery freshness. Refresh Preview reads the latest cache; it does not force more Google requests. Requests are bounded, paginated, backed off on errors, and locally capped at 8,000/day using YouTube's Pacific-time reset boundary. This cap is not knowledge of other applications' use of the project's quota.
+The preview shows channel lifecycle separately from encoder health, matching windows, validation errors, and discovery freshness. Refresh Preview reads the latest cache; it does not force more Google requests. Official API requests are bounded, paginated, backed off on errors, and locally capped at 8,000/day using YouTube's Pacific-time reset boundary. This cap is not knowledge of other applications' use of the project's quota.
+
+### Public discovery without Google authorization
+
+Select **Public YouTube (yt-dlp)** to discover public upcoming and active livestreams without OAuth. Install the same declared dependencies into the isolated `/etc/yt/youtube-venv` above; skip the `authorize` command. Do not install into a shared kiosk's Python environment. Existing configurations default to the official API.
+
+Enter the channel's `UC...` ID and exact title/output rules. You can save and inspect public discovery while **Weekly** remains selected, without changing playback or enabling YouTube automation. Saving requests an asynchronous scan; the timer subsequently runs 60 seconds after each completed scan. Refresh Preview only reads the cache. The status includes the last scan's actual runtime; channel size, network, throttling, and yt-dlp updates affect timing.
+
+Only metadata is requested, never video downloads or browser cookies. Each scan lists at most 100 channel entries and inspects at most 32 matching/tracked IDs, with a 55-second metadata budget and individual process timeouts. Failed scans retain the last good snapshot. Public premieres, wrong channels, missing start times, and approximate title matches cannot authorize a start. Missing entries in a bounded listing do not prove cancellation.
+
+**Reduced guarantees:** public discovery cannot see private broadcasts, check stream-key bindings or shared-key conflicts, or verify Studio Auto-start/Auto-stop. It uses each rule's duration because public metadata does not reliably expose scheduled ends. Verify these Studio settings yourself and check the confirmation box before enabling automatic starts. An already-live, unowned broadcast is not started or taken over by ordinary discovery.
+
+### Local broadcast rollover and church-service exclusion
+
+An optional root-managed `/etc/yt/youtube-local.json` enables rollover for the public provider while the schedule source is YouTube:
+
+```json
+{
+  "rolloverEnabled": true,
+  "controlManual": true,
+  "disconnectSeconds": 30,
+  "calendarUrl": "http://your-calendar-host:8000/api/events",
+  "serviceCalendar": "Services",
+  "standbyState": "/run/videokiosk2/standby.json"
+}
+```
+
+Omit the calendar fields on hosts without this kiosk integration. This policy is **local mode only**; Azure scheduling is unchanged. The calendar URL must be a trusted, operator-configured endpoint returning the existing calendar app's `calendar`, `allDay`, `start`, and `end` fields. Only timed entries from `Services` are used; meetings, holidays, and announcements do not pause streaming. The integration reads the existing calendar and kiosk state; it does not restart or modify the kiosk.
+
+With `controlManual`, a single unambiguous matching public live event for each currently selected output can be tracked even if started manually. This explicitly permits automatic stops of those sessions. Without that opt-in, manual sessions remain protected. The existing per-rule fallback remains in force (for example 12 hours), with an additional **24-hour maximum from the observed actual YouTube live start**. A successor's scheduled start shortens the preceding slot. Public upcoming-to-live timestamp changes do not move the committed window.
+
+At a deadline or replacement start, the scheduler explicitly stops `streamer.service`, then waits **at least 30 seconds from successful service stop** and until direct metadata confirms every previous event has completed. Thirty seconds does not guarantee YouTube Auto-stop completion; discovery and the 30-second scheduler poll can extend the disconnect. Missing/stale metadata never counts as completion. If no eligible replacement exists, the service stays stopped. The appliance does not create broadcasts or transition their lifecycle.
+
+Church-service blocking starts at the **calendar's scheduled start**, not an arbitrary early buffer. It remains latched until `/run/videokiosk2/standby.json` records a **new VLC-to-browser failover at or after that start**. The planned calendar end and an old browser/standby state cannot release the block. New starts are blocked when calendar refresh fails or becomes stale; already-known service starts still stop playback. Calendar refresh continues during YouTube discovery backoff. After actual failover, only another fresh, eligible matching broadcast can start; an ended event cannot be reused.
+
+Operator Stop and explicit-empty queue hold still win. A church pause ends the old broadcast, so schedule a replacement for resumption. There is no automatic broadcast creation, private Studio verification, or GPU/encoding change.
 
 ### Scheduling safeguards
 

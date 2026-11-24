@@ -5,8 +5,12 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
+import re
+import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -57,6 +61,13 @@ def title_key(value):
 def settings(schedule):
     config = schedule.get("youtube", {})
     channel = config.get("channelId", "")
+    provider = config.get("provider", "api")
+    if provider not in {"api", "yt-dlp"}:
+        raise ValueError("Invalid YouTube discovery provider")
+    if provider == "yt-dlp" and (not isinstance(channel, str) or not re.fullmatch(r"UC[A-Za-z0-9_-]{22}", channel)):
+        raise ValueError("Configure a YouTube channel ID beginning with UC")
+    if not isinstance(config.get("manualStudioChecks", False), bool):
+        raise ValueError("Invalid manual Studio confirmation")
     rules = config.get("rules", [])
     if not isinstance(channel, str) or not channel or len(channel) > 100:
         raise ValueError("Configure the authorized channel ID")
@@ -141,7 +152,11 @@ def normalize(schedule, broadcasts, streams, keys, now):
                          for other in broadcasts):
             errors.append("Another broadcast shares this stream binding")
         events.append(event)
-    candidates = [e for e in events if not e["errors"] and e["end"] > now]
+    return validate_windows(events, now)
+
+
+def validate_windows(events, now):
+    candidates = [e for e in events if not e["errors"] and e.get("end") and e["end"] > now]
     for i, first in enumerate(candidates):
         for second in candidates[i + 1:]:
             if max(first["start"], second["start"]) < min(first["end"], second["end"]):
@@ -150,6 +165,137 @@ def normalize(schedule, broadcasts, streams, keys, now):
                     first["errors"].append("Overlapping or staggered output windows")
                     second["errors"].append("Overlapping or staggered output windows")
     return sorted(events, key=lambda e: (e["start"] or 0, e["id"]))
+
+
+PUBLIC_METADATA_WORKER = """
+import json, sys
+import yt_dlp
+listing = sys.argv[2] == 'listing'
+options = {'skip_download': True, 'ignore_no_formats_error': True, 'quiet': True,
+           'no_warnings': True, 'socket_timeout': 8, 'retries': 0, 'extractor_retries': 0,
+           'cachedir': False, 'noplaylist': not listing, 'playlistend': 100}
+if listing:
+    options['extract_flat'] = 'in_playlist'
+with yt_dlp.YoutubeDL(options) as client:
+    data = client.extract_info(sys.argv[1], download=False, process=listing)
+def metadata(item):
+    return {key: item.get(key) for key in
+            ('id', 'title', 'channel_id', 'live_status', 'release_timestamp', 'media_type')}
+result = metadata(data)
+if listing:
+    result['entries'] = [metadata(item) for item in (data.get('entries') or [])]
+print(json.dumps(result))
+"""
+
+
+class PublicYouTube:
+    def __init__(self):
+        self.deadline = time.monotonic() + 55
+
+    def extract(self, identifier, listing=False):
+        pattern = r"UC[A-Za-z0-9_-]{22}" if listing else r"[A-Za-z0-9_-]{11}"
+        if not isinstance(identifier, str) or not re.fullmatch(pattern, identifier):
+            raise ValueError("Invalid public YouTube identifier")
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Public discovery timeout")
+        url = ("https://www.youtube.com/channel/" + identifier + "/streams" if listing
+               else "https://www.youtube.com/watch?v=" + identifier)
+        result = subprocess.run(
+            [sys.executable, "-c", PUBLIC_METADATA_WORKER, url, "listing" if listing else "video"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=min(20, remaining),
+        )
+        if result.returncode:
+            if "No module named 'yt_dlp'" in result.stderr:
+                raise ImportError("Install the documented YouTube dependencies")
+            raise RuntimeError("Public YouTube metadata request failed")
+        if len(result.stdout) > 2097152:
+            raise ValueError("Public discovery response too large")
+        data = json.loads(result.stdout)
+        if not isinstance(data, dict):
+            raise ValueError("Invalid public discovery response")
+        return data
+
+
+def discover_public(api, schedule, previous, keys, now):
+    channel, rules = settings(schedule)
+    listing = api.extract(channel, listing=True)
+    if listing.get("channel_id") != channel or not isinstance(listing.get("entries"), list):
+        raise ValueError("Public discovery channel mismatch")
+    matches = {title_key(rule["title"]): rule for rule in rules}
+    entries = listing["entries"]
+    if any(not isinstance(item, dict) for item in entries):
+        raise ValueError("Invalid public channel listing")
+    active = {item["id"] for item in entries if item.get("live_status") == "is_live"}
+    observed = {item["id"]: item for item in entries}
+    previous = previous if previous and previous.get("fingerprint") == fingerprint(schedule) else {}
+    tracked = {event["id"]: event for event in previous.get("events", [])
+               if event.get("end") and event["end"] > now}
+    ids = {item["id"] for item in entries
+           if item.get("live_status") in {"is_live", "is_upcoming"}
+           and isinstance(item.get("title"), str) and title_key(item["title"]) in matches}
+    ids.update(tracked)
+    ids.update(previous.get("trackedIds", []))
+    if len(ids) > 32:
+        raise ValueError("Too many matching public broadcasts")
+    events, terminal = [], {}
+    for identifier in sorted(ids):
+        item = api.extract(identifier)
+        if item.get("id") != identifier or item.get("channel_id") != channel:
+            raise ValueError("Public broadcast identity mismatch")
+        lifecycle = item.get("live_status")
+        observed[identifier] = item
+        if lifecycle in {"was_live", "post_live"}:
+            active.discard(identifier)
+            terminal[identifier] = "complete"
+            continue
+        if lifecycle not in {"is_upcoming", "is_live"}:
+            raise ValueError("Public broadcast lifecycle is unavailable")
+        if lifecycle == "is_live":
+            active.add(identifier)
+        else:
+            active.discard(identifier)
+        title = item.get("title")
+        if not isinstance(title, str) or title_key(title) not in matches:
+            continue
+        rule = matches[title_key(title)]
+        event = {"id": identifier, "title": title, "profile": rule["profile"],
+                 "status": "ready" if lifecycle == "is_upcoming" else "live",
+                 "start": None, "end": None, "errors": []}
+        start = item.get("release_timestamp")
+        # Public live timestamps may change to actual start; retain the committed window.
+        if lifecycle == "is_live" and identifier in tracked:
+            start = tracked[identifier]["start"]
+        if (isinstance(start, bool) or not isinstance(start, (int, float))
+                or not math.isfinite(start) or start <= 0):
+            event["errors"].append("Scheduled start is unavailable")
+        else:
+            event.update(start=start, end=start + rule.get("durationSeconds", 28800))
+        if lifecycle == "is_live":
+            actual = item.get("release_timestamp")
+            if isinstance(actual, (int, float)) and not isinstance(actual, bool) and math.isfinite(actual) and actual > 0:
+                event["liveStart"] = actual
+        if item.get("media_type") != "livestream":
+            event["errors"].append("Not a confirmed livestream; premieres are not supported")
+        if schedule["youtube"].get("manualStudioChecks") is not True:
+            event["errors"].append("Confirm stream keys and Auto-start/Auto-stop in Studio")
+        if not keys.get(rule["profile"]):
+            event["errors"].append("Configure this output's stream key")
+        events.append(event)
+    # A successor ends the previous slot; overlapping fallback durations are not simultaneous shows.
+    for event in events:
+        successors = [other["start"] for other in events if other["profile"] == event["profile"]
+                      and other.get("start") and event.get("start") and other["start"] > event["start"]
+                      and all(error == "Confirm stream keys and Auto-start/Auto-stop in Studio"
+                              for error in other["errors"])]
+        if successors and event.get("end"):
+            event["end"] = min(event["end"], min(successors))
+    validate_windows([event for event in events if event["status"] == "ready"], now)
+    return {"version": 1, "provider": "yt-dlp", "fingerprint": fingerprint(schedule),
+            "keyFingerprint": key_fingerprint(keys), "fetchedAt": time.time(),
+            "channelId": channel, "events": sorted(events, key=lambda event: (event["start"] or 0, event["id"])),
+            "terminal": terminal,
+            "activeBroadcasts": [observed[identifier] for identifier in sorted(active)]}
 
 
 class YouTube:
@@ -227,8 +373,12 @@ def discover(api, schedule, previous, keys, now):
             "terminal": terminal}
 
 
-def decision(schedule, cache, state, now, running=False, manual=False, stopped=False, hold=False):
+def decision(schedule, cache, state, now, running=False, manual=False, stopped=False, hold=False,
+             policy=None, calendar=None, standby=None, profiles=None):
     """Return scheduler command, profiles, and updated transient ownership."""
+    if policy and policy.get("rolloverEnabled") is True and schedule.get("youtube", {}).get("provider") == "yt-dlp":
+        return rollover_decision(schedule, cache, state or {}, now, running, manual, stopped, hold,
+                                 policy, calendar, standby, profiles or [])
     state = state or {}
     state.setdefault("suppressed", {})
     state["suppressed"] = {key: end for key, end in state["suppressed"].items() if end > now}
@@ -286,10 +436,145 @@ def decision(schedule, cache, state, now, running=False, manual=False, stopped=F
         return "MANUAL", [], state
     eligible = [e for e in window if not e["errors"] and e["status"] == "ready"
                 and e["id"] not in state["suppressed"] and now - e["start"] <= LATE_SECONDS]
+    if cache and cache.get("provider") == "yt-dlp" and cache.get("activeBroadcasts"):
+        eligible = []
     if eligible:
         state["owner"] = {"events": [dict(e) for e in eligible], "startedAt": now}
         return "START", sorted({e["profile"] for e in eligible}), state
     return ("HOLD" if window else "IDLE"), [], state
+
+
+def calendar_block(calendar, standby, state, now):
+    released = state.setdefault("calendarReleased", {})
+    released = {key: at for key, at in released.items() if at > now - 7 * 86400}
+    state["calendarReleased"] = released
+    ready = bool(calendar and calendar.get("ok") and 0 <= now - calendar.get("fetchedAt", 0) <= 180)
+    blocked = False
+    failover = (standby or {}).get("failover_started")
+    valid_failover = ((standby or {}).get("state") in {"counting", "fired"}
+                      and isinstance(failover, (int, float)) and not isinstance(failover, bool)
+                      and math.isfinite(failover) and failover <= now)
+    pending = state.get("calendarPendingStart")
+    if pending is not None and not (valid_failover and failover >= pending):
+        blocked = True
+    elif pending is not None:
+        state.pop("calendarPendingStart", None)
+    for window in (calendar or {}).get("windows", []):
+        if window["start"] > now or window["id"] in released:
+            continue
+        if valid_failover and failover >= window["start"]:
+            released[window["id"]] = now
+        else:
+            blocked = True
+            state["calendarPendingStart"] = max(state.get("calendarPendingStart", window["start"]), window["start"])
+    return blocked, ready
+
+
+def rollover_decision(schedule, cache, state, now, running, manual, stopped, hold,
+                      policy, calendar, standby, profiles):
+    fresh = bool(cache and cache.get("fingerprint") == fingerprint(schedule)
+                 and 0 <= now - cache.get("fetchedAt", 0) <= FRESH_SECONDS)
+    events = cache.get("events", []) if fresh else []
+    blocked, calendar_ready = calendar_block(calendar, standby, state, now) if policy.get("calendarUrl") else (False, True)
+    state["controlStatus"] = {"churchBlocked": blocked, "calendarReady": calendar_ready}
+    controls_manual = policy.get("controlManual") is True
+    owner = state.get("owner")
+    if running and not owner and controls_manual and fresh:
+        live = [event for event in events if event["status"] == "live"
+                and event["profile"] in profiles and event.get("liveStart")
+                and all(error == "Confirm stream keys and Auto-start/Auto-stop in Studio" for error in event["errors"])]
+        if (live and len(live) == len(set(profiles)) and {event["profile"] for event in live} == set(profiles)
+                and len({(event["start"], event["end"]) for event in live}) == 1
+                and {event["id"] for event in live} == {item["id"] for item in cache.get("activeBroadcasts", [])}):
+            owner = {"events": [dict(event) for event in live], "startedAt": now, "adoptedManual": True}
+            state["owner"] = owner
+    if owner:
+        for event in owner["events"]:
+            observed = next((item for item in events if item["id"] == event["id"]), {})
+            if observed.get("liveStart") and not event.get("liveStart"):
+                event["liveStart"] = observed["liveStart"]
+            if event.get("liveStart"):
+                event["end"] = min(event["end"], event["liveStart"] + 86400)
+    if stopped or hold or (manual and not controls_manual):
+        return decision(schedule, cache, state, now, running, manual and not controls_manual, stopped, hold)
+    if blocked and running and (owner or controls_manual):
+        state.setdefault("handoff", {"ids": [event["id"] for event in owner["events"]] if owner else
+                                    [item["id"] for item in (cache or {}).get("activeBroadcasts", [])],
+                                    "disconnectedAt": None, "completed": []})
+        if owner:
+            owner["stopping"] = True
+        return "STOP", [], state
+    handoff = state.get("handoff")
+    if handoff:
+        if fresh:
+            handoff["completed"] = sorted(set(handoff.get("completed", [])) |
+                                          (set(handoff["ids"]) & set(cache.get("terminal", {}))))
+        if running:
+            handoff["disconnectedAt"] = None
+            return "STOP", [], state
+        if handoff.get("disconnectedAt") is None:
+            handoff["disconnectedAt"] = now
+        wait = policy.get("disconnectSeconds", 30)
+        wait = max(30, wait) if isinstance(wait, int) and not isinstance(wait, bool) else 30
+        if (blocked or not calendar_ready or not fresh or now - handoff["disconnectedAt"] < wait
+                or not set(handoff["ids"]).issubset(handoff.get("completed", []))):
+            return "HOLD", [], state
+        state.setdefault("suppressed", {}).update({identifier: now + 86400 for identifier in handoff["ids"]})
+        state.pop("owner", None)
+        state.pop("handoff", None)
+    if blocked or (not running and not calendar_ready):
+        return "HOLD", [], state
+    # Do not let a refreshed public timestamp extend the absolute live-age limit.
+    if owner and fresh:
+        cache = dict(cache, events=[dict(event) for event in events])
+        for observed in cache["events"]:
+            owned = next((event for event in owner["events"] if event["id"] == observed["id"]), {})
+            if owned.get("liveStart") and observed.get("end"):
+                observed["end"] = min(observed["end"], owned["liveStart"] + 86400)
+            if owned and owner.get("adoptedManual"):
+                observed["errors"] = [error for error in observed["errors"]
+                                      if error != "Confirm stream keys and Auto-start/Auto-stop in Studio"]
+    owned_ids = [event["id"] for event in state.get("owner", {}).get("events", [])]
+    command, outputs, state = decision(schedule, cache, state, now, running=running)
+    if command == "STOP" and owned_ids:
+        state.setdefault("handoff", {"ids": owned_ids, "disconnectedAt": None, "completed": []})
+    return command, outputs, state
+
+
+def sync_calendar(root, policy, now):
+    if not policy.get("calendarUrl"):
+        return
+    path = root / "youtube-calendar.json"
+    previous = read_json(path, {})
+    try:
+        url = policy["calendarUrl"]
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("Invalid calendar URL")
+        with urllib.request.urlopen(url, timeout=5) as response:
+            raw = response.read(1048577)
+        if len(raw) > 1048576:
+            raise ValueError("Calendar response too large")
+        entries = json.loads(raw)
+        if not isinstance(entries, list):
+            raise ValueError("Invalid calendar response")
+        windows = {}
+        for entry in entries:
+            if entry.get("calendar") != policy.get("serviceCalendar", "Services") or entry.get("allDay"):
+                continue
+            start, end = timestamp(entry["start"]), timestamp(entry["end"])
+            if end <= start:
+                raise ValueError("Invalid church-service window")
+            if now - 7 * 86400 <= start <= now + 14 * 86400:
+                identifier = str(start)
+                windows[identifier] = {"id": identifier, "start": start}
+        # A started service is released by actual failover, not calendar edits or its planned end.
+        for old in previous.get("windows", []):
+            if now - 7 * 86400 <= old["start"] <= now:
+                windows.setdefault(old["id"], old)
+        atomic_json(path, {"ok": True, "fetchedAt": now, "windows": list(windows.values())})
+    except Exception:
+        atomic_json(path, dict(previous, ok=False, checkedAt=now, error="Local service calendar unavailable"))
 
 
 def output_keys(root, schedule):
@@ -306,32 +591,54 @@ def output_keys(root, schedule):
     return result
 
 
-def sync(root):
+def sync(root, run=RUN):
     schedule = read_json(root / "schedule.json", {})
-    if (root / "mode").read_text().strip() != "local" or schedule.get("scheduleSource", "weekly") != "youtube":
+    public = schedule.get("youtube", {}).get("provider", "api") == "yt-dlp"
+    if (root / "mode").read_text().strip() != "local":
+        return
+    if schedule.get("scheduleSource", "weekly") != "youtube" and not (
+            public and schedule.get("youtube", {}).get("channelId") and schedule.get("youtube", {}).get("rules")):
         return
     status_path = root / "youtube-sync-status.json"
     status = read_json(status_path, {})
     now = time.time()
+    started = time.monotonic()
+    policy = read_json(root / "youtube-local.json", {})
+    sync_calendar(root, policy, now)
     if status.get("retryAt", 0) > now:
         return
     try:
-        api = YouTube(root / "secrets" / "youtube-oauth.json", root / "youtube-quota.json")
-        cache = discover(api, schedule, read_json(root / "youtube-schedule.json"), output_keys(root, schedule), now)
+        api = PublicYouTube() if public else YouTube(root / "secrets" / "youtube-oauth.json", root / "youtube-quota.json")
+        discovery = discover_public if public else discover
+        previous = read_json(root / "youtube-schedule.json", {})
+        if public:
+            previous = previous if previous.get("fingerprint") == fingerprint(schedule) else {"fingerprint": fingerprint(schedule)}
+            state = read_json(run / "streamer-youtube-owner.json", {})
+            previous["trackedIds"] = sorted({event["id"] for event in state.get("owner", {}).get("events", [])}
+                                           | set(state.get("handoff", {}).get("ids", [])))
+            for owned in state.get("owner", {}).get("events", []):
+                if not any(event["id"] == owned["id"] for event in previous.get("events", [])):
+                    previous.setdefault("events", []).append(owned)
+        cache = discovery(api, schedule, previous, output_keys(root, schedule), now)
         atomic_json(root / "youtube-schedule.json", cache)
         atomic_json(status_path, {"ok": True, "checkedAt": now, "failures": 0,
+                                 "provider": "yt-dlp" if public else "api",
+                                 "durationSeconds": round(time.monotonic() - started, 2),
                                  "callsToday": read_json(root / "youtube-quota.json", {}).get("calls", 0)})
     except Exception as error:
         failures = min(status.get("failures", 0) + 1, 8)
         # Never echo provider responses/exceptions, which may include credentials.
         message = "YouTube discovery failed; check authorization, configuration, and connectivity"
+        if public:
+            message = "Public YouTube discovery failed; check connectivity and update yt-dlp if needed"
         if isinstance(error, ValueError):
             message = "YouTube configuration or response is invalid; check channel, rules, and discovery limits"
         if isinstance(error, ImportError):
-            message = "Run the documented YouTube OAuth environment setup"
+            message = "Install the documented YouTube environment dependencies"
         if isinstance(error, QuotaLimitError):
             message = "Local YouTube daily request budget reached; new starts are blocked once discovery becomes stale"
         atomic_json(status_path, {"ok": False, "checkedAt": now, "failures": failures,
+                                 "durationSeconds": round(time.monotonic() - started, 2),
                                  "retryAt": now + min(900, 60 * 2 ** (failures - 1)), "error": message})
 
 
@@ -350,7 +657,7 @@ def authorize(root, client_file):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["sync", "decide", "authorize"])
+    parser.add_argument("command", choices=["sync", "decide", "stopped", "authorize"])
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--run", type=Path, default=RUN)
     parser.add_argument("--client-file")
@@ -361,7 +668,13 @@ def main():
             parser.error("--client-file is required")
         authorize(args.root, args.client_file)
     elif args.command == "sync":
-        sync(args.root)
+        sync(args.root, args.run)
+    elif args.command == "stopped":
+        path = args.run / "streamer-youtube-owner.json"
+        state = read_json(path, {})
+        if state.get("handoff") and state["handoff"].get("disconnectedAt") is None:
+            state["handoff"]["disconnectedAt"] = time.time()
+            atomic_json(path, state)
     else:
         state_path = args.run / "streamer-youtube-owner.json"
         schedule = read_json(args.root / "schedule.json", {})
@@ -371,12 +684,17 @@ def main():
                 cache = None
         except (ValueError, TypeError, AttributeError):
             cache = None
+        mode_path = args.root / "mode"
+        policy = read_json(args.root / "youtube-local.json", {}) if mode_path.exists() and mode_path.read_text().strip() == "local" else {}
         command, profiles, state = decision(
             schedule, cache,
             read_json(state_path, {}), time.time(), running=args.running,
             manual=(args.run / "streamer-manual-override").exists(),
             stopped=(args.run / "streamer-manual-stop").exists(),
-            hold=(args.run / "streamer-queue-hold").exists())
+            hold=(args.run / "streamer-queue-hold").exists(),
+            policy=policy, calendar=read_json(args.root / "youtube-calendar.json"),
+            standby=read_json(Path(policy.get("standbyState", "/run/videokiosk2/standby.json"))),
+            profiles=[profile for profile in PROFILES if (args.run / ("streamer-active-" + profile)).exists()])
         atomic_json(state_path, state)
         print(" ".join([command] + profiles))
 

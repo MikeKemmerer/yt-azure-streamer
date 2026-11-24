@@ -155,6 +155,18 @@ function writeSchedule(schedule) {
 function validateYouTubeConfig(value, required = true) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid YouTube configuration');
   const channelId = typeof value.channelId === 'string' ? value.channelId.trim() : '';
+  const provider = value.provider ?? 'api';
+  if (!['api', 'yt-dlp'].includes(provider)) throw new Error('Invalid YouTube discovery method');
+  if (provider === 'yt-dlp' && channelId && !/^UC[A-Za-z0-9_-]{22}$/.test(channelId)) {
+    throw new Error('Public discovery requires the channel ID beginning with UC');
+  }
+  if (value.manualStudioChecks !== undefined && typeof value.manualStudioChecks !== 'boolean') {
+    throw new Error('Invalid manual Studio confirmation');
+  }
+  const manualStudioChecks = value.manualStudioChecks === true;
+  if (required && provider === 'yt-dlp' && !manualStudioChecks) {
+    throw new Error('Confirm the stream keys and Auto-start/Auto-stop settings in Studio before enabling public scheduling');
+  }
   if ((!channelId && required) || (channelId && !/^[A-Za-z0-9_-]{1,100}$/.test(channelId))) {
     throw new Error('Configure a valid YouTube channel ID');
   }
@@ -177,7 +189,7 @@ function validateYouTubeConfig(value, required = true) {
     }
     return { title, profile: rule.profile, durationSeconds };
   });
-  return { channelId, rules };
+  return { channelId, rules, provider, manualStudioChecks };
 }
 
 function youtubeFingerprint(schedule) {
@@ -193,12 +205,18 @@ function youtubeFingerprint(schedule) {
 }
 
 function youtubePreview(schedule, now = Date.now() / 1000) {
+  const provider = schedule.youtube?.provider || 'api';
+  const enabled = schedule.scheduleSource === 'youtube';
   const cache = readJsonFile('/etc/yt/youtube-schedule.json');
   const sync = readJsonFile('/etc/yt/youtube-sync-status.json');
-  const owner = readJsonFile('/run/streamer-youtube-owner.json')?.owner;
+  const controlState = readJsonFile('/run/streamer-youtube-owner.json');
+  const owner = controlState?.owner;
+  const policy = readJsonFile('/etc/yt/youtube-local.json');
   const ownedEvents = Array.isArray(owner?.events) ? owner.events : [];
   const deadline = ownedEvents.length ? Math.min(...ownedEvents.map(event => event.end)) : null;
-  const owned = Number.isFinite(deadline) && !fs.existsSync('/run/streamer-manual-override') ? {
+  const manualManaged = readMode() === 'local' && provider === 'yt-dlp' &&
+    policy?.rolloverEnabled === true && policy?.controlManual === true;
+  const owned = Number.isFinite(deadline) && (!fs.existsSync('/run/streamer-manual-override') || manualManaged) ? {
     broadcastIds: ownedEvents.map(event => String(event.id)),
     end: new Date(deadline * 1000).toISOString(), stopping: owner.stopping === true
   } : null;
@@ -220,15 +238,28 @@ function youtubePreview(schedule, now = Date.now() / 1000) {
     end: Number.isFinite(event.end) ? new Date(event.end * 1000).toISOString() : null,
     lifecycle: event.status,
     errors: Array.isArray(event.errors) ? event.errors.map(String) : ['Invalid cached event'],
-    eligible: fresh && !event.errors?.length && event.status === 'ready' && event.end > now && now - event.start <= 600
+    eligible: enabled && fresh && !event.errors?.length && event.status === 'ready' && event.end > now && now - event.start <= 600
   }));
   return {
     available: readMode() === 'local',
+    provider, enabled,
+    control: {
+      enabled: enabled && provider === 'yt-dlp' && readMode() === 'local' && policy?.rolloverEnabled === true,
+      manualIncluded: policy?.controlManual === true,
+      waiting: !!controlState?.handoff,
+      churchBlocked: controlState?.controlStatus?.churchBlocked === true,
+      calendarReady: controlState?.controlStatus?.calendarReady !== false,
+      minimumDisconnectSeconds: Number.isInteger(policy?.disconnectSeconds) ? Math.max(30, policy.disconnectSeconds) : 30
+    },
     authorized: fs.existsSync('/etc/yt/secrets/youtube-oauth.json'),
     channelId: compatible ? cache.channelId : null,
     fresh, ageSeconds, events, owned,
+    activeBroadcasts: (Array.isArray(cache?.activeBroadcasts) ? cache.activeBroadcasts : []).map(event => ({
+      id: String(event.id || ''), title: String(event.title || '')
+    })),
     sync: sync ? { ok: sync.ok === true, checkedAt: sync.checkedAt, error: sync.error || null,
-      retryAt: sync.retryAt || null, callsToday: sync.callsToday ?? null } : null
+      retryAt: sync.retryAt || null, callsToday: sync.callsToday ?? null,
+      durationSeconds: Number.isFinite(sync.durationSeconds) ? sync.durationSeconds : null } : null
   };
 }
 
@@ -1239,7 +1270,10 @@ const server = http.createServer(async (req, res) => {
         if (source === 'youtube' && readMode() !== 'local') {
           return jsonResponse(res, 400, { error: 'YouTube scheduling is currently available in local mode only' });
         }
-        if (readMode() === 'local' && source !== (schedule.scheduleSource || 'weekly')) {
+        const providerChanging = parsed.youtube &&
+          (parsed.youtube.provider || 'api') !== (schedule.youtube?.provider || 'api');
+        if (readMode() === 'local' && (source !== (schedule.scheduleSource || 'weekly') ||
+            (source === 'youtube' && providerChanging))) {
           let serviceState;
           try {
             serviceState = execFileSync('systemctl', ['show', '-p', 'ActiveState', '--value', 'streamer.service'], { timeout: 5000 }).toString().trim();
@@ -1277,6 +1311,10 @@ const server = http.createServer(async (req, res) => {
 
       // In local mode, scheduler.service reads schedule.json directly — no sync needed
       if (readMode() === 'local') {
+        if ((parsed.youtube !== undefined || parsed.scheduleSource !== undefined) &&
+            (schedule.youtube?.provider === 'yt-dlp' || schedule.scheduleSource === 'youtube')) {
+          execFile('systemctl', ['start', '--no-block', 'youtube-sync.service'], { timeout: 5000 }, () => {});
+        }
         return jsonResponse(res, 200, { ok: true, synced: true, mode: 'local' });
       }
 

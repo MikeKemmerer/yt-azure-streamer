@@ -46,6 +46,261 @@ def snapshot():
             "fetchedAt": NOW, "events": normalized(), "terminal": {}}
 
 
+def public_config():
+    schedule = config()
+    schedule["youtube"].update(provider="yt-dlp", channelId="UCabcdefghijklmnopqrstuv", manualStudioChecks=True)
+    return schedule
+
+
+def public_item(identifier="abcdefghijk", status="is_upcoming", start=NOW):
+    return {"id": identifier, "channel_id": public_config()["youtube"]["channelId"],
+            "title": "Sermons & Speakers", "live_status": status, "release_timestamp": start,
+            "media_type": "livestream"}
+
+
+class PublicAPI:
+    def __init__(self, items, listing=None):
+        self.items = {item["id"]: item for item in items}
+        self.listing = items if listing is None else listing
+        self.calls = []
+
+    def extract(self, identifier, listing=False):
+        self.calls.append((identifier, listing))
+        if listing:
+            return {"channel_id": public_config()["youtube"]["channelId"], "entries": self.listing}
+        return self.items[identifier]
+
+
+def public_snapshot(items=None, previous=None):
+    data = yt.discover_public(PublicAPI(items or [public_item()]), public_config(), previous or {},
+                              {"landscape": "fixture-key"}, NOW)
+    data["fetchedAt"] = NOW
+    return data
+
+
+class PublicTests(unittest.TestCase):
+    def test_exact_rules_channel_type_time_and_private_checks(self):
+        item = public_item()
+        item["title"] += " extra"
+        self.assertEqual(public_snapshot([item])["events"], [])
+        item = public_item()
+        item["media_type"] = "video"
+        self.assertIn("premieres", public_snapshot([item])["events"][0]["errors"][0])
+        item = public_item(start=None)
+        self.assertIn("Scheduled start is unavailable", public_snapshot([item])["events"][0]["errors"])
+        item = public_item()
+        item["channel_id"] = "another-channel"
+        with self.assertRaisesRegex(ValueError, "identity"):
+            public_snapshot([item])
+        schedule = public_config()
+        schedule["youtube"]["manualStudioChecks"] = False
+        data = yt.discover_public(PublicAPI([public_item()]), schedule, {}, {}, NOW)
+        self.assertEqual(len(data["events"][0]["errors"]), 2)
+
+    def test_metadata_worker_preserves_raw_live_title_without_processing(self):
+        calls = []
+        class Client:
+            def __init__(self, options):
+                self.options = options
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+            def extract_info(self, url, **kwargs):
+                calls.append((self.options, kwargs))
+                return public_item(status="is_live")
+        with patch.dict(sys.modules, {"yt_dlp": SimpleNamespace(YoutubeDL=Client)}), \
+                patch.object(sys, "argv", ["worker", "https://www.youtube.com/watch?v=abcdefghijk", "video"]), \
+                patch("builtins.print"):
+            exec(yt.PUBLIC_METADATA_WORKER, {})
+        self.assertFalse(calls[0][1]["process"], "processed live titles get an artificial date suffix")
+        self.assertFalse(calls[0][1]["download"])
+        self.assertTrue(calls[0][0]["skip_download"])
+
+    def test_public_requests_have_real_process_timeouts_and_strict_ids(self):
+        api = yt.PublicYouTube()
+        with patch.object(yt.subprocess, "run", return_value=SimpleNamespace(
+                returncode=0, stdout=json.dumps(public_item()), stderr="")) as run:
+            api.extract("abcdefghijk")
+            self.assertLessEqual(run.call_args.kwargs["timeout"], 20)
+            self.assertNotIn("shell", run.call_args.kwargs)
+            with self.assertRaises(ValueError):
+                api.extract("--anything")
+        api.deadline = time.monotonic() - 1
+        with self.assertRaises(TimeoutError):
+            api.extract("abcdefghijk")
+
+    def test_live_transition_preserves_window_and_tracks_missing_terminal(self):
+        previous = public_snapshot()
+        item = public_item(status="is_live", start=NOW + 120)
+        data = public_snapshot([item], previous)
+        self.assertEqual(data["events"][0]["start"], NOW)
+        self.assertEqual(data["events"][0]["liveStart"], NOW + 120)
+        previous["trackedIds"] = ["abcdefghijk"]
+        ended = public_item(status="was_live")
+        ended["media_type"] = "video"
+        api = PublicAPI([ended], listing=[])
+        data = yt.discover_public(api, public_config(), previous, {}, NOW)
+        self.assertEqual(data["terminal"], {"abcdefghijk": "complete"})
+        data = yt.discover_public(PublicAPI([ended], listing=[public_item(status="is_live")]),
+                                  public_config(), previous, {}, NOW)
+        self.assertEqual(data["activeBroadcasts"], [], "direct lifecycle metadata wins over a stale channel listing")
+        data = yt.discover_public(PublicAPI([], listing=[]), public_config(), {}, {}, NOW)
+        self.assertEqual(data["terminal"], {}, "absence from a bounded listing is not deletion")
+
+    def test_successor_shortens_fallback_and_live_never_starts_unowned(self):
+        live = public_item(status="is_live", start=NOW - 3600)
+        following = public_item("lmnopqrstuv", start=NOW + 300)
+        data = public_snapshot([live, following])
+        self.assertEqual(data["events"][0]["end"], NOW + 300)
+        self.assertEqual(data["events"][0]["errors"], [])
+        self.assertEqual(yt.decision(public_config(), data, {}, NOW + 300)[0], "HOLD")
+        following["media_type"] = "video"
+        self.assertEqual(public_snapshot([live, following])["events"][0]["end"], NOW - 3600 + 28800)
+
+    def test_weekly_preview_sync_keeps_cache_after_failure(self):
+        schedule = public_config()
+        schedule["scheduleSource"] = "weekly"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "mode").write_text("local")
+            yt.atomic_json(root / "schedule.json", schedule)
+            with patch.object(yt, "PublicYouTube", return_value=PublicAPI([public_item()])):
+                yt.sync(root, root)
+            cache = yt.read_json(root / "youtube-schedule.json")
+            self.assertEqual(len(cache["events"]), 1)
+            with patch.object(yt, "PublicYouTube", side_effect=RuntimeError("private-fixture")):
+                yt.sync(root, root)
+            self.assertEqual(yt.read_json(root / "youtube-schedule.json"), cache)
+            self.assertNotIn("private-fixture", json.dumps(yt.read_json(root / "youtube-sync-status.json")))
+
+    def test_discovery_limit_rejects_partial_result(self):
+        api = PublicAPI([public_item(str(i).zfill(11)) for i in range(33)])
+        with self.assertRaisesRegex(ValueError, "Too many"):
+            yt.discover_public(api, public_config(), {}, {}, NOW)
+        self.assertEqual(len(api.calls), 1)
+
+
+class RolloverTests(unittest.TestCase):
+    def managed(self, cache, state=None, now=NOW, **kwargs):
+        return yt.decision(public_config(), cache, state or {}, now,
+                           policy={"rolloverEnabled": True, "controlManual": True, "disconnectSeconds": 30},
+                           profiles=["landscape"], **kwargs)
+
+    def test_adopt_manual_stop_at_successor_wait_for_actual_completion(self):
+        live = public_item(status="is_live", start=NOW - 3600)
+        following = public_item("lmnopqrstuv", start=NOW + 60)
+        cache = public_snapshot([live, following])
+        command, _, state = self.managed(cache, running=True, manual=True)
+        self.assertEqual(command, "KEEP")
+        self.assertTrue(state["owner"]["adoptedManual"])
+        command, _, state = self.managed(cache, state, now=NOW + 60, running=True, manual=True)
+        self.assertEqual(command, "STOP")
+        command, _, state = self.managed(cache, state, now=NOW + 61)
+        self.assertEqual(command, "HOLD")
+        cache["activeBroadcasts"] = []
+        cache["terminal"]["abcdefghijk"] = "complete"
+        self.assertEqual(self.managed(cache, copy.deepcopy(state), now=NOW + 80)[0], "HOLD",
+                         "confirmed completion cannot bypass the 30-second disconnect")
+        cache["terminal"] = {}
+        command, _, state = self.managed(cache, state, now=NOW + 120)
+        self.assertEqual(command, "HOLD", "missing active listing alone does not confirm completion")
+        cache["terminal"]["abcdefghijk"] = "complete"
+        command, outputs, state = self.managed(cache, state, now=NOW + 121)
+        self.assertEqual((command, outputs), ("START", ["landscape"]))
+        self.assertEqual(state["owner"]["events"][0]["id"], "lmnopqrstuv")
+
+    def test_no_successor_stays_stopped_and_absolute_cap_survives_outage(self):
+        cache = public_snapshot([public_item(status="is_live", start=NOW - 3600)])
+        _, _, state = self.managed(cache, running=True)
+        state["owner"]["events"][0].update(start=NOW - 3600, liveStart=NOW - 86400, end=NOW + 80000)
+        self.assertEqual(self.managed(cache, copy.deepcopy(state), running=True)[0], "STOP",
+                         "fresh metadata cannot extend the absolute live-age limit")
+        command, _, state = self.managed(None, state, running=True)
+        self.assertEqual(command, "STOP")
+        cache["terminal"]["abcdefghijk"] = "complete"
+        cache["events"] = []
+        cache["activeBroadcasts"] = []
+        _, _, state = self.managed(cache, state, now=NOW + 1)
+        self.assertEqual(self.managed(cache, state, now=NOW + 32)[0], "IDLE")
+
+    def test_operator_hold_wins_and_manual_studio_ack_does_not_transfer(self):
+        cache = public_snapshot([public_item(status="is_live", start=NOW - 3600)])
+        self.assertEqual(self.managed(cache, running=True, hold=True)[0], "STOP")
+        schedule = public_config()
+        schedule["youtube"]["manualStudioChecks"] = False
+        live, following = public_item(status="is_live", start=NOW - 3600), public_item("lmnopqrstuv", start=NOW + 60)
+        cache = yt.discover_public(PublicAPI([live, following]), schedule, {}, {"landscape": "key"}, NOW)
+        cache["fetchedAt"] = NOW
+        policy = {"rolloverEnabled": True, "controlManual": True}
+        _, _, state = yt.decision(schedule, cache, {}, NOW, running=True, policy=policy, profiles=["landscape"])
+        self.assertEqual(len(state["owner"]["events"]), 1)
+        command, _, state = yt.decision(schedule, cache, state, NOW + 60, running=True, policy=policy)
+        self.assertEqual(command, "STOP")
+        cache["terminal"]["abcdefghijk"] = "complete"
+        cache["activeBroadcasts"] = []
+        _, _, state = yt.decision(schedule, cache, state, NOW + 61, policy=policy)
+        self.assertEqual(yt.decision(schedule, cache, state, NOW + 92, policy=policy)[0], "HOLD")
+
+    def test_service_latches_until_new_failover_not_calendar_end_or_old_browser(self):
+        state = {}
+        calendar = {"ok": True, "fetchedAt": NOW, "windows": [{"id": "service", "start": NOW}]}
+        old_browser = {"state": "fired", "failover_started": NOW - 100}
+        self.assertEqual(yt.calendar_block(calendar, old_browser, state, NOW), (True, True))
+        self.assertEqual(yt.calendar_block(None, None, state, NOW + 8 * 86400), (True, False))
+        new_browser = {"state": "counting", "failover_started": NOW + 8 * 86400}
+        self.assertEqual(yt.calendar_block(None, new_browser, state, NOW + 8 * 86400), (False, False))
+        state = {}
+        policy = {"rolloverEnabled": True, "controlManual": True, "calendarUrl": "http://calendar/api/events"}
+        cache = public_snapshot([public_item(status="is_live", start=NOW - 3600)])
+        command, _, state = yt.decision(public_config(), cache, state, NOW, running=True,
+                                       policy=policy, calendar=calendar, standby=old_browser, profiles=["landscape"])
+        self.assertEqual(command, "STOP")
+
+    def test_calendar_sync_filters_services_and_runs_during_youtube_backoff(self):
+        payload = [{"calendar": "Services", "allDay": False, "start": "2026-11-24T19:00:00Z",
+                    "end": "2026-11-24T20:00:00Z"},
+                   {"calendar": "Meetings", "start": "invalid", "end": "invalid"}]
+        class Response:
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+            def read(self, limit):
+                return json.dumps(payload).encode()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "mode").write_text("local")
+            yt.atomic_json(root / "schedule.json", public_config())
+            yt.atomic_json(root / "youtube-local.json", {"calendarUrl": "http://calendar/api/events"})
+            yt.atomic_json(root / "youtube-sync-status.json", {"retryAt": time.time() + 100})
+            with patch.object(yt.urllib.request, "urlopen", return_value=Response()):
+                yt.sync(root)
+            self.assertEqual(len(yt.read_json(root / "youtube-calendar.json")["windows"]), 1)
+
+    def test_service_release_starts_only_successor_after_actual_failover(self):
+        cache = public_snapshot([public_item(status="is_live", start=NOW - 3600),
+                                 public_item("lmnopqrstuv", start=NOW + 120)])
+        policy = {"rolloverEnabled": True, "controlManual": True, "calendarUrl": "http://calendar/api/events"}
+        calendar = {"ok": True, "fetchedAt": NOW, "windows": [{"id": "service", "start": NOW}]}
+        old = {"state": "fired", "failover_started": NOW - 100}
+        def tick(state, now, standby, **kwargs):
+            return yt.decision(public_config(), cache, state, now, policy=policy,
+                               calendar=calendar, standby=standby, profiles=["landscape"], **kwargs)
+        command, _, state = tick({}, NOW, old, running=True, manual=True)
+        self.assertEqual(command, "STOP")
+        _, _, state = tick(state, NOW + 1, old)
+        cache["terminal"]["abcdefghijk"] = "complete"
+        cache["activeBroadcasts"] = []
+        self.assertEqual(tick(copy.deepcopy(state), NOW + 120, old)[0], "HOLD")
+        new = {"state": "counting", "failover_started": NOW + 121}
+        self.assertEqual(tick(copy.deepcopy(state), NOW + 122, new, hold=True)[0], "HOLD")
+        self.assertEqual(tick(copy.deepcopy(state), NOW + 400, new)[0], "HOLD", "stale calendar blocks new starts")
+        command, _, state = tick(state, NOW + 122, new)
+        self.assertEqual(command, "START")
+        self.assertEqual(state["owner"]["events"][0]["id"], "lmnopqrstuv")
+
+
 class ScheduleTests(unittest.TestCase):
     def test_exact_normalized_title_and_offset_time(self):
         event = normalized([broadcast(title="  SERMONS  & speakers ")])[0]
@@ -318,6 +573,24 @@ systemctl() {
             tick()
             tick()
             self.assertEqual((root / "calls").read_text().splitlines(), ["start", "stop"])
+            (root / "mode").write_text("local")
+            yt.atomic_json(root / "youtube-local.json", {"rolloverEnabled": True, "controlManual": True, "disconnectSeconds": 30})
+            yt.atomic_json(root / "schedule.json", public_config())
+            (root / "streamer-youtube-owner.json").unlink()
+            (root / "running").touch()
+            (root / "streamer-active-landscape").touch()
+            cache = public_snapshot([public_item(status="is_live", start=now - 100)])
+            cache["fetchedAt"] = now
+            cache["keyFingerprint"] = yt.key_fingerprint({"landscape": "secret-main", "portrait": "secret-vertical"})
+            yt.atomic_json(root / "youtube-schedule.json", cache)
+            tick()
+            self.assertTrue(yt.read_json(root / "streamer-youtube-owner.json")["owner"]["adoptedManual"])
+            cache["events"][0]["end"] = now - 1
+            yt.atomic_json(root / "youtube-schedule.json", cache)
+            tick()
+            state = yt.read_json(root / "streamer-youtube-owner.json")
+            self.assertIsInstance(state["handoff"]["disconnectedAt"], float)
+            self.assertFalse((root / "running").exists())
 
 
 if __name__ == "__main__":

@@ -2,7 +2,6 @@
 Description=Read-only YouTube broadcast schedule discovery
 After=network-online.target
 ConditionPathExists=/etc/yt/youtube-venv/bin/python
-ConditionPathExists=/etc/yt/secrets/youtube-oauth.json
 
 [Service]
 Type=oneshot

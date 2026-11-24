@@ -239,7 +239,12 @@ async function testYouTubeScheduleRoutes() {
     channelId: 'UC-test',
     rules: [{ title: 'Sermons & Speakers', profile: 'landscape', durationSeconds: 28800 }]
   };
-  assert.deepStrictEqual(validateYouTubeConfig(settings), settings);
+  assert.deepStrictEqual(validateYouTubeConfig(settings), { ...settings, provider: 'api', manualStudioChecks: false });
+  const publicSettings = { ...settings, channelId: 'UCIoY39bECYNuUTUT1PZMT2w', provider: 'yt-dlp', manualStudioChecks: false };
+  assert.strictEqual(validateYouTubeConfig(publicSettings, false).provider, 'yt-dlp');
+  assert.throws(() => validateYouTubeConfig(publicSettings), /Confirm/);
+  assert.throws(() => validateYouTubeConfig({ ...publicSettings, channelId: 'not-a-channel' }, false), /channel ID/);
+  assert.throws(() => validateYouTubeConfig({ ...settings, provider: 'unknown' }), /method/);
   assert.throws(() => validateYouTubeConfig({ ...settings, rules: [...settings.rules, { ...settings.rules[0], title: '  sermons   & speakers ' }] }), /Duplicate/);
   assert.throws(() => validateYouTubeConfig({ ...settings, rules: [{ ...settings.rules[0], durationSeconds: true }] }), /duration/);
   const schedule = { timezone: 'UTC', events: [{ name: 'Weekly' }], stream: { shuffle: true } };
@@ -263,7 +268,11 @@ async function testYouTubeScheduleRoutes() {
       existsSync(file) { return files.has(file); }
     },
     child_process: {
-      execFile() { throw new Error('Local saves must not invoke Azure'); },
+      execFile(command, args, options, callback) {
+        assert.strictEqual(command, 'systemctl', 'Local saves must not invoke Azure');
+        assert.deepStrictEqual(Array.from(args), ['start', '--no-block', 'youtube-sync.service']);
+        callback(null);
+      },
       execFileSync() { return serviceState; }
     }
   });
@@ -289,6 +298,16 @@ async function testYouTubeScheduleRoutes() {
   assert.strictEqual(preview.status, 200);
   assert.strictEqual(preview.body.fresh, true);
   assert.strictEqual(preview.body.events[0].eligible, true);
+  files.set('/etc/yt/schedule.json', JSON.stringify({ ...saved, scheduleSource: 'weekly' }));
+  const weeklyCache = JSON.parse(files.get('/etc/yt/youtube-schedule.json'));
+  weeklyCache.fingerprint = youtubeFingerprint({ ...saved, scheduleSource: 'weekly' });
+  files.set('/etc/yt/youtube-schedule.json', JSON.stringify(weeklyCache));
+  const previewOnly = await invokeRoute(handler, 'GET', '/api/schedule/youtube');
+  assert.strictEqual(previewOnly.body.fresh, true);
+  assert.strictEqual(previewOnly.body.events[0].eligible, false, 'preview discovery must not enable automation');
+  files.set('/etc/yt/schedule.json', JSON.stringify(saved));
+  weeklyCache.fingerprint = youtubeFingerprint(saved);
+  files.set('/etc/yt/youtube-schedule.json', JSON.stringify(weeklyCache));
   assert.strictEqual(JSON.stringify(preview.body).includes('private-fixture'), false);
   assert.strictEqual(JSON.stringify(preview.body).includes('private-main-key'), false);
   files.set('/etc/yt/secrets/youtube-stream-key', 'changed-key');
