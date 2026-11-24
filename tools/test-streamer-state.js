@@ -14,6 +14,25 @@ const {
   validateOutputSelection
 } = require('../web/backend/server');
 
+{
+  const { displayTitle } = require('../web/backend/server');
+  const source = require('fs').readFileSync(require.resolve('../web/frontend/app.js'), 'utf8');
+  const start = source.indexOf('function cleanDisplayTitle(');
+  const end = source.indexOf('\nfunction needsTitleSuggestion(', start);
+  const cleanFrontend = require('vm').runInNewContext(`(${source.slice(start, end)})`);
+  for (const [input, expected] of [
+    ['2020-10-04 - October 4, 2020 - Love Beyond Fairness.mp4', 'October 4, 2020 - Love Beyond Fairness'],
+    ['2020-10-04_Title.MP4.mp4', 'Title'],
+    ['  Custom title.mp4  ', 'Custom title'],
+    ['October 4, 2020 - Love Beyond Fairness.mp4', 'October 4, 2020 - Love Beyond Fairness'],
+    ['Love in 2020-10-04.mp4', 'Love in 2020-10-04'],
+    ['Faith.mp4 and life.mp4', 'Faith.mp4 and life']
+  ]) {
+    assert.strictEqual(displayTitle(input), expected);
+    assert.strictEqual(cleanFrontend(input), expected);
+  }
+}
+
 const runtimePlaylist = ['alpha.mp4', 'beta.mp4', 'gamma.mp4'];
 
 assert.deepStrictEqual(

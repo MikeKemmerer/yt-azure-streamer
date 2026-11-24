@@ -358,6 +358,7 @@ except: pass
   if [[ -n "$CUSTOM_TITLE" ]]; then
     TITLE="$CUSTOM_TITLE"
   fi
+  TITLE=$(playback_control title --text "$TITLE")
 
   echo "[$INDEX/$((NUM_VIDEOS-1))] Streaming: $BASENAME"
   echo "  Title: $TITLE"
@@ -427,6 +428,7 @@ except: pass
   if [[ -n "$NEXT_CUSTOM" ]]; then
     NEXT_DISPLAY="$NEXT_CUSTOM"
   fi
+  NEXT_DISPLAY=$(playback_control title --text "$NEXT_DISPLAY")
   NEXT_TITLE="Up Next: ${NEXT_DISPLAY}"
   if [[ ${#NEXT_TITLE} -gt $MAX_LINE ]]; then
     TARGET=$(( ${#NEXT_TITLE} / 2 ))

@@ -631,7 +631,7 @@ function renderVideoList(filter) {
   list.innerHTML = '';
   const query = (filter || '').toLowerCase();
   videoData.forEach((v, i) => {
-    const displayTitle = v.title || v.file.replace(/\.[^.]+$/, '');
+    const displayTitle = cleanDisplayTitle(v.title || v.file);
     if (query && !displayTitle.toLowerCase().includes(query) && !v.file.toLowerCase().includes(query)) {
       return; // skip items that don't match search
     }
@@ -687,9 +687,9 @@ function renderVideoList(filter) {
     function commitEdit() {
       const newTitle = titleInput.value.trim();
       // If input matches derived filename title, store as empty (use default)
-      const derived = v.file.replace(/\.[^.]+$/, '');
+      const derived = cleanDisplayTitle(v.file);
       videoData[i].title = (newTitle === derived) ? '' : newTitle;
-      titleSpan.textContent = newTitle || derived;
+      titleSpan.textContent = cleanDisplayTitle(newTitle || derived);
       titleInput.style.display = 'none';
       titleSpan.style.display = '';
       editBtn.style.display = '';
@@ -738,7 +738,7 @@ function renderVideoList(filter) {
     playNowBtn.dataset.liveFile = v.file;
     playNowBtn.disabled = playNextBtn.disabled;
     playNowBtn.addEventListener('click', () => {
-      const title = v.title || v.file.replace(/\.[^.]+$/, '');
+      const title = cleanDisplayTitle(v.title || v.file);
       if (confirm(`Play "${title}" now? This interrupts the current sermon, briefly reconnects the stream, and continues with the next queued sermon afterward.`)) {
         submitQueueAction('now', { file: v.file }, 'Play now');
       }
@@ -817,10 +817,15 @@ document.getElementById('deselect-all').addEventListener('click', () => {
 
 /* ── Title Suggestions Modal ─────────────────────────────────────── */
 
+function cleanDisplayTitle(text) {
+  return text.trim().replace(/(?:\.(?:mp4|mkv|mov|avi|ts|flv))+$/i, '')
+    .replace(/^\d{4}-\d{2}-\d{2}(?:\s*[-_]\s*|\s+)/, '').trim();
+}
+
 function needsTitleSuggestion(v) {
   // If the user has already set a custom title, no suggestion needed
   if (v.title && v.title.trim()) return false;
-  const name = v.file.replace(/\.[^.]+$/, '');
+  const name = cleanDisplayTitle(v.file);
   if (name.includes('_')) return true;
   if (/version/i.test(name)) return true;
   if (/\.(mp4|mkv|mov|avi|ts|flv)/i.test(name)) return true;
@@ -829,7 +834,7 @@ function needsTitleSuggestion(v) {
 }
 
 function suggestTitle(filename) {
-  let t = filename.replace(/\.[^.]+$/, '');
+  let t = cleanDisplayTitle(filename);
   t = t.replace(/_/g, ' ');
   // Remove trailing version-like patterns (v2, v3, etc.)
   t = t.replace(/\s*v\d+$/i, '');

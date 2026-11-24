@@ -425,6 +425,11 @@ function wrapOverlayText(text, maxLine, maxLines = 2) {
   return text;
 }
 
+function displayTitle(text) {
+  return text.trim().replace(/(?:\.(?:mp4|mkv|mov|avi|ts|flv))+$/i, '')
+    .replace(/^\d{4}-\d{2}-\d{2}(?:\s*[-_]\s*|\s+)/, '').trim();
+}
+
 function syncActivePlaylist(videos) {
   if (!isStreamerActive()) return { updated: false, pending: false, nextFile: null };
   const control = readControlState();
@@ -450,7 +455,7 @@ function syncActivePlaylist(videos) {
     : runtimePlaylist[0] || null;
   const titleMap = new Map(videos.filter(video => video.title).map(video => [video.file, video.title]));
   const displayTitle = nextFile
-    ? titleMap.get(nextFile) || nextFile.replace(/\.[^.]+$/, '')
+    ? displayTitle(titleMap.get(nextFile) || nextFile)
     : '';
   const overlayText = displayTitle ? `Up Next: ${displayTitle}` : '';
   writeAtomic(UPNEXT_FILE, wrapOverlayText(overlayText, 55));
@@ -611,7 +616,7 @@ function streamerSnapshot(props, probe = false) {
   const cfg = readPlaylistConfig();
   const titles = new Map((cfg && Array.isArray(cfg.videos) ? cfg.videos : [])
     .filter(video => video && video.title).map(video => [video.file, video.title]));
-  const displayName = filename => titles.get(filename) || filename.replace(/\.[^.]+$/, '');
+  const displayName = filename => displayTitle(titles.get(filename) || filename);
   const entered = new Date(props.ActiveEnterTimestamp || '');
   const result = {
     active, state: props.ActiveState || 'unknown',
@@ -1725,6 +1730,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  displayTitle,
   buildPlaybackPosition,
   buildRuntimePlaylist,
   moveVideoNext,

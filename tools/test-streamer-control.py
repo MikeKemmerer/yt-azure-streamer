@@ -18,6 +18,23 @@ spec.loader.exec_module(control)
 
 
 class QueueTests(unittest.TestCase):
+    def test_automatic_display_title_cleanup(self):
+        for value, expected in (
+            ("2020-10-04 - October 4, 2020 - Love Beyond Fairness.mp4", "October 4, 2020 - Love Beyond Fairness"),
+            ("2020-10-04_Title.MP4.mp4", "Title"),
+            ("  Custom title.mp4  ", "Custom title"),
+            ("October 4, 2020 - Love Beyond Fairness.mp4", "October 4, 2020 - Love Beyond Fairness"),
+            ("Love in 2020-10-04.mp4", "Love in 2020-10-04"),
+            ("Faith.mp4 and life.mp4", "Faith.mp4 and life"),
+        ):
+            self.assertEqual(control.display_title(value), expected)
+        (self.actor.etc / "playlist-config.json").write_text(json.dumps({
+            "videos": [{"file": "B.mp4", "title": "2020-10-04 - Love Beyond Fairness.mp4"}]
+        }))
+        self.actor.overlay(self.state)
+        for name in ("streamer-upnext.txt", "streamer-upnext-portrait.txt"):
+            self.assertEqual((self.actor.overlays / name).read_text(), "Up Next: Love Beyond Fairness")
+
     def test_portrait_titles_use_three_lines_without_losing_words(self):
         title = "January 4, 2025 - Repentance is the Beginning, Middle, and End to a Christian Way of Life"
         wrapped = control.wrap_overlay(title, 40, 3)

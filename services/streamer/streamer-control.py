@@ -7,6 +7,7 @@ import fcntl
 import json
 import math
 import os
+import re
 import signal
 import socket
 import sys
@@ -41,6 +42,11 @@ def read_json(path, default=None):
             return json.load(source)
     except (OSError, ValueError):
         return default
+
+
+def display_title(text):
+    text = re.sub(r"(?:\.(?:mp4|mkv|mov|avi|ts|flv))+$", "", text.strip(), flags=re.I)
+    return re.sub(r"^\d{4}-\d{2}-\d{2}(?:\s*[-_]\s*|\s+)", "", text).strip()
 
 
 def wrap_overlay(text, width, max_lines=2):
@@ -332,7 +338,7 @@ class Controller:
             and isinstance(item.get("file"), str) and isinstance(item.get("title", ""), str)
         }
         filename = Path(state["upcoming"][0]["file"]).name if state["upcoming"] else ""
-        title = titles.get(filename) or os.path.splitext(filename)[0]
+        title = display_title(titles.get(filename) or filename)
         text = f"Up Next: {title}" if title else ""
         for name, width, lines in (("streamer-upnext.txt", 55, 2), ("streamer-upnext-portrait.txt", 40, 3)):
             wrapped = wrap_overlay(text, width, lines)
@@ -502,7 +508,7 @@ class Controller:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("operation", choices=("init", "command", "prepare", "launched", "confirm", "next", "overlay", "telemetry", "wrap", "checkpoint", "complete", "offset"))
+    parser.add_argument("operation", choices=("init", "command", "prepare", "launched", "confirm", "next", "overlay", "telemetry", "wrap", "title", "checkpoint", "complete", "offset"))
     parser.add_argument("--text", default="")
     parser.add_argument("--width", type=int, default=40)
     parser.add_argument("--lines", type=int, choices=(2, 3), default=3)
@@ -516,6 +522,9 @@ def main():
     parser.add_argument("--video-dir")
     parser.add_argument("--generation")
     args = parser.parse_args()
+    if args.operation == "title":
+        sys.stdout.buffer.write(display_title(args.text).encode("utf-8", errors="replace"))
+        return
     if args.operation == "wrap":
         if args.width < 1:
             parser.error("--width must be positive")
