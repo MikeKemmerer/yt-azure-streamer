@@ -35,6 +35,186 @@ const {
 
 const runtimePlaylist = ['alpha.mp4', 'beta.mp4', 'gamma.mp4'];
 
+{
+  const source = require('fs').readFileSync(require.resolve('../web/frontend/app.js'), 'utf8');
+  const load = (name, next) => require('vm').runInNewContext(
+    source.slice(source.indexOf(`function ${name}(`), source.indexOf(`\nfunction ${next}(`)) + `\n${name}`
+  );
+  const playback = load('playbackPresentation', 'renderPlaybackOverview');
+  const schedule = load('schedulePresentation', 'renderScheduleOverview');
+  const active = { active: true, state: 'active', playbackHealth: { status: 'healthy' } };
+  assert.strictEqual(playback(active, null, false).label, 'Encoder progressing');
+  assert.strictEqual(playback(active, null, true).tone, 'unknown', 'lost connectivity cannot look healthy');
+  assert.strictEqual(playback({ ...active, playbackHealth: { status: 'stalled' } }, null, false).tone, 'error');
+  assert.strictEqual(playback({ active: true, state: 'active' }, null, false).tone, 'unknown',
+    'an older backend cannot imply measured progress');
+  const church = {
+    next_action: { action: 'wait_for_kiosk_failover', at: null },
+    components: { playback: { actual: 'inactive', intentional_pause: true },
+      scheduling: { source: 'youtube', church_blocked: true } }
+  };
+  assert.strictEqual(playback({ active: false, state: 'inactive' }, church, false).label, 'Paused for church');
+  assert.strictEqual(schedule({ scheduleSource: 'youtube' }, church).title, 'Wait for kiosk failover');
+  const start = '2026-11-29T17:00:00Z';
+  const scheduled = { ...church, next_action: { action: 'scheduled_start', at: start } };
+  assert.strictEqual(schedule({ scheduleSource: 'youtube' }, scheduled,
+    { fresh: true, events: [{ title: 'Sunday broadcast', start, eligible: true }] }).note, 'Sunday broadcast');
+  church.components.scheduling.stale = true;
+  assert.strictEqual(schedule({ scheduleSource: 'youtube', nextStart: start }, church).nextStart, null,
+    'a stale broadcast must not be presented as a scheduled start');
+  assert.strictEqual(schedule({ scheduleSource: 'weekly', nextStart: start }, null).nextStart, start,
+    'weekly scheduling works without the diagnostics endpoint');
+  assert.strictEqual(schedule(null, null).title, 'Scheduler status unavailable');
+}
+
+{
+  const source = require('fs').readFileSync(require.resolve('../web/frontend/app.js'), 'utf8');
+  const start = source.indexOf('function renderScheduleEvents()');
+  const end = source.indexOf('\nconst ALL_DAYS', start);
+  const element = { innerHTML: 'Previous weekly content' };
+  const event = { name: 'Saved weekly event', days: ['Thu'], start: '09:00', stop: '10:00', streams: ['portrait'] };
+  for (const [mode, events, expected] of [
+    ['youtube', [], ''], ['youtube', [event], ''],
+    ['weekly', [], 'No weekly events configured.'], ['weekly', [event], 'Saved weekly event']
+  ]) {
+    const savedEvents = JSON.stringify(events);
+    require('vm').runInNewContext(source.slice(start, end) + '\nrenderScheduleEvents();', {
+      activeScheduleSource: mode, scheduleData: { events },
+      document: { getElementById: () => element }, esc: value => String(value)
+    });
+    assert(expected ? element.innerHTML.includes(expected) : element.innerHTML === '',
+      'only the active weekly source should display its event list or empty notice');
+    assert.strictEqual(JSON.stringify(events), savedEvents, 'rendering must preserve saved weekly events');
+  }
+}
+
+function testDiagnosticsContract() {
+  const { buildDiagnostics } = require('../web/backend/server');
+  const now = 1800000000;
+  const input = {
+    mode: 'local', source: 'youtube', studioConfirmed: true, calendarRequired: true,
+    flags: {}, sample: { at: now }, control: { current: { generation: 'fixture-generation' }, upcoming: [] },
+    player: { active: true, state: 'active', activeStreams: { portrait: true, landscape: false },
+      nowPlaying: '<title>', progress: { elapsed: 120, duration: 600 }, playbackHealth: { status: 'healthy', speed: 1, age: 0 } },
+    youtube: { provider: 'yt-dlp', fresh: true, ageSeconds: 10, events: [], sync: { durationSeconds: 4 } },
+    calendar: { ok: true, fetchedAt: now, windows: [{ start: now + 300 }] },
+    state: { decision: { command: 'KEEP', observedAt: now }, controlStatus: { churchBlocked: false },
+      owner: { events: [{ id: 'fixture', start: now - 100, liveStart: now - 100, end: now + 1000 }] } },
+    probes: { observed_at: now, storage: { severity: 'ok', reason: 'Read succeeded' },
+      auth: { severity: 'ok', reason: 'SAS expires later', mode: 'sas', days_remaining: 90 },
+      resources: { severity: 'ok', reason: 'Available', uptime_seconds: 100, load_1m: 0.5, cpu_cores: 4,
+        memory_available_mb: 2048, memory_total_mb: 4096, disk_total_bytes: 10737418240,
+        disk_used_bytes: 1073741824, disk_available_bytes: 9663676416, disk_available_percent: 90 },
+      services: Object.fromEntries(['scheduler.service', 'web-backend.service', 'caddy.service', 'youtube-sync.timer']
+        .map(unit => [unit, { state: 'active', restarts: 0 }])) }
+  };
+  const clone = () => JSON.parse(JSON.stringify(input));
+  const healthy = buildDiagnostics(input, now);
+  assert.strictEqual(healthy.schema_version, 1);
+  assert.strictEqual(healthy.severity, 'ok');
+  assert.deepStrictEqual(healthy.components.playback.outputs, ['portrait']);
+  assert.strictEqual(healthy.next_action.action, 'church_pause');
+  assert.strictEqual(healthy.components.encoder.observed_at, new Date(now * 1000).toISOString());
+  for (const value of Object.values(healthy.components)) {
+    assert('observed_at' in value && 'stale' in value && 'age_seconds' in value);
+  }
+  let changed = clone();
+  changed.player.active = false; changed.player.state = 'inactive';
+  assert.strictEqual(buildDiagnostics(changed, now).components.playback.severity, 'error');
+  changed.state.controlStatus.churchBlocked = true;
+  assert.strictEqual(buildDiagnostics(changed, now).components.playback.severity, 'ok');
+  assert.strictEqual(buildDiagnostics(changed, now).components.encoder.reason, 'Encoder intentionally stopped');
+  assert.strictEqual(buildDiagnostics(changed, now).next_action.action, 'wait_for_kiosk_failover');
+  changed = clone(); changed.flags.queueHold = true;
+  assert.strictEqual(buildDiagnostics(changed, now).components.playback.severity, 'error',
+    'streaming despite an intentional queue hold is an error');
+  changed = clone(); changed.player.playbackHealth = { status: 'unknown', reason: 'telemetry reader unavailable' };
+  assert.strictEqual(buildDiagnostics(changed, now).components.encoder.severity, 'unknown');
+  changed = clone(); changed.player.playbackHealth.status = 'stalled';
+  changed.sample.at = now - 30;
+  assert.strictEqual(buildDiagnostics(changed, now).components.encoder.severity, 'error');
+  changed = clone(); changed.probes.observed_at = now - 121;
+  assert.strictEqual(buildDiagnostics(changed, now).components.storage.stale, true);
+  changed = clone(); changed.studioConfirmed = false;
+  assert.strictEqual(buildDiagnostics(changed, now).components.scheduling.severity, 'warn');
+  changed = clone(); changed.calendar.fetchedAt = now - 181;
+  assert.strictEqual(buildDiagnostics(changed, now).components.scheduling.severity, 'unknown');
+  changed = clone(); changed.calendar.fetchedAt = now + 10;
+  assert.strictEqual(buildDiagnostics(changed, now).components.scheduling.severity, 'unknown');
+  changed = clone(); changed.state.decision.observedAt = now - 91;
+  assert.strictEqual(buildDiagnostics(changed, now).components.scheduling.severity, 'unknown');
+  changed = clone(); changed.mode = 'azure'; changed.source = 'weekly';
+  changed.weekly = { expected: 'stopped', reason: 'Outside weekly schedule', observedAt: now };
+  changed.player = { active: false, state: 'inactive', playbackHealth: { status: 'stopped' } };
+  assert.strictEqual(buildDiagnostics(changed, now).components.playback.severity, 'ok');
+  assert.strictEqual(buildDiagnostics(changed, now).components.scheduling.calendar_required, false);
+  assert.strictEqual(buildDiagnostics(changed, now).next_action.action, 'wait_for_weekly_window');
+  changed = clone(); changed.probes.auth.sas = 'never-export'; changed.probes.services['extra.service'] = { state: 'private' };
+  assert(!JSON.stringify(buildDiagnostics(changed, now)).includes('never-export'));
+  assert(!JSON.stringify(buildDiagnostics(changed, now)).includes('extra.service'));
+  changed = clone(); changed.probes.observed_at = now + 10;
+  assert.strictEqual(buildDiagnostics(changed, now).components.storage.severity, 'unknown');
+  changed = clone(); changed.flags.manualStop = true; changed.player.active = false; changed.player.state = 'inactive';
+  assert.strictEqual(buildDiagnostics(changed, now).components.playback.severity, 'ok');
+  assert.strictEqual(buildDiagnostics(changed, now).next_action.action, 'wait_for_operator_release');
+  assert.strictEqual(input.player.active, true, 'diagnostics must not mutate player inputs');
+  const source = require('fs').readFileSync(require.resolve('../web/frontend/app.js'), 'utf8');
+  const start = source.indexOf('function diagnosticValue(');
+  const end = source.indexOf('\nasync function loadDiagnostics(', start);
+  const elements = new Map();
+  const element = id => {
+    if (!elements.has(id)) elements.set(id, {
+      textContent: '', innerHTML: '', querySelectorAll: () => [{ dataset: { component: 'encoder' } }]
+    });
+    return elements.get(id);
+  };
+  const context = {
+    document: { getElementById: element }, fmtDate: value => value, fmtDuration: value => String(value),
+    esc: value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')
+  };
+  const renderingFixture = JSON.parse(JSON.stringify(healthy));
+  renderingFixture.components.encoder.reason = '<title>';
+  require('vm').runInNewContext(source.slice(start, end) + '\nrenderDiagnostics(' + JSON.stringify(renderingFixture) + ');', context);
+  const serviceHtml = element('health-grid').innerHTML;
+  assert(serviceHtml.includes('data-component="encoder" open'));
+  assert(serviceHtml.includes('&lt;title>'));
+  assert(!serviceHtml.includes('<title>'));
+  assert(serviceHtml.includes('data-component="streamer.service"'));
+  assert(serviceHtml.includes('data-component="scheduler.service"'));
+  assert(!serviceHtml.includes('data-component="services"'), 'control services must not have a duplicate summary');
+  assert(!serviceHtml.includes('data-component="storage"'));
+  assert(!serviceHtml.includes('data-component="resources"'));
+  assert(!serviceHtml.includes('current title') && !serviceHtml.includes('elapsed seconds'),
+    'title and playback position belong to the player, not duplicate health rows');
+  assert(element('system-stats').innerHTML.includes('data-component="resources"'));
+  assert(element('system-stats').innerHTML.includes('2048 / 4096 MB'));
+  assert(element('storage-stats').innerHTML.includes('data-component="storage"'));
+  assert(element('storage-stats').innerHTML.includes('data-component="auth"'));
+  assert(!source.includes("api('/api/health')"));
+  assert(!source.includes("api('/api/system')"));
+  assert(!source.includes("api('/api/storage')"));
+  changed = clone(); changed.player.active = false; changed.player.state = 'inactive';
+  changed.state.controlStatus.churchBlocked = true;
+  const stopped = buildDiagnostics(changed, now);
+  require('vm').runInNewContext(source.slice(start, end) + '\nrenderDiagnostics(' + JSON.stringify(stopped) + ');', context);
+  assert(element('health-grid').innerHTML.includes('Streamer · ok: Paused for church'));
+  changed = clone(); changed.player.playbackHealth.status = 'stalled';
+  const stalled = buildDiagnostics(changed, now);
+  require('vm').runInNewContext(source.slice(start, end) + '\nrenderDiagnostics(' + JSON.stringify(stalled) + ');', context);
+  assert(element('health-grid').innerHTML.includes('Streamer · error: Encoder stalled'),
+    'an active process must not mask a failed encoder');
+  changed = clone(); changed.probes.observed_at = now - 121;
+  const stale = buildDiagnostics(changed, now);
+  require('vm').runInNewContext(source.slice(start, end) + '\nrenderDiagnostics(' + JSON.stringify(stale) + ');', context);
+  assert(element('health-grid').innerHTML.includes('caddy · unknown: Service observation stale'));
+  stale.components.auth.mode = 'not_applicable';
+  require('vm').runInNewContext(source.slice(start, end) + '\nrenderDiagnostics(' + JSON.stringify(stale) + ');', context);
+  assert(element('storage-stats').innerHTML.includes('data-component="auth"'),
+    'stale not-applicable auth cannot silently hide uncertainty');
+}
+
+testDiagnosticsContract();
+
 assert.deepStrictEqual(
   buildPlaybackPosition(
     true,
@@ -144,7 +324,7 @@ function loadBackend(dependencies) {
       return dependencies[name] || require(name);
     },
     module: { exports: {} },
-    process,
+    process: dependencies.process || process,
     console,
     Buffer,
     setInterval: dependencies.setInterval || setInterval,
@@ -167,6 +347,50 @@ async function invokeRoute(handler, method, url, body) {
   }
   await pending;
   return response;
+}
+
+async function testDeploymentVersion() {
+  const fs = require('fs');
+  const vm = require('vm');
+  const source = fs.readFileSync(require.resolve('../web/frontend/app.js'), 'utf8');
+  const label = vm.runInNewContext(source.slice(source.indexOf('function deploymentLabel('),
+    source.indexOf('async function loadInfo(')) + '\ndeploymentLabel');
+  let modified = true;
+  let tagged = false;
+  let gitAvailable = true;
+  const handler = loadBackend({
+    process: { env: { PATH: '/usr/bin' } },
+    os: { homedir: () => '/root', hostname: () => 'fixture' },
+    fs: { readFileSync(file) {
+      if (file === '/etc/yt/mode') return 'local';
+      throw new Error('No installed configuration');
+    } },
+    child_process: {
+      execFileSync(command, args, options) {
+        assert.strictEqual(command, 'git');
+        assert.strictEqual(options.cwd, '/opt/yt');
+        if (options.env.HOME !== '/root') throw new Error('Git cannot load the service account config');
+        if (!gitAvailable) throw new Error('Git lookup failed');
+        if (args.includes('--short')) return Buffer.from('abc1234\n');
+        if (args.includes('--abbrev-ref')) return Buffer.from(tagged ? 'HEAD\n' : 'beta\n');
+        if (args.includes('--exact-match') && tagged) return Buffer.from('v2.0.0\n');
+        if (args.includes('status')) return Buffer.from(modified ? ' M web/frontend/app.js\n' : '');
+        throw new Error('No exact tag');
+      }
+    }
+  });
+  const info = async () => {
+    const response = await invokeRoute(handler, 'GET', '/api/info');
+    assert.strictEqual(response.status, 200);
+    return response.body;
+  };
+  assert.strictEqual(label(await info()), 'beta @ abc1234 (locally modified)');
+  modified = false;
+  assert.strictEqual(label(await info()), 'beta @ abc1234');
+  tagged = true;
+  assert.strictEqual(label(await info()), 'v2.0.0 @ abc1234');
+  gitAvailable = false;
+  assert.strictEqual(label(await info()), 'Version unavailable');
 }
 
 async function testSkipRoute(active, writeFails) {
@@ -289,6 +513,10 @@ async function testYouTubeScheduleRoutes() {
     child_process: {
       execFile(command, args, options, callback) {
         assert.strictEqual(command, 'systemctl', 'Local saves must not invoke Azure');
+        if (args[0] === 'show') {
+          callback(null, `ActiveState=${serviceState}\nActiveEnterTimestamp=\n`);
+          return;
+        }
         assert.deepStrictEqual(Array.from(args), ['start', '--no-block', 'youtube-sync.service']);
         callback(null);
       },
@@ -317,6 +545,12 @@ async function testYouTubeScheduleRoutes() {
   assert.strictEqual(preview.status, 200);
   assert.strictEqual(preview.body.fresh, true);
   assert.strictEqual(preview.body.events[0].eligible, true);
+  const diagnosticRoute = await invokeRoute(handler, 'GET', '/api/streamer/diagnostics');
+  assert.strictEqual(diagnosticRoute.status, 200);
+  assert.strictEqual(diagnosticRoute.body.schema_version, 1);
+  assert.strictEqual(diagnosticRoute.body.components.storage.severity, 'unknown',
+    'the endpoint must not initiate a slow filesystem probe per request');
+  assert.strictEqual(JSON.stringify(diagnosticRoute.body).includes('private-main-key'), false);
   files.set('/etc/yt/schedule.json', JSON.stringify({ ...saved, scheduleSource: 'weekly' }));
   const weeklyCache = JSON.parse(files.get('/etc/yt/youtube-schedule.json'));
   weeklyCache.fingerprint = youtubeFingerprint({ ...saved, scheduleSource: 'weekly' });
@@ -396,6 +630,10 @@ function testProgressiveQueueDisplay() {
   assert.strictEqual(list.hidden, false);
   assert.strictEqual(list.children.length, 5);
   assert.strictEqual(element('queue-expand').textContent, 'Show all (12)');
+  list.children[0].children[2].children[1].listeners.click();
+  assert.deepStrictEqual(actions.at(-1).files, [
+    queue.items[1].file, queue.items[0].file, ...queue.items.slice(2).map(item => item.file)
+  ], 'non-drag reorder must preserve the undisplayed queue');
   const sorting = sortables.at(-1);
   sorting.onStart();
   list.children.push(list.children.shift());
@@ -653,27 +891,34 @@ async function testProcessIdentityHealth() {
 
 function testPlaybackHealthFeedback() {
   const source = require('fs').readFileSync(require.resolve('../web/frontend/app.js'), 'utf8');
-  const start = source.indexOf('function renderStreamerStatus(data) {');
-  const end = source.indexOf('function renderLiveQueue(', start);
+  const start = source.indexOf('function diagnosticValue(');
+  const end = source.indexOf('\nasync function loadDiagnostics(', start);
   assert(start >= 0 && end > start);
   for (const health of [
     { status: 'stalled', speed: 1, age: 25.9, reason: 'no new encoder progress' },
     { status: 'unknown', reason: 'telemetry reader unavailable' }
   ]) {
     const elements = new Map();
-    require('vm').runInNewContext(source.slice(start, end) + '\nrenderStreamerStatus(data);', {
-      data: { active: true, nowPlaying: null, upNext: [], playbackHealth: health },
+    const component = { severity: 'ok', reason: 'Fixture healthy', stale: false };
+    require('vm').runInNewContext(source.slice(start, end) + '\nrenderDiagnostics(data);', {
+      data: { schema_version: 1, severity: health.status === 'stalled' ? 'error' : 'unknown',
+        summary: health.reason, next_action: { action: 'continue_weekly_schedule', at: null },
+        components: { playback: { ...component, actual: 'active' },
+          encoder: { ...component, severity: health.status === 'stalled' ? 'error' : 'unknown',
+            reason: health.reason, status: health.status, speed: health.speed, sample_age_seconds: health.age },
+          services: { ...component, units: {} }, scheduling: { ...component, source: 'weekly' },
+          resources: component, storage: component, auth: { ...component, mode: 'not_applicable' } } },
       document: {
         getElementById(id) {
-          if (!elements.has(id)) elements.set(id, { style: {}, classList: { add() {}, remove() {} } });
+          if (!elements.has(id)) elements.set(id, { querySelectorAll() { return []; } });
           return elements.get(id);
         }
       },
-      renderLiveQueue() {}, renderOutputControls() {}, stopProgressTicker() {}, fmtDuration() { return ''; }
+      esc: value => String(value), fmtDate() { return ''; }, fmtDuration() { return ''; }
     });
-    const text = elements.get('playback-health').textContent;
+    const text = elements.get('health-grid').innerHTML;
     assert(text.includes(health.status) && text.includes(health.reason));
-    if (health.age !== undefined) assert(text.includes('sample 25s old'));
+    if (health.age !== undefined) assert(text.includes('sample age seconds') && text.includes('25.90'));
     assert(!text.includes('NaN') && !text.includes('undefined'));
   }
 }
@@ -715,6 +960,7 @@ async function testSharedEvents() {
 }
 
 (async () => {
+  await testDeploymentVersion();
   await testSkipRoute(true, false);
   await testSkipRoute(false, false);
   await testSkipRoute(true, true);

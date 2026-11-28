@@ -39,6 +39,10 @@ AFTER=$(git rev-parse HEAD)
 chmod +x "$REPO_DIR"/scripts/*.sh "$REPO_DIR"/services/streamer/*.sh "$REPO_DIR"/services/scheduler/*.sh 2>/dev/null || true
 
 if [[ "$BEFORE" == "$AFTER" ]]; then
+  if [[ -f "$REPO_DIR/services/streamer/streamer-control.py" && ! -f /usr/local/bin/streamer-control.py ]]; then
+    echo "Repairing missing playback control helper..."
+    install -m 755 "$REPO_DIR/services/streamer/streamer-control.py" /usr/local/bin/streamer-control.py
+  fi
   echo "Already up to date ($BEFORE)."
   exit 0
 fi
@@ -62,6 +66,7 @@ SCRIPTS_CHANGED=false
 declare -A SCRIPT_MAP=(
   ["services/streamer/streamer.sh"]="/usr/local/bin/streamer.sh"
   ["services/streamer/streamer-control.py"]="/usr/local/bin/streamer-control.py"
+  ["services/streamer/streamer-diagnostics.py"]="/usr/local/bin/streamer-diagnostics.py"
   ["services/scheduler/scheduler.sh"]="/usr/local/bin/scheduler.sh"
   ["services/scheduler/youtube-schedule.py"]="/usr/local/bin/youtube-schedule.py"
   ["scripts/schedule-sync.sh"]="/usr/local/bin/schedule-sync.sh"

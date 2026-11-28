@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+STREAMER="$ROOT_DIR/services/streamer/streamer.sh"
 WORK_DIR=$(mktemp -d)
 REQUESTER=""
 TELEMETRY_PID=""
@@ -13,7 +14,18 @@ cleanup() {
   rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT
-mkdir "$WORK_DIR/run" "$WORK_DIR/etc" "$WORK_DIR/media" "$WORK_DIR/overlays"
+mkdir "$WORK_DIR/bin" "$WORK_DIR/run" "$WORK_DIR/etc" "$WORK_DIR/media" "$WORK_DIR/overlays"
+
+# Simulate an existing host whose old updater copied streamer.sh but skipped the helper.
+CONTROL_SETUP=$(sed -n '/^CONTROL_HELPER=/,/^CONTROL_REQUEST=/{
+  /^CONTROL_REQUEST=/d
+  p
+}' "$STREAMER" | sed -e 's@/usr/local/bin@${WORK_DIR}/bin@g' -e 's@/opt/yt@${ROOT_DIR}@g')
+eval "$CONTROL_SETUP"
+[[ -x "$WORK_DIR/bin/streamer-control.py" ]]
+CONTROL_COMMAND+=(--run "$WORK_DIR/run" --etc "$WORK_DIR/etc" --overlays "$WORK_DIR/overlays")
+eval "$(sed -n '/^playback_control() {/p; /^cleanup_telemetry() {/,/^}/p' "$STREAMER")"
+
 for name in A B C D; do
   duration=4
   if [[ "$name" == A ]]; then duration=10; fi
@@ -33,25 +45,15 @@ QUEUE_HOLD="$WORK_DIR/run/streamer-queue-hold"
 MANUAL_STOP="$WORK_DIR/run/manual-stop"
 MANUAL_OVERRIDE="$WORK_DIR/run/manual-override"
 STATE_FILE="$WORK_DIR/etc/playlist-state.json"
-playback_control() {
-  python3 "$ROOT_DIR/services/streamer/streamer-control.py" "$@" \
-    --run "$WORK_DIR/run" --etc "$WORK_DIR/etc" --overlays "$WORK_DIR/overlays"
-}
-cleanup_telemetry() {
-  kill -TERM "$TELEMETRY_PID" 2>/dev/null || true
-  wait "$TELEMETRY_PID" 2>/dev/null || true
-  TELEMETRY_PID=""
-  rm -f "$PROGRESS_PORT_FILE"
-}
 PLAYBACK=$(sed -n '/# Always re-encode at 30 fps CFR/,/# Failed playback must retain its bookmark/{
   /# Failed playback must retain its bookmark/d
   p
-}' "$ROOT_DIR/services/streamer/streamer.sh")
+}' "$STREAMER")
 BOOKMARK=$(sed -n '/# Failed playback must retain its bookmark/,/# An explicit stop job/{
   /# An explicit stop job/d
   p
-}' "$ROOT_DIR/services/streamer/streamer.sh")
-QUEUE_TAIL=$(sed -n '/# Adopt playlist changes/,$p' "$ROOT_DIR/services/streamer/streamer.sh" | sed '$d')
+}' "$STREAMER")
+QUEUE_TAIL=$(sed -n '/# Adopt playlist changes/,$p' "$STREAMER" | sed '$d')
 mapfile -t CONTROL_PLAYBACK < <(playback_control init --owner "$$" --video-dir "$WORK_DIR/media")
 EXTRA_INPUTS=()
 OUTPUT_ARGS=(-map "[video]" -c:v libx264 -preset veryfast -f null -)
@@ -88,7 +90,12 @@ def applied(action_id):
         action["id"] == action_id and action["status"] == "applied" for action in state["actions"]
     ))
 
+def assert_reader_is_python(state):
+    pid = state["current"]["telemetryPid"]
+    assert os.path.samefile(f"/proc/{pid}/exe", sys.executable), "Telemetry PID must identify the reader, not a shell"
+
 state = wait_for(lambda state: state["current"].get("onAir"))
+assert_reader_is_python(state)
 original_pid = state["current"]["encoderPid"]
 submit(state, "reorder", "replace", files=["D.mp4", "B.mp4", "C.mp4"])
 state = applied("reorder")
@@ -96,6 +103,7 @@ assert state["current"]["encoderPid"] == original_pid, "reorder interrupted the 
 assert (root / "overlays/streamer-upnext.txt").read_text() == "Up Next: D"
 submit(state, "play-now", "now", file="D.mp4")
 state = applied("play-now")
+assert_reader_is_python(state)
 assert Path(state["current"]["file"]).name == "D.mp4"
 assert state["current"]["encoderPid"] != original_pid
 bookmark = json.loads((root / "etc/playlist-state.json").read_text())
@@ -105,6 +113,7 @@ state = applied("queue-next")
 assert [Path(item["file"]).name for item in state["upcoming"]] == ["B.mp4", "C.mp4"]
 state = wait_for(lambda state: Path(state["current"]["file"]).name == "B.mp4"
                  and state["current"].get("onAir"))
+assert_reader_is_python(state)
 submit(state, "clear", "replace", files=[])
 state = applied("clear")
 assert state["explicitEmpty"]
@@ -119,6 +128,12 @@ for expected in A D B; do
   [[ "$(basename "$VIDEO")" == "$expected.mp4" ]]
   eval "$PLAYBACK"
   FFMPEG_PID=""
+  reader_pid=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["current"]["telemetryPid"])' \
+    "$WORK_DIR/run/streamer-control-state.json")
+  if kill -0 "$reader_pid" 2>/dev/null; then
+    echo "FAIL: telemetry reader for $expected is still running" >&2
+    exit 1
+  fi
   eval "$BOOKMARK"
   if [[ "$expected" != B ]]; then
     mapfile -t CONTROL_PLAYBACK < <(playback_control next)

@@ -15,6 +15,51 @@ HELPER = Path(__file__).resolve().parents[1] / "services/streamer/streamer-contr
 
 
 class ProgressTests(unittest.TestCase):
+    def test_portrait_time_is_below_square_and_widescreen_video_and_advances(self):
+        source = (HELPER.parent / "streamer.sh").read_text()
+        geometry = source[source.index("  INPUT_SIZE=$(ffprobe"):source.index("  # Build video filter chain", source.index("  INPUT_SIZE=$(ffprobe"))]
+        hud = next(line.strip() for line in source.splitlines() if line.strip().startswith('PORTRAIT_HUD=",drawtext='))
+        font = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            timefile = root / "time.txt"
+            timefile.write_text("%{eif:t+120:d} / 600")
+            for width, height in ((320, 320), (320, 180)):
+                media = root / f"{width}x{height}.mp4"
+                subprocess.run([
+                    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", f"color=white:s={width}x{height}:r=1:d=3",
+                    "-c:v", "libx264", str(media),
+                ], check=True, timeout=15)
+                env = {**os.environ, "VIDEO": str(media), "MAX_H": "1080",
+                       "PORT_W": "360", "PORT_H": "640", "PORT_VID_H": "202",
+                       "PORT_PAD_Y": "238", "PORT_FONT_TIME": "12",
+                       "WM_FONT_SANS": font, "TIME_FILE": str(timefile)}
+                built = subprocess.run([
+                    "bash", "-c", geometry + "\n" + hud +
+                    '\nprintf "%s\\n%s\\n%s" "$PORT_CONTENT_H" "$PORT_TIME_Y" "$PORTRAIT_HUD"',
+                ], env=env, check=True, capture_output=True, text=True, timeout=10)
+                content_height, y, overlay = built.stdout.strip().splitlines()[-3:]
+                y = int(y)
+                self.assertGreaterEqual(y, 238 + int(content_height) + 10)
+                self.assertLess(y + 12, 640)
+                base = "scale=360:-2,pad=360:640:(ow-iw)/2:238:black"
+                def render(filters):
+                    return subprocess.run([
+                        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                        "-i", str(media), "-vf", filters, "-frames:v", "3",
+                        "-pix_fmt", "gray", "-f", "rawvideo", "-",
+                    ], check=True, capture_output=True, timeout=15).stdout
+                plain, with_time = render(base), render(base + overlay)
+                frame_bytes = 360 * 640
+                self.assertEqual(len(with_time), 3 * frame_bytes)
+                regions = []
+                for frame in (0, 2):
+                    start, end = frame * frame_bytes + y * 360, frame * frame_bytes + (y + 13) * 360
+                    regions.append(with_time[start:end])
+                    self.assertNotEqual(with_time[start:end], plain[start:end], "Time must render below the image")
+                self.assertNotEqual(regions[0], regions[1], "Elapsed time must advance on static images")
+
     def test_controlled_restart_keeps_fresh_checkpoint_and_seeks_production_input(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

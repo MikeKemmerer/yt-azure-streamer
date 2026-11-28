@@ -10,6 +10,7 @@
 
 const fs = require('fs');
 const http = require('http');
+const os = require('os');
 const path = require('path');
 const { execFile, execFileSync } = require('child_process');
 const { randomUUID, createHash } = require('crypto');
@@ -36,6 +37,26 @@ const QUEUE_HOLD = '/run/streamer-queue-hold';
 
 function readMode() {
   try { return fs.readFileSync(MODE_FILE, 'utf8').trim(); } catch { return 'azure'; }
+}
+
+function checkoutInfo() {
+  const options = {
+    cwd: '/opt/yt', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+    env: { ...process.env, HOME: process.env.HOME || os.homedir(), GIT_OPTIONAL_LOCKS: '0' }
+  };
+  const git = (...args) => {
+    try { return execFileSync('git', args, options).toString().trim(); } catch { return null; }
+  };
+  const version = git('rev-parse', '--short', 'HEAD') || '';
+  if (!version) return { version, branch: '', tag: null, checkoutModified: null };
+  // The updater sets executable bits in the checkout for installed scripts.
+  const status = git('-c', 'core.fileMode=false', 'status', '--porcelain', '--untracked-files=no');
+  return {
+    version,
+    branch: git('rev-parse', '--abbrev-ref', 'HEAD') || '',
+    tag: git('describe', '--tags', '--exact-match', 'HEAD'),
+    checkoutModified: status === null ? null : status !== ''
+  };
 }
 
 function readLocalConf() {
@@ -694,6 +715,188 @@ function sampleServiceStatus(callback) {
     });
 }
 
+function buildDiagnostics(input, now = Date.now() / 1000) {
+  const { player, youtube, state = {}, calendar, flags = {}, probes, mode, source, weekly } = input;
+  const iso = value => Number.isFinite(value) && Math.abs(value) <= 8640000000000 ?
+    new Date(value * 1000).toISOString() : null;
+  const age = value => Number.isFinite(value) ? Math.max(0, now - value) : null;
+  const components = {};
+  const probeFresh = probes && Number.isFinite(probes.observed_at) && probes.observed_at <= now &&
+    now - probes.observed_at <= 120;
+  const component = (id, severity, reason, details = {}, observed = now, ttl = 15) => {
+    const seconds = age(observed);
+    const stale = seconds === null || observed > now || seconds > ttl;
+    components[id] = { severity: stale ? 'unknown' : severity, reason: stale ? `${reason}; observation stale or unavailable` : reason,
+      observed_at: iso(observed), age_seconds: seconds, stale, ...details };
+  };
+  const church = source === 'youtube' && state.controlStatus?.churchBlocked === true;
+  const waiting = source === 'youtube' && !!state.handoff;
+  const owned = source === 'youtube' ? state.owner : null;
+  const decisionFresh = state.decision && Number.isFinite(state.decision.observedAt) &&
+    age(state.decision.observedAt) <= 90 && state.decision.observedAt <= now;
+  let expected = 'unknown', reason = 'Scheduling intent unavailable';
+  if (flags.manualStop || flags.queueHold) {
+    expected = 'stopped'; reason = flags.queueHold ? 'Queue hold' : 'Manually stopped';
+  } else if (church) {
+    expected = 'stopped'; reason = 'Paused for church; waiting for kiosk failover';
+  } else if (waiting || owned?.stopping) {
+    expected = 'stopped'; reason = state.handoff?.reason === 'church' ?
+      'Church pause cleared; waiting for safe broadcast resumption' : 'Waiting for broadcast completion or replacement';
+  } else if (source !== 'youtube' && weekly && weekly.observedAt <= now && age(weekly.observedAt) <= 90) {
+    expected = weekly.expected; reason = weekly.reason;
+  } else if (owned?.events?.length && decisionFresh) {
+    expected = 'running'; reason = 'Scheduled broadcast should be streaming';
+  } else if (decisionFresh && ['START', 'KEEP'].includes(state.decision.command)) {
+    expected = 'running'; reason = 'Scheduler requests streaming';
+  } else if (decisionFresh && ['IDLE', 'HOLD'].includes(state.decision.command)) {
+    expected = 'stopped'; reason = 'Waiting for the next eligible scheduled broadcast';
+  } else if (flags.manualOverride && player.active) {
+    expected = 'running'; reason = 'Manually started';
+  }
+  const observedRunning = ['active', 'activating', 'reloading'].includes(player.state);
+  const transitioning = ['activating', 'deactivating'].includes(player.state) || player.playbackHealth?.status === 'starting';
+  const mismatch = expected !== 'unknown' && (expected === 'running') !== observedRunning;
+  component('playback', player.state === 'unknown' || expected === 'unknown' ? 'unknown' :
+    mismatch ? transitioning ? 'warn' : 'error' : 'ok',
+    mismatch ? `${reason}; actual service is ${player.state}` : reason,
+    { expected, actual: player.state, intentional_pause: expected === 'stopped', transition_grace: transitioning,
+      current_title: player.nowPlaying || null, outputs: Object.entries(player.activeStreams || {})
+        .filter(([, enabled]) => enabled).map(([profile]) => profile) });
+  const health = player.playbackHealth || { status: 'unknown' };
+  component('encoder', !player.active && expected === 'stopped' ? 'ok' : health.status === 'stalled' ? 'error' :
+    health.status === 'slow' || health.status === 'starting' ? 'warn' : health.status === 'healthy' ? 'ok' : 'unknown',
+    !player.active && expected === 'stopped' ? 'Encoder intentionally stopped' : health.reason || `Encoder ${health.status}`,
+    { status: health.status, speed: health.speed ?? null, sample_age_seconds: health.age ?? null,
+      elapsed_seconds: player.progress?.elapsed ?? null, duration_seconds: player.progress?.duration ?? null,
+      generation: input.control?.current?.generation || null, progress_observed_at: iso(input.sample?.at),
+      encoder_pid: input.control?.current?.encoderPid || null, encoder_start: input.control?.current?.encoderStart || null,
+      telemetry_pid: input.control?.current?.telemetryPid || null, telemetry_start: input.control?.current?.telemetryStart || null });
+  const probeFields = {
+    storage: ['available_count', 'saved_enabled_count', 'read_bytes', 'remote_roundtrip_verified', 'selection_source', 'total_bytes'],
+    resources: ['load_1m', 'cpu_cores', 'uptime_seconds', 'memory_available_mb', 'memory_total_mb', 'disk_available_bytes',
+      'disk_total_bytes', 'disk_used_bytes',
+      'disk_available_percent', 'temperature_c'],
+    auth: ['mode', 'expires_at', 'days_remaining']
+  };
+  for (const id of ['storage', 'resources', 'auth']) {
+    const value = probes?.[id] || {};
+    component(id, probeFresh ? value.severity || 'unknown' : 'unknown', value.reason || `${id} probe unavailable`,
+      Object.fromEntries(probeFields[id].filter(key => Object.hasOwn(value, key)).map(key => [key, value[key]])),
+      probes?.observed_at, 120);
+  }
+  components.storage.mount = probes?.storage_mount ? {
+    mounted: probes.storage_mount.mounted === true, required: probes.storage_mount.required === true
+  } : null;
+  components.storage.upcoming_count = input.control?.upcoming?.length ?? null;
+  components.storage.explicit_empty = input.control?.explicitEmpty === true;
+  const required = mode === 'local' ? ['scheduler.service', 'web-backend.service', 'caddy.service',
+    ...(source === 'youtube' ? ['youtube-sync.timer'] : [])] :
+    ['scheduler.service', 'web-backend.service', 'caddy.service', 'schedule-sync.timer', 'mnt-blobfuse2.mount'];
+  const units = Object.fromEntries([...new Set(['streamer.service', ...required])].filter(unit => probes?.services?.[unit])
+    .map(unit => [unit, { state: probes.services[unit].state, restarts: probes.services[unit].restarts }]));
+  const failed = required.filter(unit => units[unit]?.state !== 'active');
+  component('services', failed.length ? failed.some(unit => units[unit]?.state === 'failed') ? 'error' : 'unknown' : 'ok',
+    failed.length ? `Required services unavailable: ${failed.join(', ')}` : 'Control services active',
+    { units }, probes?.observed_at, 120);
+  const calendarAge = age(calendar?.fetchedAt);
+  const calendarRequired = mode === 'local' && source === 'youtube' && input.calendarRequired;
+  const calendarReady = !calendarRequired || (calendar?.ok && calendarAge !== null && calendar.fetchedAt <= now && calendarAge <= 180);
+  const weeklyFresh = weekly && weekly.observedAt <= now && age(weekly.observedAt) <= 90;
+  const schedulingReady = source !== 'youtube' ? weeklyFresh : youtube.fresh && calendarReady && decisionFresh;
+  component('scheduling', schedulingReady ? 'ok' : 'unknown',
+    source !== 'youtube' ? weeklyFresh ? 'Weekly scheduler observation fresh' : 'Weekly scheduler observation unavailable or stale' :
+      !calendarReady ? 'Local church calendar unavailable or stale' : !decisionFresh ? 'Scheduler decision unavailable or stale' :
+        youtube.fresh ? 'Scheduling observations fresh' : 'YouTube discovery unavailable or stale',
+    { source, discovery_fresh: youtube.fresh, discovery_age_seconds: youtube.ageSeconds,
+      last_scan_seconds: youtube.sync?.durationSeconds ?? null, discovery_error: youtube.sync?.error || null,
+      discovery_checked_at: iso(youtube.sync?.checkedAt), discovery_retry_at: iso(youtube.sync?.retryAt),
+      discovery_calls_today: youtube.sync?.callsToday ?? null,
+      calendar_required: !!calendarRequired, calendar_age_seconds: calendarAge, calendar_ready: !!calendarReady,
+      church_pending_start: iso(state.calendarPendingStart),
+      kiosk_failover_at: calendarRequired ? iso(input.standby?.failover_started) : null,
+      kiosk_state: calendarRequired && ['counting', 'fired'].includes(input.standby?.state) ? input.standby.state : null,
+      church_blocked: church, handoff_waiting: waiting, handoff_reason: state.handoff?.reason || null,
+      disconnected_at: iso(state.handoff?.disconnectedAt), completed_ids: state.handoff?.completed || [],
+      minimum_disconnect_seconds: youtube.control?.minimumDisconnectSeconds ?? null,
+      studio_confirmed: input.studioConfirmed === true, provider: youtube.provider,
+      observations: (youtube.events || []).map(event => ({ id: event.id, title: event.title, profile: event.profile,
+        start: event.start, end: event.end, lifecycle: event.lifecycle, errors: event.errors })),
+      broadcast_ids: owned?.events?.map(event => event.id) || [],
+      live_started_at: iso(owned?.events?.[0]?.liveStart),
+      deadline_at: iso(owned?.events?.length ? Math.min(...owned.events.map(event => event.end)) : null),
+      decision: decisionFresh ? state.decision.command : null,
+      decision_observed_at: iso(state.decision?.observedAt),
+      weekly_observed_at: iso(weekly?.observedAt),
+      resume_church_live: input.resumeChurchLive === true },
+    source === 'youtube' ? now - (youtube.ageSeconds ?? Infinity) : weekly?.observedAt,
+    source === 'youtube' ? 600 : 90);
+  if (source === 'youtube' && !input.studioConfirmed) {
+    components.scheduling.severity = components.scheduling.severity === 'ok' ? 'warn' : components.scheduling.severity;
+    components.scheduling.reason += '; Studio acknowledgement blocks new automatic starts';
+  }
+  const next = (youtube.events || []).filter(event => youtube.fresh && event.eligible === true &&
+    !state.suppressed?.[event.id] && event.lifecycle === 'ready' && event.start && Date.parse(event.start) / 1000 > now)
+    .sort((a, b) => Date.parse(a.start) - Date.parse(b.start))[0];
+  const nextChurch = calendarRequired ? (calendar?.windows || []).map(window => window.start).filter(start => start > now)
+    .sort((a, b) => a - b)[0] : null;
+  const deadline = owned?.events?.length ? Math.min(...owned.events.map(event => event.end)) : null;
+  const nextAction = expected === 'running' && Number.isFinite(deadline) ?
+    { action: nextChurch && nextChurch < deadline ? 'church_pause' : 'stop_at_deadline', at: iso(nextChurch && nextChurch < deadline ? nextChurch : deadline) } :
+    church ? { action: 'wait_for_kiosk_failover', at: null } :
+      waiting ? { action: 'wait_for_safe_broadcast', at: null } :
+        flags.manualStop || flags.queueHold ? { action: 'wait_for_operator_release', at: null } :
+          expected === 'unknown' ? { action: 'wait_for_scheduler_observation', at: null } :
+            source !== 'youtube' ? { action: expected === 'running' ? 'continue_weekly_schedule' : 'wait_for_weekly_window', at: null } :
+              !input.studioConfirmed ? { action: 'await_studio_confirmation', at: null } :
+                next ? { action: 'scheduled_start', at: next.start } : { action: 'wait_for_eligible_broadcast', at: null };
+  const ranks = { ok: 0, warn: 1, unknown: 2, error: 3 };
+  const worst = Object.entries(components).sort((a, b) => ranks[b[1].severity] - ranks[a[1].severity])[0];
+  return { schema_version: 1, generated_at: iso(now), mode, severity: worst[1].severity,
+    summary: worst[1].severity === 'ok' ? reason : worst[1].reason, next_action: nextAction,
+    components, limitations: ['Public YouTube live status does not verify RTMP ingest',
+      'Recording reads may be served from FUSE cache', 'Diagnostics are read-only; no recovery actions'] };
+}
+
+let diagnosticProbes = null;
+let diagnosticProbeBusy = false;
+let diagnosticSnapshot = null;
+function refreshDiagnosticProbes() {
+  if (diagnosticProbeBusy) return;
+  diagnosticProbeBusy = true;
+  const helper = fs.existsSync('/usr/local/bin/streamer-diagnostics.py') ? '/usr/local/bin/streamer-diagnostics.py' :
+    path.join(__dirname, '..', '..', 'services', 'streamer', 'streamer-diagnostics.py');
+  execFile('python3', [helper, '--video-dir', VIDEO_DIR, '--mode', readMode()],
+    { timeout: 8000, maxBuffer: 131072 }, (error, stdout) => {
+      diagnosticProbeBusy = false;
+      try {
+        const value = JSON.parse(stdout);
+        diagnosticProbes = !error && Number.isFinite(value.observed_at) ? value : null;
+      } catch { diagnosticProbes = null; }
+    });
+}
+
+function refreshDiagnostics(callback) {
+  sampleServiceStatus(props => {
+    const schedule = readSchedule();
+    const mode = readMode();
+    const policy = mode === 'local' ? readJsonFile('/etc/yt/youtube-local.json') || {} : {};
+    diagnosticSnapshot = buildDiagnostics({
+      player: streamerSnapshot(props), youtube: youtubePreview(schedule),
+      state: readJsonFile('/run/streamer-youtube-owner.json') || {},
+      control: readControlState(), calendar: mode === 'local' ? readJsonFile('/etc/yt/youtube-calendar.json') : null,
+      sample: readJsonFile(PROGRESS_FILE),
+      weekly: readJsonFile('/run/streamer-scheduler-observation.json'),
+      standby: mode === 'local' && policy.calendarUrl ? readJsonFile(policy.standbyState || '/run/videokiosk2/standby.json') : null,
+      flags: { manualStop: fs.existsSync('/run/streamer-manual-stop'),
+        manualOverride: fs.existsSync('/run/streamer-manual-override'), queueHold: fs.existsSync(QUEUE_HOLD) },
+      probes: diagnosticProbes, mode, source: schedule.scheduleSource || 'weekly',
+      calendarRequired: !!policy.calendarUrl, resumeChurchLive: policy.resumeChurchLive,
+      studioConfirmed: schedule.youtube?.manualStudioChecks
+    });
+    if (callback) callback(diagnosticSnapshot);
+  });
+}
+
 let eventTimer = null;
 let eventTick = 0;
 let eventProps = null;
@@ -802,12 +1005,8 @@ const server = http.createServer(async (req, res) => {
       const prefix = readPrefix();
       const mode = readMode();
       let hostname = '';
-      try { hostname = require('os').hostname(); } catch {}
-      let version = '';
-      try { version = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: '/opt/yt', timeout: 5000 }).toString().trim(); } catch {}
-      let branch = '';
-      try { branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: '/opt/yt', timeout: 5000 }).toString().trim(); } catch {}
-      const info = { prefix, mode, hostname, version, branch };
+      try { hostname = os.hostname(); } catch {}
+      const info = { prefix, mode, hostname, ...checkoutInfo() };
       if (mode === 'azure') {
         info.storageAccount = config.storageAccountTemplate.replace("STORAGE_ACCOUNT", prefix.toLowerCase());
         info.automationAccount = config.automationAccountTemplate.replace("AUTOMATION_ACCOUNT", prefix + "-automation");
@@ -1118,6 +1317,13 @@ const server = http.createServer(async (req, res) => {
 
     // ─── GET /api/health ───────────────────────────────────────────
     // Returns status of all systemd units at a glance
+    if (req.method === 'GET' && req.url === '/api/streamer/diagnostics') {
+      if (diagnosticSnapshot && Date.now() - Date.parse(diagnosticSnapshot.generated_at) < 5000) {
+        return jsonResponse(res, 200, diagnosticSnapshot);
+      }
+      refreshDiagnostics(value => jsonResponse(res, 200, value));
+      return;
+    }
     if (req.method === 'GET' && req.url === '/api/health') {
       const { healthUnits: units } = getServiceConfig();
       execFile('systemctl', ['is-active', ...units], { timeout: 5000 }, (err, stdout) => {
@@ -1724,12 +1930,17 @@ const server = http.createServer(async (req, res) => {
 });
 
 if (require.main === module) {
+  refreshDiagnosticProbes();
+  refreshDiagnostics();
+  setInterval(refreshDiagnosticProbes, 60000).unref();
+  setInterval(refreshDiagnostics, 5000).unref();
   server.listen(config.port, process.env.YT_BACKEND_HOST || '0.0.0.0', () => {
     console.log(`Backend listening on port ${config.port}`);
   });
 }
 
 module.exports = {
+  buildDiagnostics,
   displayTitle,
   buildPlaybackPosition,
   buildRuntimePlaylist,

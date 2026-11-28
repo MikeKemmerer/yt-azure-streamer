@@ -363,6 +363,7 @@ fi
 info "Installing scripts to /usr/local/bin..."
 install -m 755 "$SCRIPT_DIR/services/streamer/streamer.sh"   /usr/local/bin/streamer.sh
 install -m 755 "$SCRIPT_DIR/services/streamer/streamer-control.py" /usr/local/bin/streamer-control.py
+install -m 755 "$SCRIPT_DIR/services/streamer/streamer-diagnostics.py" /usr/local/bin/streamer-diagnostics.py
 install -m 755 "$SCRIPT_DIR/services/scheduler/scheduler.sh" /usr/local/bin/scheduler.sh
 install -m 755 "$SCRIPT_DIR/services/scheduler/youtube-schedule.py" /usr/local/bin/youtube-schedule.py
 install -m 755 "$SCRIPT_DIR/scripts/generate-playlist.sh"    /usr/local/bin/generate-playlist.sh

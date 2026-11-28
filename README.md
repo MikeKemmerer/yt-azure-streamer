@@ -263,6 +263,8 @@ sudo /usr/local/bin/schedule-sync.sh
 
 ## YouTube-driven scheduling (on-prem only)
 
+The page pairs detailed checks with **Service Health**, **System**, and **Storage**, using one shared diagnostic snapshot rather than separate overlapping status polls. Expand Streamer for playback intent and encoder progress, Scheduler for broadcast deadlines/church holds, and the relevant system/storage rows for resources, recording reads and safe Blob credential expiry. Checks are report-only and never change playback. See the [versioned diagnostics contract](docs/streaming-diagnostics.md) for the endpoint, freshness rules and Monitoring integration.
+
 In local mode, **Schedule > YouTube-driven scheduling** can replace weekly schedules/overrides with scheduled YouTube Studio broadcasts. Configure exact title rules (case and extra whitespace are ignored), a landscape or portrait output, and a fallback duration. The default fallback is **eight hours after the scheduled start**; a valid YouTube scheduled end takes precedence. The existing saved playlist/resume position is used, without modifying the library.
 
 This integration is **read-only**. In Studio, bind each event to the output's configured stream key and enable **Auto-start and Auto-stop**. Local RTMP starts at the due time; YouTube goes live after receiving the input. Local checks, media opening/Blobfuse, and YouTube processing introduce delay, so publication is not frame-accurate.
@@ -331,6 +333,7 @@ An optional root-managed `/etc/yt/youtube-local.json` enables rollover for the p
 {
   "rolloverEnabled": true,
   "controlManual": true,
+  "resumeChurchLive": true,
   "disconnectSeconds": 30,
   "calendarUrl": "http://your-calendar-host:8000/api/events",
   "serviceCalendar": "Services",
@@ -344,9 +347,11 @@ With `controlManual`, a single unambiguous matching public live event for each c
 
 At a deadline or replacement start, the scheduler explicitly stops `streamer.service`, then waits **at least 30 seconds from successful service stop** and until direct metadata confirms every previous event has completed. Thirty seconds does not guarantee YouTube Auto-stop completion; discovery and the 30-second scheduler poll can extend the disconnect. Missing/stale metadata never counts as completion. If no eligible replacement exists, the service stays stopped. The appliance does not create broadcasts or transition their lifecycle.
 
-Church-service blocking starts at the **calendar's scheduled start**, not an arbitrary early buffer. It remains latched until `/run/videokiosk2/standby.json` records a **new VLC-to-browser failover at or after that start**. The planned calendar end and an old browser/standby state cannot release the block. New starts are blocked when calendar refresh fails or becomes stale; already-known service starts still stop playback. Calendar refresh continues during YouTube discovery backoff. After actual failover, only another fresh, eligible matching broadcast can start; an ended event cannot be reused.
+Church-service blocking starts at the **calendar's scheduled start**, not an arbitrary early buffer. It remains latched until `/run/videokiosk2/standby.json` records a **new VLC-to-browser failover at or after that start**. The planned calendar end and an old browser/standby state cannot release the block. New starts are blocked when calendar refresh fails or becomes stale; already-known service starts still stop playback. Calendar refresh continues during YouTube discovery backoff. After actual failover, only a fresh eligible broadcast or the still-live church-resume exception below can start; an ended event cannot be reused.
 
-Operator Stop and explicit-empty queue hold still win. A church pause ends the old broadcast, so schedule a replacement for resumption. There is no automatic broadcast creation, private Studio verification, or GPU/encoding change.
+With `resumeChurchLive: true`, a church pause may instead resume the **same tracked broadcast** after actual failover if metadata fetched after disconnection still confirms it live, its original deadline and 24-hour limit have not passed, and no operator stop or queue hold exists. This exception applies only to a recorded church pause, never timeout or ordinary rollover. If YouTube ended the event, it cannot be reused and only a new eligible scheduled event can start. The original live-start time and deadline are not reset by resumption.
+
+Operator Stop and explicit-empty queue hold still win. There is no automatic broadcast creation, private Studio verification, or GPU/encoding change.
 
 ### Scheduling safeguards
 

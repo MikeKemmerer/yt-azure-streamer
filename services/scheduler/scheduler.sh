@@ -245,5 +245,21 @@ while true; do
       rm -f "$ACTIVE_LANDSCAPE" "$ACTIVE_PORTRAIT"
     fi
   fi
+  python3 - "$ACTIVE_STREAMS" <<'PYEOF'
+import json, os, time
+from pathlib import Path
+run = Path("/run")
+streams = __import__("sys").argv[1].split()
+expected = "running" if streams or (run / "streamer-manual-override").exists() else "stopped"
+reason = "Weekly schedule active" if streams else "Manually started" if expected == "running" else "Outside weekly schedule"
+if (run / "streamer-manual-stop").exists() or (run / "streamer-queue-hold").exists():
+    expected, reason = "stopped", "Operator stop or queue hold"
+try:
+    temporary = run / f"streamer-scheduler-observation.{os.getpid()}.tmp"
+    temporary.write_text(json.dumps({"expected": expected, "reason": reason, "observedAt": time.time()}))
+    os.replace(temporary, run / "streamer-scheduler-observation.json")
+except OSError:
+    pass
+PYEOF
   sleep "$CHECK_INTERVAL"
 done

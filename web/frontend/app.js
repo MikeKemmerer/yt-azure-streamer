@@ -2,7 +2,7 @@
 
 function showStatus(el, msg, ok, persist) {
   el.textContent = msg;
-  el.className = 'status ' + (ok ? 'ok' : 'err');
+  el.className = 'status ' + (ok === null ? 'waiting' : ok ? 'ok' : 'err');
   clearTimeout(el._t);
   if (!persist) {
     el._t = setTimeout(() => { el.textContent = ''; el.className = 'status'; }, 6000);
@@ -38,21 +38,28 @@ function esc(s) {
 
 /* ── Deployment Info ─────────────────────────────────────────────── */
 
+function deploymentLabel({ version, branch, tag, checkoutModified } = {}) {
+  if (!version) return 'Version unavailable';
+  const ref = tag || (branch !== 'HEAD' ? branch : '');
+  return `${ref ? `${ref} @ ` : ''}${version}${checkoutModified ? ' (locally modified)' : ''}`;
+}
+
 async function loadInfo() {
+  const versionEl = document.getElementById('app-version');
   try {
     const data = await api('/api/info');
+    const label = deploymentLabel(data);
+    document.getElementById('deployment-version').textContent = label;
     document.getElementById('info').textContent = JSON.stringify(data, null, 2);
-    // Populate footer version
-    const versionEl = document.getElementById('app-version');
-    if (versionEl && data.version) {
-      versionEl.textContent = `${data.branch || 'main'} @ ${data.version}`;
-    }
+    versionEl.textContent = label;
     // Show VM controls only in Azure mode
     if (data.mode === 'azure') {
       document.getElementById('vm-controls').style.display = '';
     }
   } catch {
-    document.getElementById('info').textContent = 'Error loading info';
+    versionEl.textContent = 'Version unavailable';
+    document.getElementById('deployment-version').textContent = 'Version unavailable';
+    document.getElementById('info').textContent = 'Deployment information could not be loaded.';
   }
 }
 
@@ -66,15 +73,126 @@ let pendingQueueAction = null;
 let queueSortable = null;
 let queueView = 'collapsed';
 let outputSelectionDirty = false;
-let outputsApplying = false;
+let manualActionPending = false;
 let outputSnapshot = { active: false, state: 'unknown', activeStreams: {} };
 let queueDragging = false;
 let renderedQueue = '';
 let liveEventsConnected = false;
 let lastPreviewRefresh = 0;
-let lastPreviewFile = '';
+let lastPreviewKey = '';
+let previewProfile = '';
 let liveCurrentFile = '';
 let liveQueueHold = false;
+let lastStreamerSnapshot = null;
+let playbackCheckedAt = null;
+let playbackUnavailable = false;
+let currentDiagnostics = null;
+
+function playbackPresentation(player, diagnostics, unavailable) {
+  if (unavailable || player?.state === 'unknown') return {
+    tone: 'unknown', label: 'Current status unknown',
+    note: player ? 'Playback controls are unavailable. Any displayed playback is last known.' : 'No playback status is available.'
+  };
+  if (!player) return { tone: 'unknown', label: 'Checking playback', note: 'Waiting for the streamer.' };
+  const { playback, scheduling } = diagnostics?.components || {};
+  const intent = playback && !playback.stale && playback.actual === player.state ? playback : null;
+  if (['activating', 'deactivating', 'reloading'].includes(player.state)) {
+    return { tone: 'warn', label: { activating: 'Streamer starting', deactivating: 'Streamer stopping', reloading: 'Streamer reloading' }[player.state], note: 'Waiting for the service to settle.' };
+  }
+  if (player.state === 'failed' || intent?.severity === 'error') {
+    return { tone: 'error', label: player.active ? 'Unexpected playback' : 'Streamer not running', note: intent?.reason || 'The streamer service failed.' };
+  }
+  if (!player.active) {
+    if (intent?.intentional_pause && scheduling?.church_blocked && !scheduling.stale &&
+        diagnostics.next_action.action === 'wait_for_kiosk_failover') {
+      return { tone: 'warn', label: 'Paused for church', note: 'Playback is intentionally stopped until kiosk failover.' };
+    }
+    return { tone: 'off', label: player.queueHold ? 'Stopped · queue hold' : 'Streamer stopped',
+      note: intent?.reason || 'Start manually or wait for the next scheduled start.' };
+  }
+  const health = player.playbackHealth || {};
+  const [tone, label, note] = {
+    healthy: ['on', 'Encoder progressing', 'Measured encoding progress is advancing.'],
+    stalled: ['error', 'Encoder stalled', 'Measured progress has stopped. Inspect the streamer logs.'],
+    slow: ['warn', 'Encoder running slowly', 'Measured progress is below real time.'],
+    starting: ['warn', 'Encoder starting', 'Waiting for measured progress.']
+  }[health.status] || ['unknown', 'Encoder progress unknown', 'The service is active, but progress cannot be verified.'];
+  return { tone, label, note: health.reason || note };
+}
+
+function renderPlaybackOverview() {
+  const { tone, label, note } = playbackPresentation(lastStreamerSnapshot, currentDiagnostics, playbackUnavailable);
+  const indicator = document.getElementById('streamer-indicator');
+  indicator.className = `indicator ${tone}`;
+  indicator.textContent = { on: '✓', off: '–', unknown: '?', warn: '!', error: '×' }[tone];
+  const headline = document.getElementById('streamer-label');
+  if (headline.textContent !== label) headline.textContent = label;
+  document.getElementById('playback-note').textContent = note;
+  document.getElementById('playback-freshness').textContent = playbackCheckedAt
+    ? `${playbackUnavailable ? 'Last checked' : 'Checked'} ${fmtDate(playbackCheckedAt)}` : '';
+  const uptime = document.getElementById('streamer-uptime');
+  uptime.hidden = !lastStreamerSnapshot?.active || !Number.isFinite(lastStreamerSnapshot.uptimeSeconds);
+  if (!uptime.hidden) uptime.textContent = `${playbackUnavailable ? 'Last known uptime' : 'Streamer uptime'} ${fmtDuration(lastStreamerSnapshot.uptimeSeconds)}`;
+  document.getElementById('now-playing-label').textContent = playbackUnavailable ? 'Last known title' : 'Now playing';
+}
+
+function renderOutputPreview() {
+  const data = lastStreamerSnapshot;
+  const profiles = ['portrait', 'landscape'];
+  const streams = data?.active ? (data.activeStreams || { landscape: true }) : {};
+  const available = profiles.filter(profile => streams[profile]);
+  if (!available.includes(previewProfile)) previewProfile = available[0] || '';
+  const preview = document.getElementById('stream-preview');
+  const caption = document.getElementById('preview-caption');
+  const details = document.getElementById('preview-details');
+  document.getElementById('active-streams').hidden = !previewProfile;
+  preview.hidden = !previewProfile;
+  preview.dataset.profile = previewProfile;
+  for (const profile of profiles) {
+    const button = document.getElementById(`stream-badge-${profile}`);
+    button.hidden = !available.includes(profile);
+    button.setAttribute('aria-pressed', String(previewProfile === profile));
+    const image = document.getElementById(`preview-img-${profile}`);
+    image.hidden = profile !== previewProfile || image.dataset.loaded !== 'true';
+  }
+  if (!previewProfile) {
+    lastPreviewKey = '';
+    caption.textContent = playbackUnavailable ? 'Preview status unavailable.' : 'No active output to preview.';
+    return;
+  }
+  const image = document.getElementById(`preview-img-${previewProfile}`);
+  const previewText = `${playbackUnavailable ? 'Last known preview' : 'Encoder preview'} · ${previewProfile === 'portrait' ? '9:16' : '16:9'}`;
+  caption.textContent = image.hidden ? (playbackUnavailable ? 'Preview status unavailable.' : 'Waiting for a preview frame.') : previewText;
+  if (playbackUnavailable || !details.open) return;
+  const key = `${previewProfile}:${data.nowFile || data.nowPlaying || ''}`;
+  const now = Date.now();
+  if (key === lastPreviewKey && now - lastPreviewRefresh < 5000) return;
+  if (key !== lastPreviewKey) {
+    image.dataset.loaded = 'false';
+    image.hidden = true;
+  }
+  lastPreviewKey = key;
+  lastPreviewRefresh = now;
+  image.onload = () => {
+    image.dataset.loaded = 'true';
+    image.hidden = image.id !== `preview-img-${previewProfile}`;
+    if (!image.hidden && !playbackUnavailable) caption.textContent = previewText;
+  };
+  image.onerror = () => {
+    image.dataset.loaded = 'false';
+    image.hidden = true;
+    if (image.id === `preview-img-${previewProfile}` && !playbackUnavailable) caption.textContent = 'Waiting for a preview frame.';
+  };
+  image.src = `${previewProfile === 'portrait' ? '/stream-preview-portrait.jpg' : '/stream-preview.jpg'}?${now}`;
+}
+
+for (const profile of ['landscape', 'portrait']) {
+  document.getElementById(`stream-badge-${profile}`).addEventListener('click', () => {
+    previewProfile = profile;
+    renderOutputPreview();
+  });
+}
+document.getElementById('preview-details').addEventListener('toggle', renderOutputPreview);
 
 function startProgressTicker() {
   if (progressInterval) return;
@@ -86,8 +204,7 @@ function startProgressTicker() {
       ? progressState.advancing ? Math.min(sinceSync, 3) * (progressState.speed || 1) : 0
       : sinceSync);
     const clamped = Math.min(elapsed, progressState.duration);
-    const pct = Math.min(100, (clamped / progressState.duration) * 100);
-    document.getElementById('progress-bar').style.width = pct + '%';
+    document.getElementById('progress-bar').value = clamped;
     document.getElementById('progress-elapsed').textContent = fmtDuration(clamped);
     // When video should have ended, refresh to get new video info (max once per 5s)
     if (elapsed >= progressState.duration + 2 && now - lastVideoEndRefresh > 5000) {
@@ -105,148 +222,73 @@ async function refreshStreamerStatus() {
   try {
     renderStreamerStatus(await api('/api/streamer'));
   } catch {
-    document.getElementById('streamer-label').textContent = 'Unknown';
+    playbackUnavailable = true;
+    stopProgressTicker();
+    renderPlaybackOverview();
+    renderOutputPreview();
+    const unknown = { ...outputSnapshot, state: 'unknown' };
+    renderPlaybackControls(unknown);
+    renderOutputControls(unknown);
+    renderLiveQueue({ ...liveQueue, ready: false });
   }
 }
 
 function renderStreamerStatus(data) {
-    const indicator = document.getElementById('streamer-indicator');
-    const label = document.getElementById('streamer-label');
-    const uptimeEl = document.getElementById('streamer-uptime');
-    const startBtn = document.getElementById('streamer-start');
-    const stopBtn = document.getElementById('streamer-stop');
+    playbackUnavailable = data.state === 'unknown';
+    if (!playbackUnavailable) {
+      lastStreamerSnapshot = data;
+      playbackCheckedAt = new Date();
+    }
+    renderPlaybackOverview();
+    renderOutputPreview();
+    if (playbackUnavailable) data = { ...lastStreamerSnapshot, state: 'unknown' };
+    const queue = data.queue || { ready: false, items: [], actions: [] };
+    renderLiveQueue(playbackUnavailable ? { ...queue, ready: false } : queue, data.nowFile, data.queueHold);
+    renderPlaybackControls(data);
+    renderOutputControls(data);
+    if (playbackUnavailable) {
+      stopProgressTicker();
+      return;
+    }
     const nowPlaying = document.getElementById('now-playing');
-    const nowTitle = document.getElementById('now-playing-title');
-    const progressBarContainer = document.getElementById('progress-bar-container');
     const progressBar = document.getElementById('progress-bar');
     const progressTime = document.getElementById('progress-time');
-    const progressElapsed = document.getElementById('progress-elapsed');
-    const progressDuration = document.getElementById('progress-duration');
+    const hasTitle = data.active && !!data.nowPlaying;
+    nowPlaying.hidden = !hasTitle;
+    const hasProgress = hasTitle && data.progress?.duration > 0;
+    progressBar.hidden = progressTime.hidden = !hasProgress;
+    if (hasTitle) document.getElementById('now-playing-title').textContent = data.nowPlaying;
+    if (hasProgress) {
+      progressState = { ...data.progress, lastSync: Date.now() };
+      progressBar.max = data.progress.duration;
+      progressBar.value = data.progress.elapsed;
+      document.getElementById('progress-elapsed').textContent = fmtDuration(data.progress.elapsed);
+      document.getElementById('progress-duration').textContent = fmtDuration(data.progress.duration);
+      startProgressTicker();
+    } else stopProgressTicker();
     const upNext = document.getElementById('up-next');
-    const upNextLabel = document.getElementById('up-next-label');
-    const upNextList = document.getElementById('up-next-list');
-    const preview = document.getElementById('stream-preview');
-    const previewLand = document.getElementById('preview-img-landscape');
-    const previewPort = document.getElementById('preview-img-portrait');
-
-    indicator.className = 'indicator ' + (data.active ? 'on' : 'off');
-    label.textContent = data.state === 'unknown' ? 'Unknown' : data.active ? 'Streaming' : 'Stopped';
-    document.getElementById('playback-health').textContent = 'Playback: ' +
-      (data.playbackHealth ? data.playbackHealth.status : 'unknown') +
-      (data.playbackHealth && Number.isFinite(data.playbackHealth.speed)
-        ? ` (${data.playbackHealth.speed.toFixed(2)}x)` : '') +
-      (data.playbackHealth && Number.isFinite(data.playbackHealth.age)
-        ? ` - sample ${Math.floor(data.playbackHealth.age)}s old` : '') +
-      (data.playbackHealth && data.playbackHealth.reason ? ` - ${data.playbackHealth.reason}` : '');
-    renderLiveQueue(data.queue || { ready: false, items: [], actions: [] }, data.nowFile, data.queueHold);
-    uptimeEl.textContent = data.active && data.uptimeSeconds ? '(' + fmtDuration(data.uptimeSeconds) + ')' : '';
-    startBtn.disabled = data.active || data.state === 'unknown';
-    stopBtn.disabled = !data.active;
-    document.getElementById('streamer-skip').disabled = !data.active;
-    const stopAfterBtn = document.getElementById('streamer-stop-after');
-    stopAfterBtn.disabled = !data.active;
-    if (data.active && data.stopPending) {
-      stopAfterBtn.textContent = 'Cancel Stop After Current';
-      stopAfterBtn.classList.add('pending');
-    } else {
-      stopAfterBtn.textContent = 'Stop After Current';
-      stopAfterBtn.classList.remove('pending');
-    }
-    renderOutputControls(data);
-    if (data.active && data.nowPlaying) {
-      nowTitle.textContent = data.nowPlaying;
-      nowPlaying.style.display = '';
-      // Active stream badges — clickable to toggle preview
-      const activeStreamsEl = document.getElementById('active-streams');
-      const landBadge = document.getElementById('stream-badge-landscape');
-      const portBadge = document.getElementById('stream-badge-portrait');
-      if (data.activeStreams) {
-        activeStreamsEl.style.display = '';
-        const hasLand = data.activeStreams.landscape;
-        const hasPort = data.activeStreams.portrait;
-        const hadLand = landBadge.style.display !== 'none';
-        const hadPort = portBadge.style.display !== 'none';
-        landBadge.style.display = hasLand ? '' : 'none';
-        portBadge.style.display = hasPort ? '' : 'none';
-        // Default: show all active previews
-        if (hasLand && !hadLand) landBadge.classList.add('active');
-        if (hasPort && !hadPort) portBadge.classList.add('active');
-        // Click toggles which preview is visible
-        landBadge.onclick = () => {
-          landBadge.classList.toggle('active');
-          previewLand.style.display = landBadge.classList.contains('active') && previewLand.src ? '' : 'none';
-        };
-        portBadge.onclick = () => {
-          portBadge.classList.toggle('active');
-          previewPort.style.display = portBadge.classList.contains('active') && previewPort.src ? '' : 'none';
-        };
-      } else {
-        activeStreamsEl.style.display = 'none';
+    upNext.hidden = !data.upNext?.length;
+    if (!upNext.hidden) {
+      document.getElementById('up-next-label').textContent = data.active ? 'Up next · Live queue' : 'On resume';
+      const list = document.getElementById('up-next-list');
+      const signature = JSON.stringify(data.upNext);
+      if (list.dataset.items !== signature) {
+        list.replaceChildren(...data.upNext.map(item => {
+          const li = document.createElement('li');
+          const name = typeof item === 'string' ? item : item.name;
+          const title = document.createElement('span');
+          title.textContent = name;
+          li.appendChild(title);
+          if (typeof item === 'object' && item.duration) {
+            const duration = document.createElement('span');
+            duration.className = 'hint numbers';
+            duration.textContent = fmtDuration(item.duration);
+            li.appendChild(duration);
+          }
+          return li;
+        }));
+        list.dataset.items = signature;
       }
-      // Progress + preview
-      if (data.progress && data.progress.duration > 0) {
-        progressState = { ...data.progress, lastSync: Date.now() };
-        const pct = Math.min(100, (data.progress.elapsed / data.progress.duration) * 100);
-        progressBar.style.width = pct + '%';
-        progressElapsed.textContent = fmtDuration(data.progress.elapsed);
-        progressDuration.textContent = fmtDuration(data.progress.duration);
-        progressBarContainer.style.display = '';
-        progressTime.style.display = '';
-        startProgressTicker();
-      } else {
-        progressBarContainer.style.display = 'none';
-        progressTime.style.display = 'none';
-        stopProgressTicker();
-      }
-      // Load preview images for active streams
-      const ts = Date.now();
-      const refreshPreview = ts - lastPreviewRefresh >= 5000 || data.nowFile !== lastPreviewFile;
-      if (refreshPreview) {
-        lastPreviewRefresh = ts;
-        lastPreviewFile = data.nowFile;
-      }
-      const showLand = data.activeStreams ? data.activeStreams.landscape : true;
-      const showPort = data.activeStreams ? data.activeStreams.portrait : false;
-      preview.style.display = '';  // Show container; individual imgs control visibility
-      if (showLand && refreshPreview) {
-        previewLand.src = '/stream-preview.jpg?' + ts;
-        previewLand.onload = () => { previewLand.style.display = ''; };
-        previewLand.onerror = () => { previewLand.style.display = 'none'; };
-      } else if (!showLand) {
-        previewLand.style.display = 'none';
-        previewLand.removeAttribute('src');
-      }
-      if (showPort && refreshPreview) {
-        previewPort.src = '/stream-preview-portrait.jpg?' + ts;
-        previewPort.onload = () => { previewPort.style.display = ''; };
-        previewPort.onerror = () => { previewPort.style.display = 'none'; };
-      } else if (!showPort) {
-        previewPort.style.display = 'none';
-        previewPort.removeAttribute('src');
-      }
-    } else {
-      nowPlaying.style.display = 'none';
-      preview.style.display = 'none';
-      progressBarContainer.style.display = 'none';
-      progressTime.style.display = 'none';
-      document.getElementById('active-streams').style.display = 'none';
-      stopProgressTicker();
-    }
-
-    // Up Next
-    if (data.upNext && data.upNext.length > 0) {
-      upNextLabel.textContent = data.active ? 'Up Next:' : 'On Resume:';
-      upNextList.innerHTML = '';
-      for (const item of data.upNext) {
-        const li = document.createElement('li');
-        const name = typeof item === 'string' ? item : item.name;
-        const dur = typeof item === 'object' && item.duration ? ` (${fmtDuration(item.duration)})` : '';
-        li.textContent = name + dur;
-        upNextList.appendChild(li);
-      }
-      upNext.style.display = '';
-    } else {
-      upNext.style.display = 'none';
     }
 }
 
@@ -291,14 +333,16 @@ function renderLiveQueue(queue, current = liveCurrentFile, hold = liveQueueHold)
   if (queueDragging || renderedQueue === signature) return;
   renderedQueue = signature;
   const list = document.getElementById('live-queue-list');
+  const focusInList = list.contains?.(document.activeElement);
   list.hidden = queueView === 'collapsed';
   list.innerHTML = '';
-  for (const item of visibleItems) {
+  for (const [index, item] of visibleItems.entries()) {
     const li = document.createElement('li');
     li.dataset.file = item.file;
     const grip = document.createElement('span');
     grip.className = 'grip';
-    grip.textContent = '::';
+    grip.textContent = '⋮⋮';
+    grip.setAttribute('aria-hidden', 'true');
     const title = document.createElement('span');
     title.className = 'queue-title';
     title.textContent = item.name || item.file;
@@ -309,16 +353,28 @@ function renderLiveQueue(queue, current = liveCurrentFile, hold = liveQueueHold)
     remove.addEventListener('click', () => submitQueueAction('replace', {
       files: liveQueue.items.filter(queued => queued.file !== item.file).map(queued => queued.file)
     }, 'Queue removal'));
-    li.append(grip, title, remove);
+    const buttons = document.createElement('div');
+    buttons.className = 'queue-row-actions';
+    for (const direction of [-1, 1]) {
+      const target = index + direction;
+      buttons.appendChild(reorderButton(direction, title.textContent, disabled || target < 0 || target >= visibleItems.length, () => {
+        const files = liveQueue.items.map(queued => queued.file);
+        [files[index], files[target]] = [files[target], files[index]];
+        submitQueueAction('replace', { files }, 'Queue reorder', queue);
+      }));
+    }
+    buttons.appendChild(remove);
+    li.append(grip, title, buttons);
     list.appendChild(li);
   }
   if (queueSortable) queueSortable.destroy();
   queueSortable = null;
-  if (queueView === 'collapsed') return;
+  if (focusInList) list.closest('details')?.querySelector('summary')?.focus({ preventScroll: true });
+  if (queueView === 'collapsed' || typeof Sortable !== 'function') return;
   let expected;
   let remaining;
   queueSortable = new Sortable(list, {
-    handle: '.grip', animation: 150, disabled,
+    handle: '.grip', animation: typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 150, disabled,
     onStart() {
       queueDragging = true;
       expected = { session: liveQueue.session, revision: liveQueue.revision };
@@ -331,6 +387,17 @@ function renderLiveQueue(queue, current = liveCurrentFile, hold = liveQueueHold)
       submitQueueAction('replace', { files }, 'Queue reorder', expected);
     }
   });
+}
+
+function reorderButton(direction, title, disabled, onClick) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'secondary reorder-button';
+  button.textContent = direction < 0 ? '↑' : '↓';
+  button.disabled = disabled;
+  button.setAttribute('aria-label', `Move ${title} ${direction < 0 ? 'up' : 'down'}`);
+  button.addEventListener('click', onClick);
+  return button;
 }
 
 document.getElementById('queue-expand').addEventListener('click', () => {
@@ -351,7 +418,8 @@ async function submitQueueAction(operation, values = {}, label = 'Queue change',
   const id = `ui-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   pendingQueueAction = { id, session: expected.session, at: Date.now(), label };
   renderLiveQueue(liveQueue);
-  showStatus(status, `${label}: waiting for player acknowledgement...`, true, true);
+  renderPlaybackControls(outputSnapshot);
+  showStatus(status, `${label}: waiting for player acknowledgement…`, null, true);
   try {
     await api('/api/streamer/queue', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -401,10 +469,24 @@ function selectedOutputs() {
   return ['landscape', 'portrait'].filter(profile => document.getElementById(`output-${profile}`).checked);
 }
 
+function renderPlaybackControls(data) {
+  const known = data.state !== 'unknown';
+  const stop = document.getElementById('streamer-stop');
+  const stopAfter = document.getElementById('streamer-stop-after');
+  const skip = document.getElementById('streamer-skip');
+  const start = document.getElementById('streamer-start');
+  start.hidden = data.active;
+  stop.hidden = stopAfter.hidden = skip.hidden = !data.active;
+  stop.disabled = stopAfter.disabled = !known || !data.active || manualActionPending;
+  skip.disabled = stop.disabled || !!pendingQueueAction || !!data.queue?.pending;
+  stopAfter.textContent = data.stopPending ? 'Cancel scheduled stop' : 'Stop after current';
+}
+
 function renderOutputControls(data) {
   outputSnapshot = data;
   const active = data.activeStreams || {};
-  if (!outputSelectionDirty && !outputsApplying && (active.landscape || active.portrait)) {
+  const known = data.state !== 'unknown';
+  if (known && !outputSelectionDirty && !manualActionPending && (active.landscape || active.portrait)) {
     for (const profile of ['landscape', 'portrait']) {
       document.getElementById(`output-${profile}`).checked = !!active[profile];
     }
@@ -412,12 +494,21 @@ function renderOutputControls(data) {
   const selected = selectedOutputs();
   const changed = ['landscape', 'portrait'].some(profile => selected.includes(profile) !== !!active[profile]);
   for (const profile of ['landscape', 'portrait']) {
-    document.getElementById(`output-${profile}`).disabled = outputsApplying || data.state === 'unknown';
+    document.getElementById(`output-${profile}`).disabled = manualActionPending || !known;
   }
   document.getElementById('streamer-apply-outputs').disabled =
-    outputsApplying || !data.active || data.state === 'unknown' || !selected.length || !changed || data.stopPending;
+    manualActionPending || !data.active || !known || !selected.length || !changed || data.stopPending;
   document.getElementById('streamer-start').disabled =
-    outputsApplying || data.active || data.state === 'unknown' || !selected.length;
+    manualActionPending || data.active || !known || !selected.length;
+  const hint = document.getElementById('output-hint');
+  const message = !known ? 'Wait for a current playback status.'
+    : !selected.length ? 'Select at least one output.'
+    : !data.active ? 'These outputs will be used when you start manually.'
+    : !changed ? 'No output changes.'
+    : data.stopPending ? 'Cancel the scheduled stop before applying changes.'
+    : 'Unsaved selection. Applying it briefly reconnects YouTube and resets the live queue.';
+  if (hint.textContent !== message) hint.textContent = message;
+  hint.classList.toggle('err', known && !selected.length);
 }
 
 for (const profile of ['landscape', 'portrait']) {
@@ -427,48 +518,75 @@ for (const profile of ['landscape', 'portrait']) {
   });
 }
 
-document.getElementById('streamer-apply-outputs').addEventListener('click', async () => {
-  const streams = selectedOutputs();
-  if (!streams.length || !confirm('Restart with the selected outputs? YouTube briefly reconnects and temporary queue edits reset. Both outputs use more CPU.')) return;
+function confirmPlayback(title, message, action, destructive = false) {
+  const dialog = document.getElementById('playback-confirm');
+  if (typeof dialog.showModal !== 'function') return Promise.resolve(confirm(`${title}\n\n${message}`));
+  if (dialog.open) return Promise.resolve(false);
+  const submit = document.getElementById('playback-confirm-submit');
+  document.getElementById('playback-confirm-title').textContent = title;
+  document.getElementById('playback-confirm-copy').textContent = message;
+  submit.textContent = action;
+  submit.classList.toggle('danger', destructive);
+  dialog.returnValue = 'cancel';
+  return new Promise(resolve => {
+    dialog.addEventListener('close', () => resolve(dialog.returnValue === 'accept'), { once: true });
+    dialog.showModal();
+  });
+}
+
+async function runPlaybackCommand(request, waiting, success) {
+  if (manualActionPending || outputSnapshot.state === 'unknown') return;
   const status = document.getElementById('streamer-action-status');
-  outputsApplying = true;
+  manualActionPending = true;
+  showStatus(status, waiting, null, true);
+  renderPlaybackControls(outputSnapshot);
   renderOutputControls(outputSnapshot);
   try {
+    await request();
+    showStatus(status, success, true);
+  } catch (error) {
+    showStatus(status, error.message, false, true);
+  } finally {
+    await refreshStreamerStatus();
+    manualActionPending = false;
+    renderPlaybackControls(outputSnapshot);
+    renderOutputControls(outputSnapshot);
+  }
+}
+
+document.getElementById('streamer-apply-outputs').addEventListener('click', async event => {
+  const button = event.currentTarget;
+  const streams = selectedOutputs();
+  if (!await confirmPlayback('Restart with these outputs?',
+    'YouTube will briefly reconnect and temporary queue edits will reset. Using both outputs increases CPU load.',
+    'Apply outputs & restart', true) || button.disabled || selectedOutputs().join() !== streams.join()) return;
+  await runPlaybackCommand(async () => {
     await api('/api/streamer/outputs', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ streams })
     });
     outputSelectionDirty = false;
-    showStatus(status, 'Outputs selected; encoder restarting. Watch playback health for fresh on-air progress.', true);
-  } catch (error) { showStatus(status, error.message, false); }
-  finally {
-    outputsApplying = false;
-    await refreshStreamerStatus();
-  }
+  }, 'Applying outputs and restarting…', 'Output restart requested. Check measured encoder progress before assuming playback has resumed.');
 });
 
 document.getElementById('streamer-start').addEventListener('click', async () => {
-  const status = document.getElementById('streamer-action-status');
-  try {
-    document.getElementById('streamer-start').disabled = true;
+  const streams = selectedOutputs();
+  await runPlaybackCommand(async () => {
     await api('/api/streamer/start', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ streams: selectedOutputs() })
+      body: JSON.stringify({ streams })
     });
     outputSelectionDirty = false;
-    showStatus(status, 'Streamer started.', true);
-    await refreshStreamerStatus();
-  } catch (e) { showStatus(status, e.message, false); }
+  }, 'Starting streamer…', 'Start accepted. Check measured encoder progress.');
 });
 
-document.getElementById('streamer-stop').addEventListener('click', async () => {
-  const status = document.getElementById('streamer-action-status');
-  try {
-    document.getElementById('streamer-stop').disabled = true;
-    await api('/api/streamer/stop', { method: 'POST' });
-    showStatus(status, 'Streamer stopped.', true);
-    await refreshStreamerStatus();
-  } catch (e) { showStatus(status, e.message, false); }
+document.getElementById('streamer-stop').addEventListener('click', async event => {
+  const button = event.currentTarget;
+  if (!await confirmPlayback('Stop playback now?',
+    'This interrupts the current video and may end the YouTube broadcast. To finish the video first, cancel and use Stop after current.',
+    'Stop now', true) || button.disabled) return;
+  await runPlaybackCommand(() => api('/api/streamer/stop', { method: 'POST' }),
+    'Stopping playback…', 'Streamer stopped.');
 });
 
 document.getElementById('streamer-skip').addEventListener('click', async () => {
@@ -476,30 +594,15 @@ document.getElementById('streamer-skip').addEventListener('click', async () => {
     await submitQueueAction('skip', {}, 'Skip');
     return;
   }
-  const status = document.getElementById('streamer-action-status');
-  try {
-    document.getElementById('streamer-skip').disabled = true;
-    await api('/api/streamer/skip', { method: 'POST' });
-    showStatus(status, 'Skipping to next video...', true);
-    setTimeout(refreshStreamerStatus, 3000);
-  } catch (e) { showStatus(status, e.message, false); }
+  await runPlaybackCommand(() => api('/api/streamer/skip', { method: 'POST' }),
+    'Requesting next video…', 'Skip requested. Watch the playback title for the change.');
 });
 
 document.getElementById('streamer-stop-after').addEventListener('click', async () => {
-  const status = document.getElementById('streamer-action-status');
-  const btn = document.getElementById('streamer-stop-after');
-  const isPending = btn.classList.contains('pending');
-  try {
-    btn.disabled = true;
-    if (isPending) {
-      await api('/api/streamer/stop-after-current', { method: 'DELETE' });
-      showStatus(status, 'Stop after current cancelled.', true);
-    } else {
-      await api('/api/streamer/stop-after-current', { method: 'POST' });
-      showStatus(status, 'Will stop after current video.', true);
-    }
-    await refreshStreamerStatus();
-  } catch (e) { showStatus(status, e.message, false); }
+  const cancel = outputSnapshot.stopPending;
+  await runPlaybackCommand(() => api('/api/streamer/stop-after-current', { method: cancel ? 'DELETE' : 'POST' }),
+    cancel ? 'Cancelling scheduled stop…' : 'Scheduling stop…',
+    cancel ? 'Scheduled stop cancelled.' : 'Playback will stop after the current video.');
 });
 
 let restartTimer = null;
@@ -630,23 +733,22 @@ function renderVideoList(filter) {
   const list = document.getElementById('video-list');
   list.innerHTML = '';
   const query = (filter || '').toLowerCase();
-  videoData.forEach((v, i) => {
-    const displayTitle = cleanDisplayTitle(v.title || v.file);
-    if (query && !displayTitle.toLowerCase().includes(query) && !v.file.toLowerCase().includes(query)) {
-      return; // skip items that don't match search
-    }
-
+  const entries = videoData.map((video, index) => ({ video, index, title: cleanDisplayTitle(video.title || video.file) }))
+    .filter(({ video, title }) => !query || title.toLowerCase().includes(query) || video.file.toLowerCase().includes(query));
+  entries.forEach(({ video: v, index: i, title: displayTitle }, visibleIndex) => {
     const li = document.createElement('li');
     li.dataset.idx = i;
     li.className = v.enabled ? '' : 'disabled';
 
     const grip = document.createElement('span');
     grip.className = 'grip';
-    grip.textContent = '☰';
+    grip.textContent = '⋮⋮';
+    grip.setAttribute('aria-hidden', 'true');
 
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = v.enabled;
+    cb.setAttribute('aria-label', `Include ${displayTitle} in the saved playlist`);
     cb.addEventListener('change', () => {
       videoData[i].enabled = cb.checked;
       li.className = cb.checked ? '' : 'disabled';
@@ -665,12 +767,13 @@ function renderVideoList(filter) {
 
     const editBtn = document.createElement('button');
     editBtn.className = 'video-edit-btn';
-    editBtn.textContent = '✏️';
-    editBtn.title = 'Edit title';
+    editBtn.textContent = 'Edit';
+    editBtn.setAttribute('aria-label', `Edit title for ${displayTitle}`);
 
     // Hidden inline edit input
     const titleInput = document.createElement('input');
     titleInput.type = 'text';
+    titleInput.setAttribute('aria-label', 'Display title');
     titleInput.className = 'video-title-input';
     titleInput.value = v.title || displayTitle;
     titleInput.style.display = 'none';
@@ -747,18 +850,30 @@ function renderVideoList(filter) {
     li.appendChild(grip);
     li.appendChild(cb);
     li.appendChild(nameBlock);
-    li.appendChild(playNextBtn);
-    li.appendChild(playNowBtn);
-    li.appendChild(num);
+    const actions = document.createElement('div');
+    actions.className = 'playlist-row-actions';
+    for (const direction of [-1, 1]) {
+      const target = entries[visibleIndex + direction]?.index;
+      actions.appendChild(reorderButton(direction, displayTitle, target === undefined, () => {
+        [videoData[i], videoData[target]] = [videoData[target], videoData[i]];
+        renderVideoList(query);
+        const buttons = [...list.querySelectorAll(`li[data-idx="${target}"] .reorder-button`)];
+        (buttons[direction < 0 ? 0 : 1]?.disabled ? buttons.find(button => !button.disabled)
+          : buttons[direction < 0 ? 0 : 1])?.focus({ preventScroll: true });
+      }));
+    }
+    actions.append(playNextBtn, playNowBtn, num);
+    li.appendChild(actions);
 
     list.appendChild(li);
   });
 
   // (Re-)initialize SortableJS for mouse + touch drag support
   if (sortableInstance) sortableInstance.destroy();
+  if (typeof Sortable !== 'function') return;
   sortableInstance = new Sortable(list, {
     handle: '.grip',
-    animation: 150,
+    animation: matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 150,
     ghostClass: 'sortable-ghost',
     chosenClass: 'sortable-chosen',
     dragClass: 'sortable-drag',
@@ -868,6 +983,7 @@ document.getElementById('title-suggestions').addEventListener('click', () => {
       const input = document.createElement('input');
       input.type = 'text';
       input.placeholder = 'Display title';
+      input.setAttribute('aria-label', `Display title for ${c.file}`);
       input.value = c.title || suggestTitle(c.file);
       input.dataset.idx = c.idx;
 
@@ -877,7 +993,7 @@ document.getElementById('title-suggestions').addEventListener('click', () => {
     });
   }
 
-  modal.style.display = '';
+  modal.showModal();
 });
 
 document.getElementById('title-modal-apply').addEventListener('click', () => {
@@ -886,15 +1002,15 @@ document.getElementById('title-modal-apply').addEventListener('click', () => {
     const idx = +input.dataset.idx;
     videoData[idx].title = input.value.trim();
   });
-  document.getElementById('title-modal').style.display = 'none';
-  renderVideoList();
+  document.getElementById('title-modal').close();
+  renderVideoList(document.getElementById('playlist-search').value);
 });
 
 document.getElementById('title-modal-close').addEventListener('click', () => {
-  document.getElementById('title-modal').style.display = 'none';
+  document.getElementById('title-modal').close();
 });
 document.getElementById('title-modal-cancel').addEventListener('click', () => {
-  document.getElementById('title-modal').style.display = 'none';
+  document.getElementById('title-modal').close();
 });
 
 /* ── Playlist Sort / Shuffle ─────────────────────────────────────── */
@@ -940,36 +1056,77 @@ document.getElementById('playlist-search').addEventListener('input', (e) => {
   renderVideoList(e.target.value);
 });
 
-/* ── Service Health ──────────────────────────────────────────────── */
-
-async function loadHealth() {
-  const grid = document.getElementById('health-grid');
-  try {
-    const data = await api('/api/health');
-    grid.innerHTML = '';
-    for (const [unit, state] of Object.entries(data)) {
-      const el = document.createElement('div');
-      el.className = 'health-item';
-      const dot = document.createElement('span');
-      dot.className = 'indicator ' + (state === 'active' ? 'on' : 'off');
-      const name = document.createElement('span');
-      name.textContent = unit.replace('.service', '').replace('.timer', '').replace('.mount', '');
-      const st = document.createElement('span');
-      st.className = 'health-state';
-      st.textContent = state;
-      el.appendChild(dot);
-      el.appendChild(name);
-      el.appendChild(st);
-      grid.appendChild(el);
-    }
-  } catch {
-    grid.textContent = 'Error loading health';
-  }
-}
-
 /* ── Schedule ────────────────────────────────────────────────────── */
 
 let scheduleData = { timezone: 'UTC', events: [] };
+let activeScheduleSource = 'weekly';
+let scheduleTimes = null;
+let youtubeSchedulePreview = null;
+
+function schedulePresentation(times, diagnostics, youtubePreview) {
+  const source = times?.scheduleSource || diagnostics?.components.scheduling?.source;
+  const scheduling = diagnostics?.components.scheduling;
+  const action = scheduling && scheduling.source === source && !scheduling.stale ? diagnostics.next_action : null;
+  const title = {
+    church_pause: 'Pause for church',
+    stop_at_deadline: 'Stop at broadcast cutoff',
+    wait_for_kiosk_failover: 'Wait for kiosk failover',
+    wait_for_safe_broadcast: 'Wait for a safe broadcast handoff',
+    wait_for_operator_release: 'Wait for manual start',
+    wait_for_scheduler_observation: 'Waiting for scheduler status',
+    continue_weekly_schedule: 'Continue scheduled playback',
+    wait_for_weekly_window: 'Wait for the next schedule window',
+    await_studio_confirmation: 'Confirm the YouTube Studio settings',
+    scheduled_start: 'Start scheduled broadcast',
+    wait_for_eligible_broadcast: 'Wait for an eligible broadcast'
+  }[action?.action];
+  const matched = action?.action === 'scheduled_start' && youtubePreview?.fresh
+    ? youtubePreview.events?.find(event => event.eligible && Date.parse(event.start) === Date.parse(action.at))
+    : null;
+  const previewEvent = !diagnostics && source === 'youtube' && youtubePreview?.enabled && youtubePreview.fresh
+    ? youtubePreview.events?.filter(event => event.eligible && event.lifecycle === 'ready' && Date.parse(event.start) > Date.now())
+      .sort((a, b) => Date.parse(a.start) - Date.parse(b.start))[0]
+    : null;
+  const note = action?.action === 'wait_for_kiosk_failover' ? 'Waiting for the kiosk to switch from VLC to the browser. No resume time is known.'
+    : action?.action === 'wait_for_operator_release' ? 'The scheduler will not restart playback while the manual stop or queue hold remains.'
+    : matched?.title || previewEvent?.title || (source === 'youtube' && scheduling?.stale ? scheduling.reason : '');
+  const weekly = source === 'weekly';
+  const fallback = previewEvent ? 'Upcoming eligible broadcast'
+    : weekly && times ? (times.nextStart ? 'Next weekly window' : 'No upcoming weekly start') : 'Scheduler status unavailable';
+  return {
+    source: source === 'youtube' ? 'YouTube broadcasts' : weekly ? 'Weekly schedule' : '',
+    title: title || fallback,
+    at: action?.at || previewEvent?.start || null,
+    note,
+    nextStart: weekly ? times?.nextStart : action?.action === 'scheduled_start' ? action.at : null,
+    nextStop: weekly ? times?.nextStop : scheduling && !scheduling.stale ? scheduling.deadline_at : null
+  };
+}
+
+function renderScheduleOverview() {
+  const summary = schedulePresentation(scheduleTimes, currentDiagnostics, youtubeSchedulePreview);
+  document.getElementById('schedule-source-label').textContent = summary.source;
+  document.getElementById('schedule-next-action').textContent = summary.at ? `${summary.title} · ${fmtDate(summary.at)}` : summary.title;
+  document.getElementById('schedule-next-detail').textContent = summary.note;
+  document.getElementById('next-start').textContent = summary.nextStart ? fmtDate(summary.nextStart) : 'Not available';
+  document.getElementById('next-stop').textContent = summary.nextStop ? fmtDate(summary.nextStop) : 'Not available';
+  document.querySelector('.schedule-next').hidden = !summary.nextStart && !summary.nextStop;
+}
+
+async function refreshScheduleOverview() {
+  if (scheduleTimes?.youtubeAvailable) await loadYouTubePreview();
+  if (activeScheduleSource !== 'weekly') return;
+  try {
+    const data = await api('/api/schedule');
+    if ((data.scheduleSource || 'weekly') === activeScheduleSource) {
+      scheduleTimes = { ...data, scheduleSource: activeScheduleSource };
+      renderScheduleOverview();
+    }
+  } catch {
+    scheduleTimes = null;
+    renderScheduleOverview();
+  }
+}
 
 function populateTimezoneDropdown(selectId, selectedTz) {
   const select = document.getElementById(selectId);
@@ -993,15 +1150,16 @@ async function loadSchedule() {
   try {
     const data = await api('/api/schedule');
     scheduleData = { timezone: data.timezone, events: data.events };
-    document.getElementById('next-start').textContent = fmtDate(data.nextStart);
-    document.getElementById('next-stop').textContent = fmtDate(data.nextStop);
+    activeScheduleSource = data.youtubeAvailable && data.scheduleSource === 'youtube' ? 'youtube' : 'weekly';
+    scheduleTimes = { ...data, scheduleSource: activeScheduleSource };
+    renderScheduleOverview();
     populateTimezoneDropdown('schedule-tz', data.timezone);
     populateTimezoneDropdown('override-tz', data.timezone);
     renderScheduleEvents();
     renderScheduleEditor();
     renderOverrides(data.overrides || []);
     youtubeSettings = data.youtube || { channelId: '', rules: [] };
-    document.getElementById('schedule-source').value = data.scheduleSource || 'weekly';
+    document.getElementById('schedule-source').value = activeScheduleSource;
     document.getElementById('youtube-channel').value = youtubeSettings.channelId;
     document.getElementById('youtube-provider').value = youtubeSettings.provider || 'api';
     document.getElementById('youtube-studio-confirmed').checked = youtubeSettings.manualStudioChecks === true;
@@ -1011,8 +1169,9 @@ async function loadSchedule() {
       document.getElementById(id).disabled = !data.youtubeAvailable;
     }
     renderYouTubeRules();
-    loadYouTubePreview();
-  } catch {}
+    document.getElementById('youtube-schedule-settings').hidden = !data.youtubeAvailable;
+    if (data.youtubeAvailable) loadYouTubePreview();
+  } catch { renderScheduleOverview(); }
 }
 
 let youtubeSettings = { channelId: '', rules: [] };
@@ -1053,6 +1212,8 @@ async function loadYouTubePreview() {
   const status = document.getElementById('youtube-sync-status');
   try {
     const data = await api('/api/schedule/youtube');
+    youtubeSchedulePreview = data;
+    renderScheduleOverview();
     const age = data.ageSeconds === null ? 'no successful snapshot' : `${Math.round(data.ageSeconds / 60)} min old`;
     const connection = data.provider === 'yt-dlp' ? 'Public discovery; no Google sign-in required' :
       data.authorized ? 'Credentials configured' : 'Google authorization required';
@@ -1083,7 +1244,11 @@ async function loadYouTubePreview() {
       document.getElementById('youtube-events').innerHTML += '<p class="hint">Publicly active now: ' +
         data.activeBroadcasts.map(event => esc(event.title)).join('; ') + '. Existing live broadcasts are never taken over.</p>';
     }
-  } catch (error) { status.textContent = error.message; }
+  } catch (error) {
+    youtubeSchedulePreview = null;
+    renderScheduleOverview();
+    status.textContent = error.message;
+  }
 }
 
 document.getElementById('add-youtube-rule').addEventListener('click', () => {
@@ -1116,8 +1281,12 @@ document.getElementById('save-youtube-schedule').addEventListener('click', async
 
 function renderScheduleEvents() {
   const el = document.getElementById('schedule-events');
+  if (activeScheduleSource === 'youtube') {
+    el.innerHTML = '';
+    return;
+  }
   if (!scheduleData.events.length) {
-    el.innerHTML = '<p class="hint">No events configured.</p>';
+    el.innerHTML = '<p class="hint">No weekly events configured.</p>';
     return;
   }
   const now = new Date();
@@ -1323,33 +1492,8 @@ document.getElementById('save-override').addEventListener('click', async () => {
 
 /* ── System / Storage ────────────────────────────────────────────── */
 
-async function loadSystem() {
-  try {
-    const data = await api('/api/system');
-    const uptimeSec = Math.floor(parseFloat(data.uptime) || 0);
-    const days = Math.floor(uptimeSec / 86400);
-    const hrs = Math.floor((uptimeSec % 86400) / 3600);
-    document.getElementById('system-stats').innerHTML = `
-      <div class="stat-row"><strong>Uptime:</strong> ${days}d ${hrs}h</div>
-      <div class="stat-row"><strong>CPU:</strong> ${data.cpu.load1m != null ? data.cpu.load1m.toFixed(2) : '?'} / ${data.cpu.cores || '?'} cores (1m avg)</div>
-      <div class="stat-row"><strong>Memory:</strong> ${data.memory.usedMB || '?'} / ${data.memory.totalMB || '?'} MB</div>
-      <div class="stat-row"><strong>Disk:</strong> ${data.disk.usedGB || '?'} / ${data.disk.totalGB || '?'} GB</div>
-    `;
-  } catch {
-    document.getElementById('system-stats').textContent = 'Error';
-  }
-}
-
 async function loadStorage() {
-  try {
-    const data = await api('/api/storage');
-    document.getElementById('storage-stats').innerHTML = `
-      <div class="stat-row"><strong>Videos:</strong> ${data.fileCount}</div>
-      <div class="stat-row"><strong>Total size:</strong> ${data.totalGB} GB</div>
-    `;
-  } catch {
-    document.getElementById('storage-stats').textContent = 'Error';
-  }
+  await loadDiagnostics();
 }
 
 /* ── VM Deallocate ───────────────────────────────────────────────── */
@@ -1396,7 +1540,7 @@ const uploadInput = document.getElementById('upload-input');
 const uploadQueue = document.getElementById('upload-queue');
 const uploadStatus = document.getElementById('upload-status');
 
-uploadArea.addEventListener('click', () => uploadInput.click());
+uploadArea.addEventListener('click', event => { if (event.target !== uploadInput) uploadInput.click(); });
 uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.classList.add('drag-over'); });
 uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('drag-over'));
 uploadArea.addEventListener('drop', (e) => {
@@ -1689,19 +1833,144 @@ darkToggle.addEventListener('change', () => {
   localStorage.setItem('dark', darkToggle.checked ? '1' : '0');
 });
 
+for (const id of ['playlist-card', 'logs-card']) {
+  for (const link of document.querySelectorAll(`a[href="#${id}"]`)) {
+    link.addEventListener('click', () => { document.querySelector(`#${id} > details`).open = true; });
+  }
+}
+
 /* ── Init ────────────────────────────────────────────────────────── */
 
 loadInfo();
 loadSettings();
 loadVideos();
 refreshStreamerStatus();
-loadHealth();
 loadSchedule();
-loadSystem();
-loadStorage();
 
 connectPlaybackEvents();
 setInterval(() => { if (!liveEventsConnected) refreshStreamerStatus(); }, 5000);
-setInterval(() => { loadHealth(); }, 10000);
-setInterval(() => { loadSystem(); loadStorage(); }, 60000);
-setInterval(loadYouTubePreview, 60000);
+setInterval(refreshScheduleOverview, 60000);
+
+function diagnosticValue(value) {
+  if (value === null || value === undefined) return 'Unavailable';
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (typeof value === 'number') return Number.isInteger(value) ? String(value) : value.toFixed(2);
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value) && Number.isFinite(Date.parse(value))) return fmtDate(value);
+  if (Array.isArray(value)) return value.length ? value.map(diagnosticValue).join('; ') : 'None';
+  if (typeof value === 'object') return Object.entries(value).map(([key, item]) =>
+    `${key.replace(/_/g, ' ')}: ${diagnosticValue(item)}`).join(', ');
+  return String(value);
+}
+
+function diagnosticWorst(components) {
+  const ranks = { ok: 0, warn: 1, unknown: 2, error: 3 };
+  return components.reduce((worst, value) =>
+    ranks[value.severity] > ranks[worst.severity] ? value : worst);
+}
+
+function diagnosticTable(fields) {
+  return `<table class="diagnostics-table">${Object.entries(fields)
+    .filter(([key]) => !['reason', 'severity'].includes(key))
+    .map(([key, value]) => `<tr><th scope="row">${esc(key.replace(/_/g, ' '))}</th><td>${esc(diagnosticValue(value))}</td></tr>`)
+    .join('')}</table>`;
+}
+
+function diagnosticSection(id, label, component, expanded, fields = component, content = '') {
+  const severity = component.severity;
+  return `<details class="health-detail" data-component="${esc(id)}" ${expanded.has(id) ? 'open' : ''}>
+    <summary><span class="indicator ${severity === 'ok' ? 'on' : esc(severity)}" aria-hidden="true"></span>
+      ${esc(label)} · ${esc(severity)}: ${esc(component.reason)}</summary>
+    ${content}${diagnosticTable(fields)}</details>`;
+}
+
+function renderDiagnostics(data) {
+  if (data.schema_version !== 1 || !data.components || !data.next_action) throw new Error('Unsupported diagnostics');
+  const { playback, encoder, services, scheduling, resources, storage, auth } = data.components;
+  const containers = ['health-grid', 'system-stats', 'storage-stats'].map(id => document.getElementById(id));
+  const focused = document.activeElement?.closest?.('summary')?.parentElement?.dataset.component;
+  const expanded = new Set(containers.flatMap(container =>
+    Array.from(container.querySelectorAll('details[open]')).map(node => node.dataset.component)));
+  document.getElementById('diagnostics-summary').textContent = data.severity === 'ok' ? '' : `Overall health · ${data.severity}: ${data.summary}`;
+  document.getElementById('diagnostics-logs-link').hidden = ![encoder, playback].some(component => component.severity === 'error');
+  const unitHealth = unit => {
+    const sample = services.units?.[unit] || {};
+    const state = sample.state || 'unknown';
+    const severity = services.stale || !sample.state ? 'unknown' : state === 'active' ? 'ok' : state === 'failed' ? 'error' : 'unknown';
+    return { severity, reason: services.stale ? 'Service observation stale or unavailable' : state,
+      actual: state, restarts: sample.restarts ?? null, observed_at: services.observed_at,
+      age_seconds: services.age_seconds, stale: services.stale };
+  };
+  const section = (id, label, component, fields, content) =>
+    diagnosticSection(id, label, component, expanded, fields, content);
+  const streamer = diagnosticWorst([playback, encoder]);
+  const serviceUnits = ['caddy.service', 'web-backend.service',
+    ...(scheduling.source === 'youtube' ? ['youtube-sync.timer'] : []),
+    ...(data.mode === 'azure' ? ['schedule-sync.timer'] : [])];
+  containers[0].innerHTML = section('streamer.service', 'Streamer', streamer,
+    { restarts: services.units?.['streamer.service']?.restarts ?? null,
+      service_observed_at: services.observed_at },
+    section('playback', 'Playback intent', playback,
+      Object.fromEntries(Object.entries(playback).filter(([key]) => !['current_title', 'outputs'].includes(key)))) +
+    section('encoder', 'Encoder progress', encoder,
+      Object.fromEntries(Object.entries(encoder).filter(([key]) => !['elapsed_seconds', 'duration_seconds'].includes(key))))) +
+    section('scheduler.service', 'Scheduler', diagnosticWorst([scheduling, unitHealth('scheduler.service')]),
+      unitHealth('scheduler.service'), section('scheduling', 'Broadcast and scheduling', scheduling,
+        Object.fromEntries(Object.entries(scheduling).filter(([key]) => key !== 'observations')))) +
+    serviceUnits.map(unit => section(unit, unit.replace(/\.(service|timer)$/, ''), unitHealth(unit))).join('');
+  const gib = bytes => Number.isFinite(bytes) ? `${(bytes / 1073741824).toFixed(2)} GB` : null;
+  containers[1].innerHTML = section('resources', 'Host resources', resources, {
+    uptime: Number.isFinite(resources.uptime_seconds) ? fmtDuration(Math.floor(resources.uptime_seconds)) : null,
+    'CPU load (1m)': Number.isFinite(resources.load_1m) ? `${resources.load_1m.toFixed(2)} / ${resources.cpu_cores} cores` : null,
+    'Memory (used / total)': Number.isFinite(resources.memory_available_mb) && Number.isFinite(resources.memory_total_mb) ?
+      `${resources.memory_total_mb - resources.memory_available_mb} / ${resources.memory_total_mb} MB` : null,
+    'Root disk (used / total)': `${gib(resources.disk_used_bytes) || 'Unavailable'} / ${gib(resources.disk_total_bytes) || 'Unavailable'}`,
+    'Root disk available': `${gib(resources.disk_available_bytes) || 'Unavailable'} (${diagnosticValue(resources.disk_available_percent)}%)`,
+    temperature_c: resources.temperature_c, observed_at: resources.observed_at,
+    age_seconds: resources.age_seconds, stale: resources.stale
+  });
+  const storageHealth = services.units?.['mnt-blobfuse2.mount'] ?
+    diagnosticWorst([storage, unitHealth('mnt-blobfuse2.mount')]) : storage;
+  containers[2].innerHTML = section('storage', 'Media storage', storageHealth, {
+    recordings: storage.available_count, total_size: gib(storage.total_bytes),
+    saved_enabled_count: storage.saved_enabled_count, selection_source: storage.selection_source,
+    mount: storage.mount, read_bytes: storage.read_bytes, remote_roundtrip_verified: storage.remote_roundtrip_verified,
+    upcoming_count: storage.upcoming_count, explicit_empty: storage.explicit_empty,
+    ...(services.units?.['mnt-blobfuse2.mount'] ? { mount_service: unitHealth('mnt-blobfuse2.mount') } : {}),
+    observed_at: storage.observed_at, age_seconds: storage.age_seconds, stale: storage.stale
+  }) + (auth.mode === 'not_applicable' && auth.severity === 'ok' && !auth.stale ?
+    '' : section('auth', 'Blob access expiry', auth));
+  document.getElementById('diagnostics-freshness').textContent = `Snapshot: ${fmtDate(data.generated_at)}. ` +
+    'Service, storage and system probes update about once a minute.';
+  if (focused && document.activeElement === document.body) {
+    const replacement = containers.flatMap(container => Array.from(container.querySelectorAll('details')))
+      .find(node => node.dataset.component === focused);
+    replacement?.querySelector('summary')?.focus({ preventScroll: true });
+  }
+}
+
+async function loadDiagnostics() {
+  try {
+    const data = await api('/api/streamer/diagnostics');
+    const age = Date.now() - Date.parse(data.generated_at);
+    if (!Number.isFinite(age) || age < -5000 || age > 90000) throw new Error('Diagnostics snapshot is not current');
+    renderDiagnostics(data);
+    currentDiagnostics = data;
+  } catch {
+    currentDiagnostics = null;
+    document.getElementById('diagnostics-summary').textContent = 'Diagnostics unavailable';
+    document.getElementById('diagnostics-logs-link').hidden = true;
+    document.getElementById('diagnostics-freshness').textContent = 'Any displayed checks are last known, not current health.';
+    for (const id of ['health-grid', 'system-stats', 'storage-stats']) {
+      const container = document.getElementById(id);
+      for (const summary of container.querySelectorAll('summary')) {
+        if (!summary.textContent.startsWith('Last known · ')) summary.prepend('Last known · ');
+      }
+      for (const dot of container.querySelectorAll('.indicator')) dot.className = 'indicator unknown';
+    }
+  }
+  renderPlaybackOverview();
+  renderScheduleOverview();
+}
+
+loadDiagnostics();
+setInterval(loadDiagnostics, 10000);

@@ -1,14 +1,24 @@
 # Changelog
 
-## [Unreleased] — 2026-05-02
+## [Unreleased] — 2.0.0 development (`beta`)
 
-> Release candidate on `beta` branch. 36 commits since `main` (5597830).
+### Added
+
+- Control room dashboard with measured playback status, the next scheduler action, expandable service health, responsive previews, and keyboard-accessible queue reordering.
+- Versioned streamer diagnostics for playback, encoding, scheduling, services, storage, host resources, and Blob credential expiry.
+- Optional resumption of the same still-live broadcast after a confirmed church-service failover, within the original broadcast deadline.
+
+### Fixed
+
+- Older updaters no longer leave the streamer unable to start when the required playback helper is missing.
+- Telemetry readers exit with each finished video rather than accumulating across the playlist.
+- The dashboard reports the deployment checkout's commit, exact tag when present, and tracked local modifications instead of showing an empty version.
+
+### Earlier beta changes
 
 ### Features
 
-- **Play Next playlist action** — each playlist item can be confirmed as the
-	next video. The action enables and moves it after the current item, saves the
-	playlist, and updates the dashboard and live video overlay immediately.
+- **Queue next and Play now** — request a video in the live queue without changing the saved playlist.
 - **Stop After Current** — new button in the Streamer card that gracefully stops the stream after the current video finishes (no mid-stream cut). Toggles to "Cancel" when a stop is pending.
 - **Immediate schedule sync** — saving the schedule from the web UI now triggers `schedule-sync.sh` immediately instead of waiting up to 10 minutes for the timer.
 - **Diff-based schedule sync** — `schedule-sync.sh` now fetches existing Azure Automation schedules first and only creates/updates/deletes what actually changed. Unchanged schedules are left alone, making saves near-instant.
@@ -34,9 +44,7 @@
 
 ### Fixes
 
-- **Active playlist saves** — saving a changed playlist now updates the running
-	queue and dashboard Up Next list without interrupting the current video. The
-	streamer adopts the new order when the current video completes.
+- **Saved playlist and live queue separation** — saved order applies to future rotation. Restore the saved order into the live queue explicitly when needed.
 - **Static-video audio continuity** — pace duplicated frames in real time before
 	FLV muxing and rebase/resample audio onto a continuous 44.1 kHz clock. This
 	prevents choppy YouTube audio from historical 1 fps videos with 96 kHz AAC.

@@ -3,96 +3,132 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>YT Azure Streamer</title>
+  <title>YouTube Streamer</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" sizes="any">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="top-bar">
-    <h1>YouTube Azure Streamer</h1>
+  <a class="skip-link" href="#playback-heading">Skip to playback</a>
+  <header class="top-bar">
+    <div class="brand">
+      <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+        <rect x="3" y="5" width="18" height="14" rx="3"/><path d="m10 9 5 3-5 3z"/>
+      </svg>
+      <div><h1>YouTube Streamer</h1><p class="hint">Broadcast console</p></div>
+    </div>
+    <nav class="section-nav" aria-label="Dashboard sections">
+      <a href="#streamer-card">Playback</a><a href="#schedule-card">Schedule</a>
+      <a href="#playlist-card">Playlist</a><a href="#logs-card">Logs</a>
+    </nav>
     <label class="dark-toggle">
       <input type="checkbox" id="dark-mode-toggle">
-      <span class="toggle-slider"></span>
-      <span class="toggle-label">Dark</span>
+      <span class="toggle-label">Dark mode</span>
     </label>
-  </div>
+  </header>
 
-  <!-- ── Streamer ───────────────────────────────────────────────── -->
-  <div class="card" id="streamer-card">
-    <h2>Streamer</h2>
-    <div class="streamer-status">
-      <span id="streamer-indicator" class="indicator off"></span>
-      <span id="streamer-label">Checking...</span>
-      <span id="streamer-uptime" class="uptime"></span>
-    </div>
-    <div id="now-playing" class="now-playing" style="display:none">
-      <strong>Now Playing:</strong> <span id="now-playing-title"></span>
-    </div>
-    <div id="active-streams" class="active-streams" style="display:none">
-      <span id="stream-badge-landscape" class="stream-badge landscape" style="display:none">▶ Landscape</span>
-      <span id="stream-badge-portrait" class="stream-badge portrait" style="display:none">▶ Portrait</span>
-    </div>
-    <div id="stream-preview" class="stream-preview" style="display:none">
-      <div class="preview-images">
-        <img id="preview-img-landscape" alt="Landscape preview" style="display:none">
-        <img id="preview-img-portrait" alt="Portrait preview" style="display:none">
-      </div>
-      <div id="progress-bar-container" class="progress-bar-container" style="display:none">
-        <div id="progress-bar" class="progress-bar"></div>
-      </div>
-      <div id="progress-time" class="progress-time" style="display:none">
-        <span id="progress-elapsed">0:00:00</span> / <span id="progress-duration">0:00:00</span>
+  <main class="dashboard">
+  <div class="control-room">
+  <section class="card" id="streamer-card" aria-labelledby="playback-heading">
+    <div class="card-heading">
+      <h2 id="playback-heading" tabindex="-1">Playback</h2>
+      <div class="playback-observations">
+        <p class="hint numbers" id="playback-freshness"></p>
+        <p class="hint numbers" id="streamer-uptime" hidden></p>
       </div>
     </div>
-    <div id="up-next" class="up-next" style="display:none">
-      <strong id="up-next-label">Up Next:</strong>
-      <ol id="up-next-list"></ol>
+    <div class="streamer-status" role="status">
+      <span id="streamer-indicator" class="indicator unknown" aria-hidden="true">?</span>
+      <h3 id="streamer-label">Checking playback</h3>
     </div>
-    <p class="hint">Manual start/stop. The scheduler will still start or stop the streamer at the next scheduled time.</p>
-    <fieldset class="output-selector">
-      <legend>Send to YouTube</legend>
-      <label class="stream-label"><input id="output-landscape" type="checkbox">Horizontal (16:9)</label>
-      <label class="stream-label"><input id="output-portrait" type="checkbox" checked>Vertical (9:16)</label>
-      <button id="streamer-apply-outputs" class="secondary" disabled>Apply outputs &amp; restart</button>
-      <p class="hint">Choose either or both before starting. Applying while live briefly reconnects YouTube and resets temporary queue edits. Scheduled windows can change outputs.</p>
-    </fieldset>
-    <div class="streamer-controls">
-      <button id="streamer-start" disabled>Start</button>
-      <button id="streamer-stop" disabled>Stop</button>
-      <button id="streamer-stop-after" disabled>Stop After Current</button>
-      <button id="streamer-skip" disabled>Skip ⏭</button>
+    <p id="playback-note" class="hint">Waiting for the streamer.</p>
+    <div class="streamer-workspace">
+      <div class="streamer-control-panel">
+        <div id="now-playing" class="now-playing" hidden>
+          <p id="now-playing-label" class="hint">Now playing</p>
+          <h3 id="now-playing-title"></h3>
+        </div>
+        <progress id="progress-bar" aria-label="Video playback progress" max="1" value="0" hidden></progress>
+        <div id="progress-time" class="progress-time numbers" hidden>
+          <span><span id="progress-elapsed">0:00:00</span> elapsed</span>
+          <span><span id="progress-duration">0:00:00</span> total</span>
+        </div>
+        <div class="streamer-controls playback-actions">
+          <button id="streamer-start" disabled>Start streamer</button>
+          <button id="streamer-stop-after" disabled>Stop after current</button>
+          <button id="streamer-skip" class="secondary" disabled>Skip video</button>
+        </div>
+        <div class="interrupt"><button id="streamer-stop" class="danger" disabled>Stop now</button></div>
+        <div id="streamer-action-status" class="status" role="status"></div>
+        <details class="section-disclosure" id="output-routing">
+          <summary>Send to YouTube</summary>
+          <div class="output-selector" role="group" aria-label="Broadcast outputs">
+            <label class="output-option"><input id="output-portrait" type="checkbox" checked><span class="check-box" aria-hidden="true"></span>Portrait</label>
+            <label class="output-option"><input id="output-landscape" type="checkbox"><span class="check-box" aria-hidden="true"></span>Landscape</label>
+          </div>
+          <p id="output-hint" class="hint" role="status">Choose either or both before starting.</p>
+          <button id="streamer-apply-outputs" class="secondary" aria-describedby="output-hint" disabled>Apply outputs &amp; restart</button>
+        </details>
+      </div>
+      <details class="streamer-media" id="preview-details" open>
+        <summary>Output preview</summary>
+        <div id="active-streams" class="active-streams" role="group" aria-label="Preview orientation" hidden>
+          <button type="button" id="stream-badge-portrait" class="secondary stream-badge" aria-pressed="false" hidden>Portrait</button>
+          <button type="button" id="stream-badge-landscape" class="secondary stream-badge" aria-pressed="false" hidden>Landscape</button>
+        </div>
+        <div id="stream-preview" class="stream-preview" hidden>
+          <img id="preview-img-landscape" alt="Landscape encoder preview" hidden>
+          <img id="preview-img-portrait" alt="Portrait encoder preview" hidden>
+        </div>
+        <p id="preview-caption" class="hint">No active output to preview.</p>
+      </details>
+      <div class="playback-queue">
+        <div id="up-next" class="up-next" hidden>
+          <h3 id="up-next-label">Up next</h3>
+          <ol id="up-next-list"></ol>
+          <a class="small-link" href="#playlist-card">View saved playlist</a>
+        </div>
+        <details class="section-disclosure">
+          <summary>Manage live queue</summary>
+          <p id="queue-description" class="hint">Waiting for player state.</p>
+          <div class="streamer-controls">
+            <button id="queue-expand" class="secondary" aria-controls="live-queue-list" aria-expanded="false" disabled>Show next 5</button>
+            <button id="queue-collapse" class="secondary" aria-controls="live-queue-list" hidden>Collapse queue</button>
+          </div>
+          <ol id="live-queue-list" class="live-queue-list" hidden></ol>
+          <div class="streamer-controls">
+            <button id="queue-clear" class="danger" disabled>Clear upcoming queue</button>
+            <button id="queue-reset" class="secondary" disabled>Restore saved queue</button>
+          </div>
+        </details>
+        <div id="queue-action-status" class="status" role="status"></div>
+        <p id="live-event-status" class="hint">Connecting live updates…</p>
+      </div>
     </div>
-    <div id="streamer-action-status" class="status"></div>
-    <p id="playback-health" class="hint">Playback: unknown</p>
-    <p id="live-event-status" class="hint">Connecting live updates...</p>
-    <h3 class="section-subheading">Live Upcoming Queue</h3>
-    <p id="queue-description" class="hint">Waiting for player state.</p>
-    <div class="streamer-controls">
-      <button id="queue-expand" class="secondary" aria-controls="live-queue-list" aria-expanded="false" disabled>Show next 5</button>
-      <button id="queue-collapse" class="secondary" aria-controls="live-queue-list" hidden>Collapse queue</button>
-    </div>
-    <ol id="live-queue-list" class="live-queue-list" hidden></ol>
-    <div class="streamer-controls">
-      <button id="queue-clear" class="secondary" disabled>Clear Upcoming Queue</button>
-      <button id="queue-reset" class="secondary" disabled>Restore Saved Queue</button>
-    </div>
-    <div id="queue-action-status" class="status" aria-live="polite"></div>
-  </div>
+  </section>
 
   <!-- ── Service Health ─────────────────────────────────────────── -->
-  <div class="card" id="health-card">
-    <h2>Service Health</h2>
-    <div id="health-grid" class="health-grid">Loading...</div>
-  </div>
+  <div class="control-room-side">
+  <section class="card" id="health-card" aria-labelledby="health-heading">
+    <div class="card-heading"><h2 id="health-heading">Service health</h2><p class="hint">Read-only checks</p></div>
+    <div id="diagnostics-summary" class="hint" role="status">Checking services…</div>
+    <a id="diagnostics-logs-link" class="small-link" href="#logs-card" hidden>Open streamer logs</a>
+    <div id="health-grid" class="health-grid"></div>
+    <p id="diagnostics-freshness" class="hint"></p>
+    <p class="hint">Local encoder progress does not verify YouTube ingest.</p>
+  </section>
 
   <!-- ── Schedule ───────────────────────────────────────────────── -->
-  <div class="card" id="schedule-card">
-    <h2>Schedule</h2>
+  <section class="card" id="schedule-card" aria-labelledby="schedule-heading">
+    <div class="card-heading"><h2 id="schedule-heading">Schedule</h2><p id="schedule-source-label" class="hint"></p></div>
+    <p class="eyebrow">Next scheduler action</p>
+    <h3 id="schedule-next-action">Checking schedule</h3>
+    <p id="schedule-next-detail" class="hint"></p>
     <div class="schedule-next">
-      <span><strong>Next start:</strong> <span id="next-start">—</span></span>
-      <span><strong>Next stop:</strong> <span id="next-stop">—</span></span>
+      <span><strong>Next start:</strong> <span id="next-start">Unavailable</span></span>
+      <span><strong>Next stop:</strong> <span id="next-stop">Unavailable</span></span>
     </div>
-    <details id="youtube-schedule-settings">
-      <summary>YouTube-driven scheduling (on-prem)</summary>
+    <details id="youtube-schedule-settings" class="section-disclosure">
+      <summary>Schedule source and title rules</summary>
       <div class="schedule-editor">
         <label>Schedule source <select id="schedule-source">
           <option value="weekly">Weekly schedule and overrides</option>
@@ -124,7 +160,8 @@
     <div id="schedule-events"></div>
 
     <!-- Overrides -->
-    <h3 class="section-subheading">One-Time Overrides</h3>
+    <details class="section-disclosure">
+    <summary>One-time overrides</summary>
     <div id="override-list"></div>
     <details id="override-add-details">
       <summary>Add Override</summary>
@@ -150,6 +187,7 @@
       </div>
     </details>
     <div id="override-status" class="status"></div>
+    </details>
 
     <details>
       <summary>Edit Schedule</summary>
@@ -161,13 +199,15 @@
       </div>
     </details>
     <div id="schedule-status" class="status"></div>
+  </section>
+  </div>
   </div>
 
   <!-- ── System / Storage ───────────────────────────────────────── -->
-  <div class="card-row">
+  <div class="management-grid">
     <div class="card" id="system-card">
       <h2>System</h2>
-      <div id="system-stats">Loading...</div>
+      <div id="system-stats"><details data-component="resources" open><summary>Loading...</summary></details></div>
       <div class="vm-controls" id="vm-controls" style="display:none">
         <button id="vm-deallocate" class="danger">Shut Down VM</button>
         <div id="vm-status" class="status"></div>
@@ -175,13 +215,13 @@
     </div>
     <div class="card" id="storage-card">
       <h2>Storage</h2>
-      <div id="storage-stats">Loading...</div>
+      <div id="storage-stats"><details data-component="storage" open><summary>Loading...</summary></details></div>
     </div>
-  </div>
-
   <!-- ── Stream Settings ────────────────────────────────────────── -->
-  <div class="card">
-    <h2>Stream Settings</h2>
+  <div class="card" id="settings-card">
+    <h2>Stream settings</h2>
+    <details class="management-disclosure">
+    <summary>Outputs and branding</summary>
     <form id="settings-form">
       <label class="checkbox-label">
         <input type="checkbox" id="shuffle-toggle">
@@ -258,20 +298,24 @@
       <button id="restart-streamer" class="restart-btn">Restart Streamer</button>
       <span id="restart-countdown" class="countdown"></span>
     </div>
-    <div id="settings-status" class="status"></div>
+    <div id="settings-status" class="status" role="status"></div>
+    </details>
   </div>
 
   <!-- ── Playlist ───────────────────────────────────────────────── -->
-  <div class="card">
-    <h2>Saved Playlist</h2>
-    <p class="hint">Drag to reorder. Uncheck to exclude. Saving changes future rotation and restart order, not the current live queue. Queue next and Play now are temporary requests.</p>
+  <div class="card" id="playlist-card">
+    <h2>Saved playlist</h2>
+    <details class="management-disclosure">
+    <summary>Library and rotation</summary>
+    <p class="hint">Saving changes future rotation and restart order, not the current live queue. Queue next and Play now are temporary requests.</p>
     <div class="playlist-sort-controls">
       <span class="sort-label">Sort:</span>
       <button id="sort-name" class="secondary">By Name</button>
       <button id="sort-date" class="secondary">By Date</button>
       <button id="sort-shuffle" class="secondary">Shuffle</button>
     </div>
-    <input type="text" id="playlist-search" class="playlist-search" placeholder="Search videos...">
+    <label for="playlist-search">Search videos</label>
+    <input type="search" id="playlist-search" class="playlist-search">
     <div id="video-list-loading">Loading videos...</div>
     <ul id="video-list"></ul>
     <div class="playlist-actions">
@@ -280,42 +324,32 @@
       <button id="deselect-all" class="secondary">Deselect All</button>
       <button id="title-suggestions" class="secondary">Title Suggestions</button>
     </div>
-    <div id="playlist-status" class="status"></div>
-  </div>
-
-  <!-- ── Title Suggestions Modal ────────────────────────────────── -->
-  <div id="title-modal" class="modal-overlay" style="display:none">
-    <div class="modal">
-      <div class="modal-header">
-        <h2>Title Suggestions</h2>
-        <button id="title-modal-close" class="secondary">&times;</button>
-      </div>
-      <p class="hint">These files have underscores, contain "version", or don't start with a date. Edit their display titles below.</p>
-      <ul id="title-modal-list" class="title-modal-list"></ul>
-      <div class="modal-footer">
-        <button id="title-modal-apply">Apply &amp; Close</button>
-        <button id="title-modal-cancel" class="secondary">Cancel</button>
-      </div>
-    </div>
+    <div id="playlist-status" class="status" role="status"></div>
+    </details>
   </div>
 
   <!-- ── Upload ─────────────────────────────────────────────────── -->
   <div class="card" id="upload-card">
-    <h2>Upload Videos</h2>
+    <h2>Upload videos</h2>
+    <details class="management-disclosure">
+    <summary>Add recordings</summary>
     <p class="hint">Upload video files (.mp4, .mkv, .mov, .avi, .ts, .flv) to blob storage. They will appear in the playlist after upload.</p>
     <div class="upload-area" id="upload-area">
-      <input type="file" id="upload-input" multiple accept=".mp4,.mkv,.mov,.avi,.ts,.flv">
+      <input type="file" id="upload-input" aria-label="Choose recordings" multiple accept=".mp4,.mkv,.mov,.avi,.ts,.flv">
       <p>Drag &amp; drop files here or click to browse</p>
     </div>
     <div id="upload-queue"></div>
     <div id="upload-status" class="status"></div>
+    </details>
   </div>
 
   <!-- ── Logs ───────────────────────────────────────────────────── -->
   <div class="card" id="logs-card">
     <h2>Logs</h2>
+    <details class="management-disclosure">
+    <summary>Streamer and scheduler logs</summary>
     <div class="log-controls">
-      <select id="log-service">
+      <select id="log-service" aria-label="Service">
         <option value="streamer.service">streamer</option>
         <option value="scheduler.service">scheduler</option>
         <option value="schedule-sync.service">schedule-sync</option>
@@ -324,7 +358,7 @@
         <option value="web-backend.service">web-backend</option>
         <option value="mnt-blobfuse2.mount">blobfuse2</option>
       </select>
-      <select id="log-lines">
+      <select id="log-lines" aria-label="Number of log lines">
         <option value="50">50 lines</option>
         <option value="100" selected>100 lines</option>
         <option value="200">200 lines</option>
@@ -333,17 +367,19 @@
       <button id="refresh-logs">Refresh</button>
     </div>
     <pre id="log-output" class="log-output">Select a service and click Refresh.</pre>
+    </details>
   </div>
 
   <!-- ── Update ──────────────────────────────────────────────────── -->
-  <div class="card">
+  <div class="card" id="update-card">
     <h2>Update</h2>
+    <details class="management-disclosure">
+    <summary>Check for updates</summary>
     <p class="hint">Check for new code on GitHub and optionally deploy it.</p>
     <div class="update-controls">
-      <label>Branch
-        <select id="update-branch"></select>
-        <button id="refresh-branches" class="secondary" title="Refresh branch list">↻</button>
-      </label>
+      <label for="update-branch">Branch</label>
+      <select id="update-branch"></select>
+      <button id="refresh-branches" class="secondary" aria-label="Refresh branch list" title="Refresh branch list">↻</button>
       <button id="run-update">Check for Updates</button>
     </div>
     <pre id="update-output" class="update-output" style="display:none"></pre>
@@ -357,18 +393,48 @@
     </div>
     <button id="restart-streamer-btn" class="btn-warning" style="display:none">Restart Streamer After Current Video</button>
     <div id="update-status" class="status"></div>
+    </details>
   </div>
 
   <!-- ── Deployment Info ────────────────────────────────────────── -->
   <div class="card" id="info-card">
-    <h2>Deployment Info</h2>
+    <h2>Deployment info</h2>
+    <p id="deployment-version" class="hint numbers">Checking version…</p>
+    <details class="management-disclosure">
+    <summary>Installation and build</summary>
     <pre id="info">Loading...</pre>
+    </details>
   </div>
+  </div>
+  </main>
 
   <footer class="app-footer">
     <span>&copy; 2026 Kemmerer Automations</span>
-    <span id="app-version"></span>
+    <span id="app-version">Checking version…</span>
   </footer>
+
+  <dialog id="title-modal" class="modal" aria-labelledby="title-modal-heading">
+    <div class="modal-header">
+      <h2 id="title-modal-heading">Title suggestions</h2>
+      <button id="title-modal-close" class="secondary" aria-label="Close title suggestions" autofocus>&times;</button>
+    </div>
+    <p class="hint">These files have underscores, contain "version", or don't start with a date. Edit their display titles below.</p>
+    <ul id="title-modal-list" class="title-modal-list"></ul>
+    <div class="modal-footer">
+      <button id="title-modal-apply">Apply &amp; close</button>
+      <button id="title-modal-cancel" class="secondary">Cancel</button>
+    </div>
+  </dialog>
+  <dialog id="playback-confirm" class="modal" aria-labelledby="playback-confirm-title" aria-describedby="playback-confirm-copy">
+    <form method="dialog">
+      <h2 id="playback-confirm-title"></h2>
+      <p id="playback-confirm-copy" class="hint"></p>
+      <div class="modal-footer">
+        <button class="secondary" value="cancel" autofocus>Cancel</button>
+        <button id="playback-confirm-submit" value="accept"></button>
+      </div>
+    </form>
+  </dialog>
 
   <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
   <script src="app.js"></script>

@@ -37,13 +37,18 @@ RESTART_SIGNAL="/run/streamer-restart-requested"
 MANUAL_STOP="/run/streamer-manual-stop"
 MANUAL_OVERRIDE="/run/streamer-manual-override"
 CONTROL_HELPER="/usr/local/bin/streamer-control.py"
+# Older updaters can deploy this script without installing its new helper.
+if [[ ! -f "$CONTROL_HELPER" ]]; then
+  install -m 755 "/opt/yt/services/streamer/streamer-control.py" "$CONTROL_HELPER"
+fi
+CONTROL_COMMAND=(python3 "$CONTROL_HELPER")
 CONTROL_REQUEST="/run/streamer-control-request.json"
 ON_AIR_SIGNAL="/run/streamer-onair.json"
 QUEUE_HOLD="/run/streamer-queue-hold"
 PROGRESS_PORT_FILE="/run/streamer-progress-port.txt"
 CONTROL_ENABLED=true
 TELEMETRY_PID=""
-playback_control() { python3 "$CONTROL_HELPER" "$@"; }
+playback_control() { "${CONTROL_COMMAND[@]}" "$@"; }
 cleanup_telemetry() {
   if [[ -n "$TELEMETRY_PID" ]]; then
     kill -TERM "$TELEMETRY_PID" 2>/dev/null || true
@@ -364,8 +369,19 @@ except: pass
   echo "  Title: $TITLE"
 
   # Probe the input resolution to decide whether to scale
-  INPUT_H=$(ffprobe -v error -select_streams v:0 \
-    -show_entries stream=height -of csv=p=0 "$VIDEO" 2>/dev/null || echo 0)
+  INPUT_SIZE=$(ffprobe -v error -select_streams v:0 \
+    -show_entries stream=width,height -of csv=p=0:s=x "$VIDEO" 2>/dev/null || echo "0x0")
+  INPUT_W=${INPUT_SIZE%x*}
+  INPUT_H=${INPUT_SIZE#*x}
+  [[ "$INPUT_W" =~ ^[0-9]+$ && "$INPUT_H" =~ ^[0-9]+$ ]] || { INPUT_W=0; INPUT_H=0; }
+  PORT_CONTENT_H=$PORT_VID_H
+  if [[ "$INPUT_W" -gt 0 ]]; then
+    PORT_CONTENT_H=$(( ((INPUT_H * PORT_W + INPUT_W) / (2 * INPUT_W)) * 2 ))
+  fi
+  PORT_TIME_Y=$(( PORT_PAD_Y + PORT_CONTENT_H + 10 ))
+  if [[ "$PORT_TIME_Y" -gt $((PORT_H - PORT_FONT_TIME - 20)) ]]; then
+    PORT_TIME_Y=$(( PORT_H - PORT_FONT_TIME - 20 ))
+  fi
 
   # Build video filter chain
   # SCALE_VF: common scaling (applied to all outputs)
@@ -523,7 +539,7 @@ except: pass
   # --- Portrait HUD: time display just below video ---
   PORTRAIT_HUD=""
   if [[ "$PORT_WATERMARK" == true && "${DURATION:-0}" -gt 0 && -f "$WM_FONT_SANS" ]]; then
-    PORTRAIT_HUD=",drawtext=fontfile=${WM_FONT_SANS}:textfile=${TIME_FILE}:fontsize=${PORT_FONT_TIME}:fontcolor=white@0.8:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-w/15:y=${PORT_VID_BOTTOM}+10"
+    PORTRAIT_HUD=",drawtext=fontfile=${WM_FONT_SANS}:textfile=${TIME_FILE}:fontsize=${PORT_FONT_TIME}:fontcolor=white@0.8:box=1:boxcolor=black@0.6:boxborderw=4:shadowcolor=black@0.6:shadowx=1:shadowy=1:x=w-tw-w/15:y=${PORT_TIME_Y}"
   fi
 
   # --- Portrait branding chain (organization name + location above video) ---
@@ -691,7 +707,7 @@ ${AUDIO_FILTER}"
   if [[ "${CONTROL_ENABLED:-false}" == true ]]; then
     GENERATION=$(playback_control prepare)
     : > "$PROGRESS_PORT_FILE"
-    playback_control telemetry --generation "$GENERATION" > "$PROGRESS_PORT_FILE" &
+    "${CONTROL_COMMAND[@]}" telemetry --generation "$GENERATION" > "$PROGRESS_PORT_FILE" &
     TELEMETRY_PID=$!
     PROGRESS_PORT=""
     for attempt in {1..100}; do

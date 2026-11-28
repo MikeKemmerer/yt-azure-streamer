@@ -500,7 +500,7 @@ def rollover_decision(schedule, cache, state, now, running, manual, stopped, hol
     if blocked and running and (owner or controls_manual):
         state.setdefault("handoff", {"ids": [event["id"] for event in owner["events"]] if owner else
                                     [item["id"] for item in (cache or {}).get("activeBroadcasts", [])],
-                                    "disconnectedAt": None, "completed": []})
+                                    "disconnectedAt": None, "completed": [], "reason": "church"})
         if owner:
             owner["stopping"] = True
         return "STOP", [], state
@@ -516,6 +516,32 @@ def rollover_decision(schedule, cache, state, now, running, manual, stopped, hol
             handoff["disconnectedAt"] = now
         wait = policy.get("disconnectSeconds", 30)
         wait = max(30, wait) if isinstance(wait, int) and not isinstance(wait, bool) else 30
+        if (policy.get("resumeChurchLive") is True and handoff.get("reason") == "church" and owner
+                and not blocked and calendar_ready and fresh and not handoff.get("completed")
+                and now - handoff["disconnectedAt"] >= wait
+                and cache["fetchedAt"] >= handoff["disconnectedAt"]
+                and set(handoff["ids"]) == {item["id"] for item in cache.get("activeBroadcasts", [])}
+                and set(handoff["ids"]) == {event["id"] for event in owner["events"]}):
+            indexed = {event["id"]: event for event in events}
+            resumable = True
+            for owned in owner["events"]:
+                observed = indexed.get(owned["id"], {})
+                allowed_errors = {"Confirm stream keys and Auto-start/Auto-stop in Studio"} if owner.get("adoptedManual") else set()
+                live_start = owned.get("liveStart")
+                if (observed.get("status") != "live" or observed.get("profile") != owned["profile"]
+                        or observed.get("start") != owned["start"] or not live_start
+                        or owned["id"] in cache.get("terminal", {})
+                        or owned["id"] in state.get("suppressed", {})
+                        or set(observed.get("errors", [])) - allowed_errors
+                        or not observed.get("end")
+                        or not owned["start"] <= now < min(owned["end"], observed["end"], live_start + 86400)):
+                    resumable = False
+            if resumable:
+                for owned in owner["events"]:
+                    owned["end"] = min(owned["end"], indexed[owned["id"]]["end"], owned["liveStart"] + 86400)
+                owner.pop("stopping", None)
+                state.pop("handoff", None)
+                return "START", sorted({event["profile"] for event in owner["events"]}), state
         if (blocked or not calendar_ready or not fresh or now - handoff["disconnectedAt"] < wait
                 or not set(handoff["ids"]).issubset(handoff.get("completed", []))):
             return "HOLD", [], state
@@ -695,6 +721,7 @@ def main():
             policy=policy, calendar=read_json(args.root / "youtube-calendar.json"),
             standby=read_json(Path(policy.get("standbyState", "/run/videokiosk2/standby.json"))),
             profiles=[profile for profile in PROFILES if (args.run / ("streamer-active-" + profile)).exists()])
+        state["decision"] = {"command": command, "profiles": profiles, "observedAt": time.time()}
         atomic_json(state_path, state)
         print(" ".join([command] + profiles))
 

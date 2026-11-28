@@ -300,6 +300,54 @@ class RolloverTests(unittest.TestCase):
         self.assertEqual(command, "START")
         self.assertEqual(state["owner"]["events"][0]["id"], "lmnopqrstuv")
 
+    def test_church_pause_can_resume_same_live_but_not_ended_expired_or_held(self):
+        cache = public_snapshot([public_item(status="is_live", start=NOW - 3600)])
+        policy = {"rolloverEnabled": True, "controlManual": True, "resumeChurchLive": True,
+                  "calendarUrl": "http://calendar/api/events"}
+        calendar = {"ok": True, "fetchedAt": NOW, "windows": [{"id": "service", "start": NOW}]}
+        old = {"state": "fired", "failover_started": NOW - 100}
+        new = {"state": "counting", "failover_started": NOW + 60}
+
+        def tick(state, when, browser, data=None, **kwargs):
+            return yt.decision(public_config(), cache if data is None else data, state, when,
+                               policy=policy, calendar=calendar, standby=browser, profiles=["landscape"], **kwargs)
+
+        command, _, state = tick({}, NOW, old, running=True, manual=True)
+        self.assertEqual(command, "STOP")
+        self.assertEqual(state["handoff"]["reason"], "church")
+        _, _, state = tick(state, NOW + 1, old)
+        self.assertEqual(tick(copy.deepcopy(state), NOW + 80, new)[0], "HOLD",
+                         "metadata observed before disconnection must not authorize resume")
+        cache["fetchedAt"] = NOW + 80
+        self.assertEqual(tick(copy.deepcopy(state), NOW + 80, old)[0], "HOLD")
+        self.assertNotEqual(tick(copy.deepcopy(state), NOW + 80, new, stopped=True)[0], "START")
+        self.assertNotEqual(tick(copy.deepcopy(state), NOW + 80, new, hold=True)[0], "START")
+        self.assertEqual(tick(copy.deepcopy(state), NOW + 700, new)[0], "HOLD")
+        for change in ("terminal", "deadline", "absolute", "wrong-profile", "errors", "not-church"):
+            altered = copy.deepcopy(cache)
+            pending = copy.deepcopy(state)
+            if change == "terminal":
+                altered["terminal"]["abcdefghijk"] = "complete"
+                altered["events"] = []
+                altered["activeBroadcasts"] = []
+            elif change == "deadline":
+                pending["owner"]["events"][0]["end"] = NOW + 79
+            elif change == "absolute":
+                pending["owner"]["events"][0]["liveStart"] = NOW - 86400
+            elif change == "wrong-profile":
+                altered["events"][0]["profile"] = "portrait"
+            elif change == "errors":
+                altered["events"][0]["errors"] = ["Not a confirmed livestream"]
+            else:
+                pending["handoff"].pop("reason")
+            self.assertNotEqual(tick(pending, NOW + 80, new, data=altered)[0], "START", change)
+        command, profiles, resumed = tick(state, NOW + 80, new)
+        self.assertEqual((command, profiles), ("START", ["landscape"]))
+        self.assertNotIn("handoff", resumed)
+        self.assertNotIn("stopping", resumed["owner"])
+        self.assertEqual(resumed["owner"]["events"][0]["start"], NOW - 3600)
+        self.assertEqual(tick(resumed, NOW + 90, new, running=True)[0], "KEEP")
+
 
 class ScheduleTests(unittest.TestCase):
     def test_exact_normalized_title_and_offset_time(self):
